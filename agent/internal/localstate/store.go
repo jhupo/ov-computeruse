@@ -179,6 +179,36 @@ func (s *Store) SaveSyncCursor(ctx context.Context, cursor SyncCursor) error {
 	return err
 }
 
+func (s *Store) SaveRuntimeSession(ctx context.Context, session RuntimeSession) error {
+	if s == nil {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO runtime_sessions(session_id, runtime, native_session_id, last_response_id, resume_mode, last_run_id, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(session_id, runtime) DO UPDATE SET
+			native_session_id = COALESCE(NULLIF(excluded.native_session_id, ''), runtime_sessions.native_session_id),
+			last_response_id = COALESCE(NULLIF(excluded.last_response_id, ''), runtime_sessions.last_response_id),
+			resume_mode = COALESCE(NULLIF(excluded.resume_mode, ''), runtime_sessions.resume_mode),
+			last_run_id = COALESCE(NULLIF(excluded.last_run_id, ''), runtime_sessions.last_run_id),
+			updated_at = excluded.updated_at
+	`, session.SessionID, session.Runtime, session.NativeSessionID, session.LastResponseID, session.ResumeMode, session.LastRunID, now())
+	return err
+}
+
+func (s *Store) RuntimeSession(ctx context.Context, sessionID, runtime string) (RuntimeSession, error) {
+	if s == nil {
+		return RuntimeSession{}, sql.ErrNoRows
+	}
+	var session RuntimeSession
+	err := s.db.QueryRowContext(ctx, `
+		SELECT session_id, runtime, native_session_id, last_response_id, resume_mode, last_run_id
+		FROM runtime_sessions
+		WHERE session_id = ? AND runtime = ?
+	`, sessionID, runtime).Scan(&session.SessionID, &session.Runtime, &session.NativeSessionID, &session.LastResponseID, &session.ResumeMode, &session.LastRunID)
+	return session, err
+}
+
 type HistoryChunkAck struct {
 	SessionID string
 	Index     int
@@ -189,6 +219,15 @@ type SyncCursor struct {
 	Stream    string
 	SubjectID string
 	Cursor    string
+}
+
+type RuntimeSession struct {
+	SessionID       string
+	Runtime         string
+	NativeSessionID string
+	LastResponseID  string
+	ResumeMode      string
+	LastRunID       string
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -261,6 +300,16 @@ func (s *Store) migrate(ctx context.Context) error {
 			cursor TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			PRIMARY KEY(stream, subject_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS runtime_sessions (
+			session_id TEXT NOT NULL,
+			runtime TEXT NOT NULL,
+			native_session_id TEXT,
+			last_response_id TEXT,
+			resume_mode TEXT,
+			last_run_id TEXT,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY(session_id, runtime)
 		)`,
 	}
 	for _, stmt := range stmts {

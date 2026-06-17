@@ -12,15 +12,19 @@ import (
 	"github.com/openai/openai-go/responses"
 
 	"ov-computeruse/agent/internal/codexscan"
+	"ov-computeruse/agent/internal/localstate"
 	"ov-computeruse/agent/internal/protocol"
 	"ov-computeruse/agent/internal/runtime"
 )
+
+const runtimeName = "openai.responses"
 
 type Config struct {
 	BaseURL string
 	APIKey  string
 	Model   string
 	Scanner codexscan.Scanner
+	State   *localstate.Store
 }
 
 type Adapter struct {
@@ -37,7 +41,7 @@ func New(cfg Config) *Adapter {
 }
 
 func (a *Adapter) NewSession(ctx context.Context, command protocol.Command, sink runtime.Sink) error {
-	return a.Send(ctx, command, sink)
+	return a.send(ctx, command, sink, false)
 }
 
 func (a *Adapter) Resume(ctx context.Context, command protocol.Command, sink runtime.Sink) error {
@@ -74,17 +78,33 @@ func (a *Adapter) send(ctx context.Context, command protocol.Command, sink runti
 		}
 		input = withHistory
 	}
-	stream := client.Responses.NewStreaming(ctx, responses.ResponseNewParams{
+	params := responses.ResponseNewParams{
 		Model: openai.ResponsesModel(model),
 		Input: responses.ResponseNewParamsInputUnion{
 			OfString: openai.String(input),
 		},
-	})
+		Store: openai.Bool(true),
+	}
+	resumeMode := "new"
+	if includeHistory {
+		resumeMode = "history_context"
+		if previousResponseID, ok := a.previousResponseID(ctx, command); ok {
+			params.PreviousResponseID = openai.String(previousResponseID)
+			input = prompt
+			params.Input = responses.ResponseNewParamsInputUnion{OfString: openai.String(input)}
+			resumeMode = "previous_response_id"
+		}
+	}
+	stream := client.Responses.NewStreaming(ctx, params)
 	defer stream.Close()
 
 	for stream.Next() {
 		event := stream.Current()
 		switch variant := event.AsAny().(type) {
+		case responses.ResponseCreatedEvent:
+			if err := a.emitRuntimeSession(ctx, sink, command, "session.created", variant.Response.ID, resumeMode); err != nil {
+				return err
+			}
 		case responses.ResponseTextDeltaEvent:
 			if variant.Delta != "" {
 				if err := emit(ctx, sink, command, "assistant.message.delta", map[string]string{"text": variant.Delta}); err != nil {
@@ -96,7 +116,10 @@ func (a *Adapter) send(ctx context.Context, command protocol.Command, sink runti
 				return err
 			}
 		case responses.ResponseCompletedEvent:
-			if err := emit(ctx, sink, command, "run.status", map[string]string{"status": "response.completed"}); err != nil {
+			if err := a.emitRuntimeSession(ctx, sink, command, "session.updated", variant.Response.ID, resumeMode); err != nil {
+				return err
+			}
+			if err := emit(ctx, sink, command, "run.status", map[string]string{"status": "response.completed", "response_id": variant.Response.ID}); err != nil {
 				return err
 			}
 		case responses.ResponseErrorEvent:
@@ -110,6 +133,47 @@ func (a *Adapter) send(ctx context.Context, command protocol.Command, sink runti
 		}
 	}
 	return stream.Err()
+}
+
+func (a *Adapter) previousResponseID(ctx context.Context, command protocol.Command) (string, bool) {
+	if a.cfg.State == nil || strings.TrimSpace(command.SessionID) == "" {
+		return "", false
+	}
+	session, err := a.cfg.State.RuntimeSession(ctx, command.SessionID, runtimeName)
+	if err != nil || strings.TrimSpace(session.LastResponseID) == "" {
+		return "", false
+	}
+	return session.LastResponseID, true
+}
+
+func (a *Adapter) emitRuntimeSession(ctx context.Context, sink runtime.Sink, command protocol.Command, kind, responseID, resumeMode string) error {
+	if strings.TrimSpace(responseID) == "" {
+		return nil
+	}
+	sessionID := command.SessionID
+	if sessionID == "" {
+		sessionID = responseID
+	}
+	runtimeSession := protocol.RuntimeSession{
+		Runtime:         runtimeName,
+		ProjectID:       command.ProjectID,
+		SessionID:       sessionID,
+		NativeSessionID: sessionID,
+		LastResponseID:  responseID,
+		ResumeMode:      resumeMode,
+		LastRunID:       command.RunID,
+	}
+	if a.cfg.State != nil {
+		_ = a.cfg.State.SaveRuntimeSession(ctx, localstate.RuntimeSession{
+			SessionID:       runtimeSession.SessionID,
+			Runtime:         runtimeSession.Runtime,
+			NativeSessionID: runtimeSession.NativeSessionID,
+			LastResponseID:  runtimeSession.LastResponseID,
+			ResumeMode:      runtimeSession.ResumeMode,
+			LastRunID:       runtimeSession.LastRunID,
+		})
+	}
+	return emit(ctx, sink, command, kind, runtimeSession)
 }
 
 func (a *Adapter) promptWithHistory(ctx context.Context, command protocol.Command, prompt string) (string, error) {

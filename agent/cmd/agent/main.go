@@ -200,6 +200,7 @@ func runAgent(args []string) {
 			APIKey:  credential.APIKey,
 			Model:   credential.Model,
 			Scanner: scanner,
+			State:   state,
 		})
 	} else {
 		logger.Warn("codex credential not found; runtime is noop", "error", err)

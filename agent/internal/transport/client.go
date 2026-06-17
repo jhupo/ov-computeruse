@@ -139,9 +139,9 @@ func (c *Client) register(ctx context.Context) error {
 		Capabilities: protocol.Capabilities{
 			SupportsSDK:       true,
 			SupportsHistory:   true,
-			SupportsTerminal:  true,
-			SupportsGit:       true,
-			Features:          []string{"codex.scan", "run.events", "command.new_session", "command.resume", "command.send", "command.stop"},
+			SupportsTerminal:  false,
+			SupportsGit:       false,
+			Features:          []string{"codex.scan", "run.events", "runtime.session", "command.new_session", "command.resume", "command.send", "command.stop", "command.refresh_index"},
 			MaxConcurrentRuns: 1,
 		},
 	}
@@ -341,6 +341,14 @@ func (c *Client) readLoop(ctx context.Context, conn Conn) error {
 			command, err := protocol.Decode[protocol.Command](env.Data)
 			if err != nil {
 				_ = c.send(ctx, "ack", protocol.Ack{MessageID: env.MessageID, Status: "rejected", Message: err.Error(), At: time.Now().UTC()})
+				continue
+			}
+			if strings.TrimPrefix(command.Kind, "command.") == "refresh_index" {
+				ack := protocol.Ack{MessageID: env.MessageID, CommandID: command.CommandID, Status: "ok", Message: "refresh started", At: time.Now().UTC()}
+				_ = c.send(ctx, "ack", ack)
+				if err := c.uploadIndex(ctx); err != nil {
+					_ = c.send(ctx, "ack", protocol.Ack{MessageID: env.MessageID, CommandID: command.CommandID, Status: "failed", Message: err.Error(), At: time.Now().UTC()})
+				}
 				continue
 			}
 			ack := c.manager.Handle(ctx, command)

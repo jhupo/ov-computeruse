@@ -99,6 +99,18 @@ type Session struct {
 	ContentSHA256 string    `json:"content_sha256,omitempty"`
 }
 
+type RuntimeSession struct {
+	ID              string    `json:"id,omitempty"`
+	Runtime         string    `json:"runtime"`
+	ProjectID       string    `json:"project_id,omitempty"`
+	SessionID       string    `json:"session_id,omitempty"`
+	NativeSessionID string    `json:"native_session_id,omitempty"`
+	LastResponseID  string    `json:"last_response_id,omitempty"`
+	ResumeMode      string    `json:"resume_mode,omitempty"`
+	LastRunID       string    `json:"last_run_id,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at,omitempty"`
+}
+
 type HistoryChunk struct {
 	SessionID string `json:"session_id"`
 	Index     int    `json:"index"`
