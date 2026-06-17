@@ -474,6 +474,12 @@ func (c *Client) readLoop(ctx context.Context, conn Conn) error {
 			_ = c.send(ctx, "ack", protocol.Ack{MessageID: env.MessageID, Status: "rejected", Message: "invalid signature", At: time.Now().UTC()})
 			continue
 		}
+		decrypted, err := protocol.DecryptEnvelopeData(c.identity.AgentSecret, env)
+		if err != nil {
+			_ = c.send(ctx, "ack", protocol.Ack{MessageID: env.MessageID, Status: "rejected", Message: "invalid encryption", At: time.Now().UTC()})
+			continue
+		}
+		env = decrypted
 		switch env.Type {
 		case "command":
 			command, err := protocol.Decode[protocol.Command](env.Data)
@@ -545,6 +551,10 @@ func (c *Client) send(ctx context.Context, messageType string, data any) error {
 		return errors.New("not connected")
 	}
 	env, err := protocol.NewEnvelope(messageType, c.identity.AgentID, c.identity.DeviceID, seq, data)
+	if err != nil {
+		return err
+	}
+	env, err = protocol.EncryptEnvelopeData(c.identity.AgentSecret, env)
 	if err != nil {
 		return err
 	}

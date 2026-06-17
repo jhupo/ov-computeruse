@@ -67,6 +67,12 @@ func (s *Server) agentReader(r *http.Request, agent *AgentConn) {
 			s.log.WarnContext(r.Context(), "invalid agent envelope signature", "agent_id", agent.AgentID, "type", env.Type)
 			continue
 		}
+		decrypted, err := protocol.DecryptEnvelopeData(agent.Secret, env)
+		if err != nil {
+			s.log.WarnContext(r.Context(), "invalid agent envelope encryption", "agent_id", agent.AgentID, "type", env.Type, "error", err)
+			continue
+		}
+		env = decrypted
 		if err := validateAgentEnvelope(agent, env); err != nil {
 			s.log.WarnContext(r.Context(), "invalid agent envelope", "agent_id", agent.AgentID, "type", env.Type, "error", err)
 			continue
@@ -185,6 +191,10 @@ func (s *Server) sendAgent(agent *AgentConn, messageType string, data any) {
 
 func (s *Server) agentEnvelope(agent *AgentConn, messageType string, data any) []byte {
 	env, err := protocol.NewEnvelope(messageType, agent.AgentID, agent.DeviceID, 0, data)
+	if err != nil {
+		return nil
+	}
+	env, err = protocol.EncryptEnvelopeData(agent.Secret, env)
 	if err != nil {
 		return nil
 	}

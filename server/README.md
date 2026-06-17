@@ -45,6 +45,8 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 - `GET /api/dash/history/messages?agent_id=...&session_id=...`: load stored displayable history messages for a session.
 - `GET /healthz`: liveness.
 
+Agent websocket envelopes encrypt `data` with AES-256-GCM derived from the per-agent secret and then sign the encrypted envelope with HMAC-SHA256. Bind requests still use the server public key because they happen before an agent secret exists.
+
 ## Tag release
 
 Push a tag like `server-v1.0.0` to build and push:

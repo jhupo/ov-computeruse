@@ -10,17 +10,18 @@ import (
 const Version = "2026-06-17"
 
 type Envelope struct {
-	Version   string          `json:"version"`
-	MessageID string          `json:"message_id"`
-	Type      string          `json:"type"`
-	AgentID   string          `json:"agent_id,omitempty"`
-	DeviceID  string          `json:"device_id,omitempty"`
-	Seq       uint64          `json:"seq"`
-	Timestamp time.Time       `json:"timestamp"`
-	Nonce     string          `json:"nonce"`
-	KeyID     string          `json:"key_id,omitempty"`
-	Data      json.RawMessage `json:"data,omitempty"`
-	Signature string          `json:"signature,omitempty"`
+	Version    string          `json:"version"`
+	MessageID  string          `json:"message_id"`
+	Type       string          `json:"type"`
+	AgentID    string          `json:"agent_id,omitempty"`
+	DeviceID   string          `json:"device_id,omitempty"`
+	Seq        uint64          `json:"seq"`
+	Timestamp  time.Time       `json:"timestamp"`
+	Nonce      string          `json:"nonce"`
+	KeyID      string          `json:"key_id,omitempty"`
+	Encryption Encryption      `json:"encryption,omitempty"`
+	Data       json.RawMessage `json:"data,omitempty"`
+	Signature  string          `json:"signature,omitempty"`
 }
 
 type DeviceInfo struct {

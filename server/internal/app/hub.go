@@ -11,8 +11,6 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
-
-	"ov-computeruse/server/internal/protocol"
 )
 
 type AgentConn struct {
@@ -33,10 +31,11 @@ type DashConn struct {
 }
 
 type AgentCommandEnvelope struct {
-	Origin  string `json:"origin"`
-	AgentID string `json:"agent_id"`
-	UserID  string `json:"user_id"`
-	Data    []byte `json:"data"`
+	Origin    string `json:"origin"`
+	AgentID   string `json:"agent_id"`
+	UserID    string `json:"user_id"`
+	CommandID string `json:"command_id,omitempty"`
+	Data      []byte `json:"data"`
 }
 
 type DashBroadcastEnvelope struct {
@@ -144,7 +143,7 @@ func (h *Hub) DispatchCommand(ctx context.Context, agentID, userID, commandID st
 	if h.redis.Exists(ctx, "agent:online:"+agentID).Val() == 0 {
 		return false
 	}
-	raw, err := json.Marshal(AgentCommandEnvelope{Origin: h.instanceID, AgentID: agentID, UserID: userID, Data: data})
+	raw, err := json.Marshal(AgentCommandEnvelope{Origin: h.instanceID, AgentID: agentID, UserID: userID, CommandID: commandID, Data: data})
 	if err != nil {
 		return false
 	}
@@ -221,7 +220,7 @@ func (h *Hub) subscribeCommands(ctx context.Context) {
 			continue
 		}
 		if h.dispatchCommandLocal(env.AgentID, env.Data) {
-			h.markCommandDispatched(ctx, env.AgentID, commandIDFromEnvelope(env.Data))
+			h.markCommandDispatched(ctx, env.AgentID, env.CommandID)
 		}
 	}
 }
@@ -233,18 +232,6 @@ func (h *Hub) markCommandDispatched(ctx context.Context, agentID, commandID stri
 	if err := h.commands.MarkCommandDispatched(ctx, agentID, commandID); err != nil {
 		h.log.WarnContext(ctx, "mark command dispatched failed", "agent_id", agentID, "command_id", commandID, "error", err)
 	}
-}
-
-func commandIDFromEnvelope(raw []byte) string {
-	var env protocol.Envelope
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return ""
-	}
-	command, err := protocol.Decode[protocol.Command](env.Data)
-	if err != nil {
-		return ""
-	}
-	return command.CommandID
 }
 
 func randomHubInstanceID() string {

@@ -47,6 +47,16 @@ Default paths:
 
 `state.db` stores discovered Codex roots, project/session indexes, history chunk upload state, and sync cursors. It does not store raw API keys or copied Codex auth files.
 
+`agent.toml` or `agent.json` can define the same operational settings as environment variables and flags, for example:
+
+```toml
+server_url = "https://api.example.com"
+codex_home = "C:/Users/me/.codex"
+scan_roots = ["C:/Users/me/.codex", "D:/work"]
+upload_history = false
+allow_sensitive = false
+```
+
 ## Run
 
 ```sh
@@ -57,6 +67,7 @@ Runtime behavior:
 
 - scan local Codex config, projects, sessions, history, worktrees, and git metadata.
 - connect to server over WSS only.
+- encrypt every agent/server envelope payload with AES-256-GCM derived from the per-agent secret, then sign the encrypted envelope.
 - send register, project/session index, history chunks, heartbeat, and run events.
 - upload displayable user/assistant history messages for dash history views; raw history chunks require explicit `--upload-history`.
 - receive server commands for new session, resume, send, stop, and index refresh.

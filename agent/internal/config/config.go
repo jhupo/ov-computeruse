@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"flag"
 	"os"
 	"path/filepath"
@@ -57,6 +58,15 @@ func Load(opts Options) (Config, error) {
 
 	applyEnv(&cfg, lookup, explicit)
 
+	configPath := cfg.AgentConfigPath
+	if value, ok := lookup(envKey("AGENT_CONFIG_PATH")); ok {
+		configPath = value
+	}
+	if configPath != "" {
+		_ = applyConfigFile(&cfg, configPath)
+	}
+	applyEnv(&cfg, lookup, explicit)
+
 	fs := flag.NewFlagSet("ov-agent", flag.ContinueOnError)
 	fs.StringVar(&cfg.ServerURL, "server-url", cfg.ServerURL, "server base url")
 	fs.StringVar(&cfg.ServerKeyID, "server-key-id", cfg.ServerKeyID, "server public key id")
@@ -101,6 +111,173 @@ func Load(opts Options) (Config, error) {
 		cfg.DeviceSalt = cfg.ConfigDir
 	}
 	return cfg, nil
+}
+
+func applyConfigFile(cfg *Config, path string) error {
+	data, err := os.ReadFile(cleanPath(path))
+	if err != nil {
+		return err
+	}
+	values, err := parseConfigFile(data)
+	if err != nil {
+		return err
+	}
+	for key, value := range values {
+		applyConfigValue(cfg, key, value)
+	}
+	return nil
+}
+
+func parseConfigFile(data []byte) (map[string]string, error) {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return map[string]string{}, nil
+	}
+	if strings.HasPrefix(trimmed, "{") {
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &raw); err != nil {
+			return nil, err
+		}
+		out := map[string]string{}
+		flattenJSONConfig("", raw, out)
+		return out, nil
+	}
+	return parseFlatTOML(trimmed), nil
+}
+
+func flattenJSONConfig(prefix string, values map[string]any, out map[string]string) {
+	for key, value := range values {
+		fullKey := key
+		if prefix != "" {
+			fullKey = prefix + "." + key
+		}
+		switch typed := value.(type) {
+		case string:
+			out[fullKey] = typed
+		case bool:
+			out[fullKey] = strconv.FormatBool(typed)
+		case float64:
+			out[fullKey] = strconv.FormatInt(int64(typed), 10)
+		case []any:
+			parts := make([]string, 0, len(typed))
+			for _, item := range typed {
+				if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
+					parts = append(parts, text)
+				}
+			}
+			out[fullKey] = strings.Join(parts, ",")
+		case map[string]any:
+			flattenJSONConfig(fullKey, typed, out)
+		}
+	}
+}
+
+func parseFlatTOML(data string) map[string]string {
+	out := map[string]string{}
+	section := ""
+	for _, line := range strings.Split(data, "\n") {
+		line = stripComment(strings.TrimSpace(line))
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.Contains(line, "]") {
+			section = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if section != "" {
+			key = section + "." + key
+		}
+		out[key] = parseConfigScalar(strings.TrimSpace(value))
+	}
+	return out
+}
+
+func stripComment(line string) string {
+	inQuote := false
+	for i, r := range line {
+		switch r {
+		case '"':
+			inQuote = !inQuote
+		case '#':
+			if !inQuote {
+				return strings.TrimSpace(line[:i])
+			}
+		}
+	}
+	return line
+}
+
+func parseConfigScalar(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		value = strings.TrimSuffix(strings.TrimPrefix(value, "["), "]")
+		parts := []string{}
+		for _, part := range strings.Split(value, ",") {
+			parts = append(parts, strings.Trim(strings.TrimSpace(part), `"`))
+		}
+		return strings.Join(parts, ",")
+	}
+	return strings.Trim(value, `"`)
+}
+
+func applyConfigValue(cfg *Config, key, value string) {
+	switch normalizeConfigKey(key) {
+	case "server_url":
+		cfg.ServerURL = value
+	case "server_key_id":
+		cfg.ServerKeyID = value
+	case "server_public_key":
+		cfg.ServerPublicKey = value
+	case "config_dir":
+		cfg.ConfigDir = value
+	case "data_dir":
+		cfg.DataDir = value
+	case "state_path", "state":
+		cfg.StatePath = value
+	case "state_db_path", "state_db":
+		cfg.StateDBPath = value
+	case "agent_config_path", "agent_config":
+		cfg.AgentConfigPath = value
+	case "log_dir":
+		cfg.LogDir = value
+	case "cache_dir":
+		cfg.CacheDir = value
+	case "codex_home":
+		cfg.CodexHome = value
+	case "log_level":
+		cfg.LogLevel = value
+	case "scan_roots", "scan_root":
+		cfg.ScanRoots = splitList(value)
+	case "scan_max_bytes":
+		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
+			cfg.ScanMaxBytes = parsed
+		}
+	case "scan_timeout":
+		if parsed, err := time.ParseDuration(value); err == nil {
+			cfg.ScanTimeout = parsed
+		}
+	case "device_salt":
+		cfg.DeviceSalt = value
+	case "disable_scan":
+		cfg.DisableScan = parseBool(value)
+	case "upload_history":
+		cfg.UploadHistory = parseBool(value)
+	case "allow_sensitive":
+		cfg.AllowSensitive = parseBool(value)
+	}
+}
+
+func normalizeConfigKey(key string) string {
+	key = strings.TrimSpace(strings.ToLower(key))
+	key = strings.TrimPrefix(key, "agent.")
+	key = strings.ReplaceAll(key, "-", "_")
+	key = strings.ReplaceAll(key, ".", "_")
+	return key
 }
 
 func ApplyDerivedPaths(cfg *Config, explicit map[string]bool) {
