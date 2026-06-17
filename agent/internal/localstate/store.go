@@ -179,6 +179,19 @@ func (s *Store) SaveSyncCursor(ctx context.Context, cursor SyncCursor) error {
 	return err
 }
 
+func (s *Store) SyncCursor(ctx context.Context, stream, subjectID string) (SyncCursor, error) {
+	if s == nil {
+		return SyncCursor{}, sql.ErrNoRows
+	}
+	var cursor SyncCursor
+	err := s.db.QueryRowContext(ctx, `
+		SELECT stream, subject_id, cursor
+		FROM sync_cursors
+		WHERE stream = ? AND subject_id = ?
+	`, stream, subjectID).Scan(&cursor.Stream, &cursor.SubjectID, &cursor.Cursor)
+	return cursor, err
+}
+
 func (s *Store) SaveRuntimeSession(ctx context.Context, session RuntimeSession) error {
 	if s == nil {
 		return nil

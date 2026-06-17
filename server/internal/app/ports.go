@@ -26,6 +26,7 @@ type IndexRepository interface {
 	SaveSessions(context.Context, string, []protocol.Session) error
 	SaveHistoryChunk(context.Context, string, protocol.HistoryChunk) error
 	SaveHistoryMessages(context.Context, string, protocol.HistoryMessages) error
+	SaveSyncCursor(context.Context, string, protocol.SyncCursor) error
 	HistoryMessages(context.Context, string, string) ([]protocol.HistoryMessage, error)
 	UpsertRuntimeSession(context.Context, string, protocol.RuntimeSession) error
 }

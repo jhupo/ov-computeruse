@@ -81,3 +81,9 @@ func (s *Store) HistoryMessages(ctx context.Context, agentID, sessionID string) 
 	}
 	return messages, rows.Err()
 }
+
+func (s *Store) SaveSyncCursor(ctx context.Context, agentID string, cursor protocol.SyncCursor) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO sync_cursors (agent_id, stream, subject_id, cursor, cursor_at, updated_at) VALUES ($1,$2,$3,$4,$5,now()) ON CONFLICT (agent_id, stream, subject_id) DO UPDATE SET cursor=EXCLUDED.cursor, cursor_at=EXCLUDED.cursor_at, updated_at=now()`,
+		agentID, cursor.Stream, cursor.SubjectID, cursor.Cursor, cursor.At)
+	return err
+}

@@ -281,11 +281,21 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 }
 
 func (c *Client) uploadHistoryMessages(ctx context.Context, session codexscan.Session) error {
+	cursor := historyCursor(session)
+	if c.state != nil {
+		existing, err := c.state.SyncCursor(ctx, "history.messages", session.ID)
+		if err == nil && existing.Cursor == cursor {
+			return nil
+		}
+	}
 	messages, err := codexscan.ReadSessionMessages(ctx, session.Path, 200, 256<<10)
 	if err != nil {
 		return err
 	}
 	if len(messages) == 0 {
+		if c.state != nil {
+			_ = c.state.SaveSyncCursor(ctx, localstate.SyncCursor{Stream: "history.messages", SubjectID: session.ID, Cursor: cursor})
+		}
 		return nil
 	}
 	out := make([]protocol.HistoryMessage, 0, len(messages))
@@ -298,7 +308,23 @@ func (c *Client) uploadHistoryMessages(ctx context.Context, session codexscan.Se
 			At:        message.At,
 		})
 	}
-	return c.send(ctx, "history.messages", protocol.HistoryMessages{SessionID: session.ID, Messages: out})
+	if err := c.send(ctx, "history.messages", protocol.HistoryMessages{SessionID: session.ID, Messages: out}); err != nil {
+		return err
+	}
+	if c.state != nil {
+		if err := c.state.SaveSyncCursor(ctx, localstate.SyncCursor{Stream: "history.messages", SubjectID: session.ID, Cursor: cursor}); err != nil {
+			return err
+		}
+	}
+	return c.send(ctx, "sync.cursor", protocol.SyncCursor{Stream: "history.messages", SubjectID: session.ID, Cursor: cursor, At: time.Now().UTC()})
+}
+
+func historyCursor(session codexscan.Session) string {
+	return string(protocol.Raw(map[string]any{
+		"sha256":     session.ContentSHA256,
+		"size":       session.Size,
+		"updated_at": session.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	}))
 }
 
 func (c *Client) heartbeatLoop(ctx context.Context) error {

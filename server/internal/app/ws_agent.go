@@ -140,6 +140,11 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 			_ = s.store.SaveHistoryMessages(ctx, agent.AgentID, messages)
 			s.hub.BroadcastDash(agent.UserID, protocol.Raw(map[string]any{"type": "history.messages.updated", "agent_id": agent.AgentID, "session_id": messages.SessionID, "count": len(messages.Messages)}))
 		}
+	case "sync.cursor":
+		cursor, err := protocol.Decode[protocol.SyncCursor](env.Data)
+		if err == nil {
+			_ = s.store.SaveSyncCursor(ctx, agent.AgentID, cursor)
+		}
 	case "run.event":
 		event, err := protocol.Decode[protocol.RunEvent](env.Data)
 		if err == nil {
