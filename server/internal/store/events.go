@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"time"
@@ -10,12 +12,24 @@ import (
 )
 
 func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, event protocol.RunEvent) error {
+	if event.EventID == "" {
+		event.EventID = protocol.NewID("evt")
+	}
+	if event.At.IsZero() {
+		event.At = time.Now().UTC()
+	}
 	tag, err := s.pool.Exec(ctx, `INSERT INTO run_events (id, agent_id, device_id, run_id, command_id, session_id, project_id, seq, kind, payload, event_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO NOTHING`, event.EventID, agentID, deviceID, event.RunID, event.CommandID, event.SessionID, event.ProjectID, event.Seq, event.Kind, jsonRaw(event.Payload), event.At)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return nil
+	}
+	if err := s.recordRunEventConsistency(ctx, agentID, event); err != nil {
+		return err
+	}
+	if err := s.advanceRunEventCursor(ctx, agentID, event); err != nil {
+		return err
 	}
 	if err := s.projectApproval(ctx, agentID, event); err != nil {
 		return err
@@ -27,6 +41,70 @@ func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, even
 		return err
 	}
 	return s.projectRunState(ctx, agentID, event)
+}
+
+func (s *Store) recordRunEventConsistency(ctx context.Context, agentID string, event protocol.RunEvent) error {
+	if event.RunID == "" || event.Seq == 0 {
+		return nil
+	}
+	lastSeq := uint64(0)
+	_ = s.pool.QueryRow(ctx, `SELECT COALESCE(last_event_seq, 0) FROM runs WHERE agent_id=$1 AND id=$2`, agentID, event.RunID).Scan(&lastSeq)
+	expected := lastSeq + 1
+	switch {
+	case event.Seq == expected:
+		return nil
+	case event.Seq > expected:
+		return s.saveRunEventGap(ctx, agentID, event.RunID, expected, event.Seq, "gap")
+	default:
+		kind := "duplicate_seq"
+		if event.Seq < lastSeq {
+			kind = "seq_regression"
+		}
+		return s.saveRunEventGap(ctx, agentID, event.RunID, expected, event.Seq, kind)
+	}
+}
+
+func (s *Store) advanceRunEventCursor(ctx context.Context, agentID string, event protocol.RunEvent) error {
+	if event.RunID == "" || event.Seq == 0 {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at)
+		VALUES ($1,$2,$3,$4,$5,'running','event_received',$6,$7,$7)
+		ON CONFLICT (id) DO UPDATE SET
+			command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id),
+			project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id),
+			session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id),
+			last_event_seq=GREATEST(runs.last_event_seq, EXCLUDED.last_event_seq),
+			last_event_at=EXCLUDED.last_event_at`,
+		event.RunID, agentID, event.CommandID, event.ProjectID, event.SessionID, event.Seq, event.At)
+	return err
+}
+
+func (s *Store) saveRunEventGap(ctx context.Context, agentID, runID string, expected, observed uint64, kind string) error {
+	id := runEventGapID(agentID, runID, expected, observed, kind)
+	_, err := s.pool.Exec(ctx, `INSERT INTO run_event_gaps (id, agent_id, run_id, expected_seq, observed_seq, kind, status, detected_at)
+		VALUES ($1,$2,$3,$4,$5,$6,'open',now())
+		ON CONFLICT (id) DO NOTHING`, id, agentID, runID, expected, observed, kind)
+	return err
+}
+
+func runEventGapID(agentID, runID string, expected, observed uint64, kind string) string {
+	sum := sha256.Sum256([]byte(agentID + "\x00" + runID + "\x00" + kind + "\x00" + strconvUint(expected) + "\x00" + strconvUint(observed)))
+	return "gap_" + hex.EncodeToString(sum[:])[:32]
+}
+
+func strconvUint(value uint64) string {
+	if value == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for value > 0 {
+		i--
+		buf[i] = byte('0' + value%10)
+		value /= 10
+	}
+	return string(buf[i:])
 }
 
 func (s *Store) projectApproval(ctx context.Context, agentID string, event protocol.RunEvent) error {

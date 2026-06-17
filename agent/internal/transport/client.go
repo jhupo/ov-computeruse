@@ -151,7 +151,7 @@ func (c *Client) register(ctx context.Context) error {
 			SupportsHistory:   true,
 			SupportsTerminal:  false,
 			SupportsGit:       false,
-			Features:          []string{"codex.scan", "run.events", "runtime.session", "approval.decision", "command.new_session", "command.resume", "command.send", "command.stop", "command.refresh_index"},
+			Features:          []string{"codex.scan", "history.items", "run.events", "runtime.session", "approval.decision", "command.new_session", "command.resume", "command.send", "command.stop", "command.refresh_index"},
 			MaxConcurrentRuns: 1,
 		},
 	}
@@ -234,8 +234,8 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 		}
 	}
 	for _, session := range result.Sessions {
-		if err := c.uploadHistoryMessages(ctx, session); err != nil {
-			c.logger.Warn("history messages upload skipped", "session_id", session.ID, "error", err)
+		if err := c.uploadHistoryItems(ctx, session); err != nil {
+			c.logger.Warn("history items upload skipped", "session_id", session.ID, "error", err)
 		}
 	}
 	if !c.uploadHistory {
@@ -299,43 +299,69 @@ func protocolDeletedRefs(items []localstate.DeletedRef) []protocol.DeletedRef {
 	return out
 }
 
-func (c *Client) uploadHistoryMessages(ctx context.Context, session codexscan.Session) error {
+func (c *Client) uploadHistoryItems(ctx context.Context, session codexscan.Session) error {
 	cursor := historyCursor(session)
 	if c.state != nil {
-		existing, err := c.state.SyncCursor(ctx, "history.messages", session.ID)
+		existing, err := c.state.SyncCursor(ctx, "history.items", session.ID)
 		if err == nil && existing.Cursor == cursor {
 			return nil
 		}
 	}
-	messages, err := codexscan.ReadSessionMessages(ctx, session.Path, 200, 256<<10)
+	const historyItemBatchSize = 200
+	const historyItemBatchBytes = 1 << 20
+	reset := true
+	sent := 0
+	batchBytes := 0
+	out := make([]protocol.HistoryItem, 0, historyItemBatchSize)
+	flush := func() error {
+		if len(out) == 0 {
+			return nil
+		}
+		if err := c.send(ctx, "history.items", protocol.HistoryItems{SessionID: session.ID, Cursor: cursor, Reset: reset, Items: out}); err != nil {
+			return err
+		}
+		reset = false
+		sent += len(out)
+		out = make([]protocol.HistoryItem, 0, historyItemBatchSize)
+		batchBytes = 0
+		return nil
+	}
+	err := codexscan.ForEachSessionItem(ctx, session, 256<<10, func(item codexscan.HistoryItem) error {
+		wire := protocol.HistoryItem{
+			SessionID:     session.ID,
+			Index:         item.Index,
+			Role:          item.Role,
+			Kind:          item.Kind,
+			Text:          item.Text,
+			Payload:       item.Payload,
+			Source:        "codex.history",
+			SourceEventID: item.SourceEventID,
+			At:            item.At,
+		}
+		out = append(out, wire)
+		batchBytes += len(wire.Text) + len(wire.Payload)
+		if len(out) >= historyItemBatchSize || batchBytes >= historyItemBatchBytes {
+			return flush()
+		}
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	if len(messages) == 0 {
-		if c.state != nil {
-			_ = c.state.SaveSyncCursor(ctx, localstate.SyncCursor{Stream: "history.messages", SubjectID: session.ID, Cursor: cursor})
-		}
-		return nil
-	}
-	out := make([]protocol.HistoryMessage, 0, len(messages))
-	for idx, message := range messages {
-		out = append(out, protocol.HistoryMessage{
-			SessionID: session.ID,
-			Index:     idx,
-			Role:      message.Role,
-			Text:      message.Text,
-			At:        message.At,
-		})
-	}
-	if err := c.send(ctx, "history.messages", protocol.HistoryMessages{SessionID: session.ID, Messages: out}); err != nil {
+	if err := flush(); err != nil {
 		return err
 	}
-	if c.state != nil {
-		if err := c.state.SaveSyncCursor(ctx, localstate.SyncCursor{Stream: "history.messages", SubjectID: session.ID, Cursor: cursor}); err != nil {
+	if sent == 0 {
+		if err := c.send(ctx, "history.items", protocol.HistoryItems{SessionID: session.ID, Cursor: cursor, Reset: true}); err != nil {
 			return err
 		}
 	}
-	return c.send(ctx, "sync.cursor", protocol.SyncCursor{Stream: "history.messages", SubjectID: session.ID, Cursor: cursor, At: time.Now().UTC()})
+	if c.state != nil {
+		if err := c.state.SaveSyncCursor(ctx, localstate.SyncCursor{Stream: "history.items", SubjectID: session.ID, Cursor: cursor}); err != nil {
+			return err
+		}
+	}
+	return c.send(ctx, "sync.cursor", protocol.SyncCursor{Stream: "history.items", SubjectID: session.ID, Cursor: cursor, At: time.Now().UTC()})
 }
 
 func historyCursor(session codexscan.Session) string {

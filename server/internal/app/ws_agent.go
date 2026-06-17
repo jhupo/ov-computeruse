@@ -107,7 +107,7 @@ func validateAgentEnvelope(agent *AgentConn, env protocol.Envelope) error {
 
 func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env protocol.Envelope) {
 	ctx := r.Context()
-	if env.Type != "history.chunk" && env.Type != "history.messages" {
+	if env.Type != "history.chunk" && env.Type != "history.messages" && env.Type != "history.items" {
 		s.hub.BroadcastDash(agent.UserID, protocol.Raw(env))
 	}
 	switch env.Type {
@@ -157,6 +157,12 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 		if err == nil {
 			_ = s.store.SaveHistoryMessages(ctx, agent.AgentID, messages)
 			s.hub.BroadcastDash(agent.UserID, protocol.Raw(map[string]any{"type": "history.messages.updated", "agent_id": agent.AgentID, "session_id": messages.SessionID, "count": len(messages.Messages)}))
+		}
+	case "history.items":
+		items, err := protocol.Decode[protocol.HistoryItems](env.Data)
+		if err == nil {
+			_ = s.store.SaveHistoryItems(ctx, agent.AgentID, items)
+			s.hub.BroadcastDash(agent.UserID, protocol.Raw(map[string]any{"type": "history.items.updated", "agent_id": agent.AgentID, "session_id": items.SessionID, "count": len(items.Items)}))
 		}
 	case "sync.cursor":
 		cursor, err := protocol.Decode[protocol.SyncCursor](env.Data)

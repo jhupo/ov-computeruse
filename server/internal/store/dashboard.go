@@ -63,17 +63,18 @@ type SessionSummary struct {
 }
 
 type RunSummary struct {
-	ID           string    `json:"id"`
-	AgentID      string    `json:"agent_id"`
-	CommandID    string    `json:"command_id,omitempty"`
-	ProjectID    string    `json:"project_id,omitempty"`
-	SessionID    string    `json:"session_id,omitempty"`
-	Status       string    `json:"status"`
-	StatusReason string    `json:"status_reason,omitempty"`
-	LastEventSeq uint64    `json:"last_event_seq"`
-	LastEventAt  time.Time `json:"last_event_at,omitempty"`
-	StartedAt    time.Time `json:"started_at"`
-	FinishedAt   time.Time `json:"finished_at,omitempty"`
+	ID            string    `json:"id"`
+	AgentID       string    `json:"agent_id"`
+	CommandID     string    `json:"command_id,omitempty"`
+	ProjectID     string    `json:"project_id,omitempty"`
+	SessionID     string    `json:"session_id,omitempty"`
+	Status        string    `json:"status"`
+	StatusReason  string    `json:"status_reason,omitempty"`
+	LastEventSeq  uint64    `json:"last_event_seq"`
+	LastEventAt   time.Time `json:"last_event_at,omitempty"`
+	StartedAt     time.Time `json:"started_at"`
+	FinishedAt    time.Time `json:"finished_at,omitempty"`
+	EventGapCount int       `json:"event_gap_count"`
 }
 
 type CommandRecord struct {
@@ -226,9 +227,9 @@ func (s *Store) ListSessions(ctx context.Context, agentID, projectID string, lim
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	query := `SELECT cs.agent_id, cs.id, COALESCE(cs.id_source, ''), COALESCE(cs.project_id, ''), COALESCE(cs.title, ''), COALESCE(cs.path, ''), COALESCE(cs.cwd, ''), cs.updated_at, COALESCE(cs.size_bytes, 0), COALESCE(cs.content_sha256, ''), COUNT(hm.message_index), MAX(hm.message_at)
+	query := `SELECT cs.agent_id, cs.id, COALESCE(cs.id_source, ''), COALESCE(cs.project_id, ''), COALESCE(cs.title, ''), COALESCE(cs.path, ''), COALESCE(cs.cwd, ''), cs.updated_at, COALESCE(cs.size_bytes, 0), COALESCE(cs.content_sha256, ''), COUNT(hi.item_index), MAX(hi.item_at)
 		FROM codex_sessions cs
-		LEFT JOIN history_messages hm ON hm.agent_id = cs.agent_id AND hm.session_id = cs.id
+		LEFT JOIN history_items hi ON hi.agent_id = cs.agent_id AND hi.session_id = cs.id
 		WHERE cs.agent_id=$1 AND cs.deleted_at IS NULL`
 	args := []any{agentID}
 	if projectID != "" {
@@ -236,7 +237,7 @@ func (s *Store) ListSessions(ctx context.Context, agentID, projectID string, lim
 		args = append(args, projectID)
 	}
 	query += ` GROUP BY cs.agent_id, cs.id, cs.id_source, cs.project_id, cs.title, cs.path, cs.cwd, cs.updated_at, cs.size_bytes, cs.content_sha256
-		ORDER BY COALESCE(cs.updated_at, MAX(hm.message_at), now()) DESC LIMIT $` + strconv.Itoa(len(args)+1)
+		ORDER BY COALESCE(cs.updated_at, MAX(hi.item_at), now()) DESC LIMIT $` + strconv.Itoa(len(args)+1)
 	args = append(args, limit)
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -266,13 +267,17 @@ func (s *Store) ListRuns(ctx context.Context, agentID, sessionID string, limit i
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
-	query := `SELECT id, agent_id, COALESCE(command_id, ''), COALESCE(project_id, ''), COALESCE(session_id, ''), status, COALESCE(status_reason, ''), last_event_seq, last_event_at, started_at, finished_at FROM runs WHERE agent_id=$1`
+	query := `SELECT r.id, r.agent_id, COALESCE(r.command_id, ''), COALESCE(r.project_id, ''), COALESCE(r.session_id, ''), r.status, COALESCE(r.status_reason, ''), r.last_event_seq, r.last_event_at, r.started_at, r.finished_at, COUNT(reg.id)
+		FROM runs r
+		LEFT JOIN run_event_gaps reg ON reg.agent_id = r.agent_id AND reg.run_id = r.id AND reg.status = 'open'
+		WHERE r.agent_id=$1`
 	args := []any{agentID}
 	if sessionID != "" {
-		query += ` AND session_id=$2`
+		query += ` AND r.session_id=$2`
 		args = append(args, sessionID)
 	}
-	query += ` ORDER BY started_at DESC LIMIT $` + strconv.Itoa(len(args)+1)
+	query += ` GROUP BY r.id, r.agent_id, r.command_id, r.project_id, r.session_id, r.status, r.status_reason, r.last_event_seq, r.last_event_at, r.started_at, r.finished_at
+		ORDER BY r.started_at DESC LIMIT $` + strconv.Itoa(len(args)+1)
 	args = append(args, limit)
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -284,7 +289,7 @@ func (s *Store) ListRuns(ctx context.Context, agentID, sessionID string, limit i
 		var item RunSummary
 		var lastEventAt sql.NullTime
 		var finished sql.NullTime
-		if err := rows.Scan(&item.ID, &item.AgentID, &item.CommandID, &item.ProjectID, &item.SessionID, &item.Status, &item.StatusReason, &item.LastEventSeq, &lastEventAt, &item.StartedAt, &finished); err != nil {
+		if err := rows.Scan(&item.ID, &item.AgentID, &item.CommandID, &item.ProjectID, &item.SessionID, &item.Status, &item.StatusReason, &item.LastEventSeq, &lastEventAt, &item.StartedAt, &finished, &item.EventGapCount); err != nil {
 			return nil, err
 		}
 		if lastEventAt.Valid {

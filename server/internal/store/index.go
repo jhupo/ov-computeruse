@@ -78,13 +78,64 @@ func (s *Store) SaveHistoryMessages(ctx context.Context, agentID string, batch p
 		if message.SessionID == "" || message.Text == "" {
 			continue
 		}
-		_, err := s.pool.Exec(ctx, `INSERT INTO history_messages (agent_id, session_id, message_index, role, text, message_at, received_at) VALUES ($1,$2,$3,$4,$5,$6,now()) ON CONFLICT (agent_id, session_id, message_index) DO UPDATE SET role=EXCLUDED.role, text=EXCLUDED.text, message_at=EXCLUDED.message_at, received_at=now()`, agentID, message.SessionID, message.Index, message.Role, message.Text, message.At)
-		if err != nil {
+		if err := s.saveHistoryMessageProjection(ctx, agentID, message); err != nil {
 			return err
 		}
 		if err := s.projectHistoryMessage(ctx, agentID, message); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (s *Store) SaveHistoryItems(ctx context.Context, agentID string, batch protocol.HistoryItems) error {
+	if batch.Reset && batch.SessionID != "" {
+		if _, err := s.pool.Exec(ctx, `DELETE FROM history_items WHERE agent_id=$1 AND session_id=$2 AND source='codex.history'`, agentID, batch.SessionID); err != nil {
+			return err
+		}
+		if _, err := s.pool.Exec(ctx, `DELETE FROM history_messages WHERE agent_id=$1 AND session_id=$2`, agentID, batch.SessionID); err != nil {
+			return err
+		}
+	}
+	for _, item := range batch.Items {
+		if item.SessionID == "" {
+			item.SessionID = batch.SessionID
+		}
+		if item.SessionID == "" || item.Kind == "" {
+			continue
+		}
+		source := item.Source
+		if source == "" {
+			source = "codex.history"
+		}
+		if err := s.SaveHistoryItem(ctx, HistoryItem{
+			AgentID:       agentID,
+			SessionID:     item.SessionID,
+			Index:         item.Index,
+			Role:          item.Role,
+			Kind:          item.Kind,
+			Text:          item.Text,
+			Payload:       item.Payload,
+			Source:        source,
+			SourceEventID: item.SourceEventID,
+			At:            item.At,
+		}); err != nil {
+			return err
+		}
+		if item.Kind == "message" && item.Text != "" {
+			if err := s.saveHistoryMessageProjection(ctx, agentID, protocol.HistoryMessage{
+				SessionID: item.SessionID,
+				Index:     item.Index,
+				Role:      item.Role,
+				Text:      item.Text,
+				At:        item.At,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	if batch.Cursor != "" {
+		return s.SaveSyncCursor(ctx, agentID, protocol.SyncCursor{Stream: "history.items", SubjectID: batch.SessionID, Cursor: batch.Cursor, At: now()})
 	}
 	return nil
 }
@@ -108,6 +159,11 @@ func (s *Store) HistoryMessages(ctx context.Context, agentID, sessionID string) 
 		messages = append(messages, message)
 	}
 	return messages, rows.Err()
+}
+
+func (s *Store) saveHistoryMessageProjection(ctx context.Context, agentID string, message protocol.HistoryMessage) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO history_messages (agent_id, session_id, message_index, role, text, message_at, received_at) VALUES ($1,$2,$3,$4,$5,$6,now()) ON CONFLICT (agent_id, session_id, message_index) DO UPDATE SET role=EXCLUDED.role, text=EXCLUDED.text, message_at=EXCLUDED.message_at, received_at=now()`, agentID, message.SessionID, message.Index, message.Role, message.Text, message.At)
+	return err
 }
 
 func (s *Store) SaveSyncCursor(ctx context.Context, agentID string, cursor protocol.SyncCursor) error {

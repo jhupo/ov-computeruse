@@ -86,6 +86,17 @@ type SessionMessage struct {
 	At   time.Time
 }
 
+type HistoryItem struct {
+	SessionID     string
+	Index         int
+	Role          string
+	Kind          string
+	Text          string
+	Payload       json.RawMessage
+	SourceEventID string
+	At            time.Time
+}
+
 func NewScanner(codexHome string) Scanner {
 	return Scanner{CodexHome: codexHome}
 }
@@ -680,6 +691,185 @@ func ReadSessionMessages(ctx context.Context, path string, maxMessages int, maxB
 		}
 	}
 	return messages, nil
+}
+
+func ReadSessionItems(ctx context.Context, session Session, maxItems int, maxBytes int) ([]HistoryItem, error) {
+	if maxItems <= 0 {
+		maxItems = 1000
+	}
+	if maxBytes <= 0 {
+		maxBytes = 2 << 20
+	}
+	items := make([]HistoryItem, 0)
+	total := 0
+	err := ForEachSessionItem(ctx, session, 256<<10, func(item HistoryItem) error {
+		total += len(item.Text) + len(item.Payload)
+		items = append(items, item)
+		for len(items) > maxItems || total > maxBytes {
+			total -= len(items[0].Text) + len(items[0].Payload)
+			items = items[1:]
+		}
+		return nil
+	})
+	if err != nil {
+		return items, err
+	}
+	for i := range items {
+		items[i].Index = i
+	}
+	return items, nil
+}
+
+func ForEachSessionItem(ctx context.Context, session Session, maxTextBytes int, yield func(HistoryItem) error) error {
+	if maxTextBytes <= 0 {
+		maxTextBytes = 256 << 10
+	}
+	if IsSensitivePath(session.Path) {
+		return errors.New("refusing to parse sensitive history file")
+	}
+	file, err := os.Open(session.Path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	scanner := newJSONLScanner(file)
+	index := 0
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		item, ok := parseHistoryItem(session.ID, index, scanner.Bytes(), maxTextBytes)
+		if !ok {
+			continue
+		}
+		if item.Kind == "message" && item.Role == "user" && looksLikeContextBlock(item.Text) {
+			continue
+		}
+		if err := yield(item); err != nil {
+			return err
+		}
+		index++
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func parseHistoryItem(sessionID string, index int, rawLine []byte, maxText int) (HistoryItem, bool) {
+	var row struct {
+		ID        string          `json:"id"`
+		Timestamp time.Time       `json:"timestamp"`
+		Type      string          `json:"type"`
+		Payload   json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(rawLine, &row); err != nil {
+		return HistoryItem{}, false
+	}
+	if len(row.Payload) == 0 {
+		row.Payload = append(json.RawMessage(nil), rawLine...)
+	}
+	var payload map[string]any
+	_ = json.Unmarshal(row.Payload, &payload)
+	payloadType := stringFromAny(payload["type"])
+	kind := historyKind(row.Type, payloadType)
+	if kind == "" {
+		return HistoryItem{}, false
+	}
+	role := stringFromAny(payload["role"])
+	text := historyText(kind, payload, maxText)
+	sourceID := firstNonEmpty(row.ID, stringFromAny(payload["id"]), stringFromAny(payload["call_id"]))
+	return HistoryItem{
+		SessionID:     sessionID,
+		Index:         index,
+		Role:          role,
+		Kind:          kind,
+		Text:          text,
+		Payload:       append(json.RawMessage(nil), row.Payload...),
+		SourceEventID: sourceID,
+		At:            row.Timestamp,
+	}, true
+}
+
+func historyKind(rowType, payloadType string) string {
+	switch payloadType {
+	case "message":
+		return "message"
+	case "reasoning", "reasoning_item":
+		return "reasoning"
+	case "function_call", "mcp_call", "local_shell_call", "code_interpreter_call", "file_search_call", "web_search_call", "computer_call":
+		return "tool.call"
+	case "function_call_output", "mcp_call_output", "local_shell_call_output", "code_interpreter_call_output", "file_search_call_output", "web_search_call_output", "computer_call_output":
+		return "tool.output"
+	case "mcp_approval_request":
+		return "approval.requested"
+	case "mcp_approval_response":
+		return "approval.resolved"
+	}
+	switch rowType {
+	case "session_meta":
+		return "session.meta"
+	case "turn_context":
+		return "session.context"
+	case "response_item":
+		if payloadType != "" {
+			return payloadType
+		}
+	case "event_msg", "event":
+		if payloadType != "" {
+			return payloadType
+		}
+	}
+	return ""
+}
+
+func historyText(kind string, payload map[string]any, max int) string {
+	switch kind {
+	case "message":
+		return truncateText(messageTextFromAny(payload["content"]), max)
+	case "tool.call":
+		return truncateText(firstNonEmpty(stringFromAny(payload["name"]), stringFromAny(payload["tool_name"]), stringFromAny(payload["command"])), max)
+	case "tool.output":
+		return truncateText(firstNonEmpty(stringFromAny(payload["output"]), stringFromAny(payload["result"]), stringFromAny(payload["error"])), max)
+	case "approval.requested":
+		return truncateText(firstNonEmpty(stringFromAny(payload["name"]), stringFromAny(payload["action"])), max)
+	default:
+		return truncateText(firstNonEmpty(stringFromAny(payload["text"]), stringFromAny(payload["summary"]), stringFromAny(payload["status"])), max)
+	}
+}
+
+func messageTextFromAny(value any) string {
+	items, ok := value.([]any)
+	if !ok {
+		return stringFromAny(value)
+	}
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		object, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if text := stringFromAny(object["text"]); text != "" {
+			parts = append(parts, text)
+			continue
+		}
+		if text := stringFromAny(object["content"]); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func stringFromAny(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		return ""
+	}
 }
 
 func newJSONLScanner(r io.Reader) *bufio.Scanner {

@@ -28,6 +28,7 @@ type IndexRepository interface {
 	MarkIndexDeleted(context.Context, string, protocol.DeletedIndex) error
 	SaveHistoryChunk(context.Context, string, protocol.HistoryChunk) error
 	SaveHistoryMessages(context.Context, string, protocol.HistoryMessages) error
+	SaveHistoryItems(context.Context, string, protocol.HistoryItems) error
 	SaveSyncCursor(context.Context, string, protocol.SyncCursor) error
 	HistoryMessages(context.Context, string, string) ([]protocol.HistoryMessage, error)
 	UpsertRuntimeSession(context.Context, string, protocol.RuntimeSession) error

@@ -161,6 +161,25 @@ type HistoryMessages struct {
 	Messages  []HistoryMessage `json:"messages"`
 }
 
+type HistoryItem struct {
+	SessionID     string          `json:"session_id"`
+	Index         int             `json:"index"`
+	Role          string          `json:"role,omitempty"`
+	Kind          string          `json:"kind"`
+	Text          string          `json:"text,omitempty"`
+	Payload       json.RawMessage `json:"payload,omitempty"`
+	Source        string          `json:"source,omitempty"`
+	SourceEventID string          `json:"source_event_id,omitempty"`
+	At            time.Time       `json:"at,omitempty"`
+}
+
+type HistoryItems struct {
+	SessionID string        `json:"session_id"`
+	Cursor    string        `json:"cursor,omitempty"`
+	Reset     bool          `json:"reset,omitempty"`
+	Items     []HistoryItem `json:"items"`
+}
+
 type HistoryChunkAck struct {
 	SessionID string    `json:"session_id"`
 	Index     int       `json:"index"`
