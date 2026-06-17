@@ -1,0 +1,41 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ov_computeruse
+      POSTGRES_USER: ov
+      POSTGRES_PASSWORD: ov_dev_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:8-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+
+  server:
+    image: ghcr.io/<owner>/<repo>/server:dev
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "8080:8080"
+    environment:
+      OV_SERVER_ADDR: :8080
+      OV_SERVER_PUBLIC_URL: https://server.example.com
+      OV_SERVER_POSTGRES_URL: postgres://ov:ov_dev_password@postgres:5432/ov_computeruse?sslmode=disable
+      OV_SERVER_REDIS_URL: redis://redis:6379/0
+      OV_SERVER_KEY_ID: dev-key
+      OV_SERVER_PRIVATE_KEY_FILE: /run/secrets/server_private_key.pem
+      OV_SERVER_DASH_TOKEN: change-me
+    secrets:
+      - server_private_key.pem
+
+secrets:
+  server_private_key.pem:
+    file: ./server_private_key.pem
+
+volumes:
+  postgres-data:
+  redis-data:
