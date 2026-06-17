@@ -10,6 +10,10 @@ type Sink interface {
 	Emit(context.Context, protocol.RunEvent) error
 }
 
+type ApprovalWaiter interface {
+	AwaitApproval(context.Context, protocol.ApprovalRequest) (protocol.ApprovalDecision, error)
+}
+
 type Runtime interface {
 	NewSession(context.Context, protocol.Command, Sink) error
 	Resume(context.Context, protocol.Command, Sink) error

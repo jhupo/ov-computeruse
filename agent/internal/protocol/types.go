@@ -179,6 +179,27 @@ type Ack struct {
 	At        time.Time `json:"at"`
 }
 
+type ApprovalRequest struct {
+	ID          string          `json:"id"`
+	RunID       string          `json:"run_id,omitempty"`
+	ProjectID   string          `json:"project_id,omitempty"`
+	SessionID   string          `json:"session_id,omitempty"`
+	Category    string          `json:"category,omitempty"`
+	Action      string          `json:"action,omitempty"`
+	RiskLevel   string          `json:"risk_level,omitempty"`
+	Description string          `json:"description,omitempty"`
+	Payload     json.RawMessage `json:"payload,omitempty"`
+	At          time.Time       `json:"at,omitempty"`
+}
+
+type ApprovalDecision struct {
+	ApprovalID string    `json:"approval_id"`
+	Decision   string    `json:"decision"`
+	Reason     string    `json:"reason,omitempty"`
+	DecidedBy  string    `json:"decided_by,omitempty"`
+	DecidedAt  time.Time `json:"decided_at"`
+}
+
 type Heartbeat struct {
 	AgentID      string    `json:"agent_id"`
 	DeviceID     string    `json:"device_id"`

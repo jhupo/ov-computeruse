@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	openai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -34,6 +35,13 @@ type Adapter struct {
 type promptPayload struct {
 	Prompt string `json:"prompt"`
 	Text   string `json:"text"`
+}
+
+type streamResult struct {
+	ResponseID string
+	ResumeMode string
+	Approval   *protocol.ApprovalRequest
+	Failed     error
 }
 
 func New(cfg Config) *Adapter {
@@ -78,61 +86,164 @@ func (a *Adapter) send(ctx context.Context, command protocol.Command, sink runti
 		}
 		input = withHistory
 	}
-	params := responses.ResponseNewParams{
-		Model: openai.ResponsesModel(model),
-		Input: responses.ResponseNewParamsInputUnion{
-			OfString: openai.String(input),
-		},
-		Store: openai.Bool(true),
-	}
 	resumeMode := "new"
+	previousResponseID := ""
 	if includeHistory {
 		resumeMode = "history_context"
-		if previousResponseID, ok := a.previousResponseID(ctx, command); ok {
-			params.PreviousResponseID = openai.String(previousResponseID)
+		if responseID, ok := a.previousResponseID(ctx, command); ok {
+			previousResponseID = responseID
 			input = prompt
-			params.Input = responses.ResponseNewParamsInputUnion{OfString: openai.String(input)}
 			resumeMode = "previous_response_id"
 		}
 	}
+	nextInput := responses.ResponseNewParamsInputUnion{OfString: openai.String(input)}
+	for {
+		params := responses.ResponseNewParams{
+			Model: openai.ResponsesModel(model),
+			Input: nextInput,
+			Store: openai.Bool(true),
+		}
+		if previousResponseID != "" {
+			params.PreviousResponseID = openai.String(previousResponseID)
+		}
+		result, err := a.streamOnce(ctx, client, params, command, sink, resumeMode)
+		if err != nil {
+			return err
+		}
+		if result.ResponseID != "" {
+			previousResponseID = result.ResponseID
+		}
+		if result.Approval == nil {
+			return result.Failed
+		}
+		waiter, ok := sink.(runtime.ApprovalWaiter)
+		if !ok {
+			return errors.New("runtime sink does not support approvals")
+		}
+		decision, err := waiter.AwaitApproval(ctx, *result.Approval)
+		if err != nil {
+			return err
+		}
+		approved := decision.Decision == "approved" || decision.Decision == "approve" || decision.Decision == "accepted"
+		approvalResponse := responses.ResponseInputItemParamOfMcpApprovalResponse(result.Approval.ID, approved)
+		if approvalResponse.OfMcpApprovalResponse != nil {
+			approvalResponse.OfMcpApprovalResponse.Reason = openai.String(decision.Reason)
+		}
+		nextInput = responses.ResponseNewParamsInputUnion{OfInputItemList: responses.ResponseInputParam{approvalResponse}}
+		resumeMode = "approval_response"
+	}
+}
+
+func (a *Adapter) streamOnce(ctx context.Context, client openai.Client, params responses.ResponseNewParams, command protocol.Command, sink runtime.Sink, resumeMode string) (streamResult, error) {
 	stream := client.Responses.NewStreaming(ctx, params)
 	defer stream.Close()
+	result := streamResult{ResumeMode: resumeMode}
 
 	for stream.Next() {
 		event := stream.Current()
 		switch variant := event.AsAny().(type) {
 		case responses.ResponseCreatedEvent:
+			result.ResponseID = variant.Response.ID
 			if err := a.emitRuntimeSession(ctx, sink, command, "session.created", variant.Response.ID, resumeMode); err != nil {
-				return err
+				return result, err
+			}
+			if err := emit(ctx, sink, command, "run.status", map[string]string{"status": "response.created", "response_id": variant.Response.ID}); err != nil {
+				return result, err
+			}
+		case responses.ResponseQueuedEvent:
+			result.ResponseID = variant.Response.ID
+			if err := emit(ctx, sink, command, "run.status", map[string]string{"status": "response.queued", "response_id": variant.Response.ID}); err != nil {
+				return result, err
+			}
+		case responses.ResponseInProgressEvent:
+			result.ResponseID = variant.Response.ID
+			if err := emit(ctx, sink, command, "run.status", map[string]string{"status": "response.in_progress", "response_id": variant.Response.ID}); err != nil {
+				return result, err
 			}
 		case responses.ResponseTextDeltaEvent:
 			if variant.Delta != "" {
 				if err := emit(ctx, sink, command, "assistant.message.delta", map[string]string{"text": variant.Delta}); err != nil {
-					return err
+					return result, err
 				}
 			}
 		case responses.ResponseTextDoneEvent:
 			if err := emit(ctx, sink, command, "assistant.message.done", map[string]string{"text": variant.Text}); err != nil {
-				return err
+				return result, err
+			}
+		case responses.ResponseOutputItemAddedEvent:
+			if err := emitOutputItem(ctx, sink, command, "tool.call.started", variant.Item); err != nil {
+				return result, err
+			}
+		case responses.ResponseOutputItemDoneEvent:
+			approval, err := emitOutputItemDone(ctx, sink, command, variant.Item)
+			if err != nil {
+				return result, err
+			}
+			if approval != nil {
+				result.Approval = approval
+			}
+		case responses.ResponseFunctionCallArgumentsDeltaEvent:
+			if err := emit(ctx, sink, command, "tool.call.delta", map[string]any{"tool_call_id": variant.ItemID, "output_index": variant.OutputIndex, "delta": variant.Delta}); err != nil {
+				return result, err
+			}
+		case responses.ResponseFunctionCallArgumentsDoneEvent:
+			if err := emit(ctx, sink, command, "tool.call.done", map[string]any{"tool_call_id": variant.ItemID, "output_index": variant.OutputIndex, "arguments": variant.Arguments}); err != nil {
+				return result, err
+			}
+		case responses.ResponseMcpCallArgumentsDeltaEvent:
+			if err := emit(ctx, sink, command, "tool.call.delta", map[string]any{"tool_call_id": variant.ItemID, "output_index": variant.OutputIndex, "delta": variant.Delta}); err != nil {
+				return result, err
+			}
+		case responses.ResponseMcpCallArgumentsDoneEvent:
+			if err := emit(ctx, sink, command, "tool.call.done", map[string]any{"tool_call_id": variant.ItemID, "output_index": variant.OutputIndex, "arguments": variant.Arguments}); err != nil {
+				return result, err
+			}
+		case responses.ResponseMcpCallInProgressEvent:
+			if err := emit(ctx, sink, command, "tool.call.started", map[string]any{"tool_call_id": variant.ItemID, "output_index": variant.OutputIndex, "type": "mcp_call", "status": "in_progress"}); err != nil {
+				return result, err
+			}
+		case responses.ResponseMcpCallCompletedEvent:
+			if err := emit(ctx, sink, command, "tool.output", map[string]any{"tool_call_id": variant.ItemID, "output_index": variant.OutputIndex, "type": "mcp_call", "status": "completed"}); err != nil {
+				return result, err
+			}
+		case responses.ResponseMcpCallFailedEvent:
+			if err := emit(ctx, sink, command, "tool.output", map[string]any{"tool_call_id": variant.ItemID, "output_index": variant.OutputIndex, "type": "mcp_call", "status": "failed"}); err != nil {
+				return result, err
 			}
 		case responses.ResponseCompletedEvent:
+			result.ResponseID = variant.Response.ID
 			if err := a.emitRuntimeSession(ctx, sink, command, "session.updated", variant.Response.ID, resumeMode); err != nil {
-				return err
+				return result, err
+			}
+			if err := emitUsage(ctx, sink, command, variant.Response); err != nil {
+				return result, err
 			}
 			if err := emit(ctx, sink, command, "run.status", map[string]string{"status": "response.completed", "response_id": variant.Response.ID}); err != nil {
-				return err
+				return result, err
+			}
+		case responses.ResponseFailedEvent:
+			result.ResponseID = variant.Response.ID
+			result.Failed = errors.New(adapterFirstNonEmpty(variant.Response.Error.Message, "response failed"))
+			if err := emit(ctx, sink, command, "run.failed", map[string]string{"status": "response.failed", "response_id": variant.Response.ID, "error": result.Failed.Error()}); err != nil {
+				return result, err
+			}
+		case responses.ResponseIncompleteEvent:
+			result.ResponseID = variant.Response.ID
+			result.Failed = errors.New("response incomplete")
+			if err := emit(ctx, sink, command, "run.failed", map[string]string{"status": "response.incomplete", "response_id": variant.Response.ID}); err != nil {
+				return result, err
 			}
 		case responses.ResponseErrorEvent:
-			return errors.New(variant.Message)
+			return result, errors.New(variant.Message)
 		default:
 			if raw := event.RawJSON(); raw != "" {
-				if err := emit(ctx, sink, command, "tool.output", map[string]string{"raw": raw}); err != nil {
-					return err
+				if err := emit(ctx, sink, command, "run.status", map[string]string{"status": "response.event", "raw": raw}); err != nil {
+					return result, err
 				}
 			}
 		}
 	}
-	return stream.Err()
+	return result, stream.Err()
 }
 
 func (a *Adapter) previousResponseID(ctx context.Context, command protocol.Command) (string, bool) {
@@ -174,6 +285,102 @@ func (a *Adapter) emitRuntimeSession(ctx context.Context, sink runtime.Sink, com
 		})
 	}
 	return emit(ctx, sink, command, kind, runtimeSession)
+}
+
+func emitOutputItem(ctx context.Context, sink runtime.Sink, command protocol.Command, kind string, item responses.ResponseOutputItemUnion) error {
+	payload := outputItemPayload(item)
+	if payload == nil {
+		if raw := item.RawJSON(); raw != "" {
+			payload = map[string]any{"raw": raw}
+		}
+	}
+	if payload == nil {
+		return nil
+	}
+	return emit(ctx, sink, command, kind, payload)
+}
+
+func emitOutputItemDone(ctx context.Context, sink runtime.Sink, command protocol.Command, item responses.ResponseOutputItemUnion) (*protocol.ApprovalRequest, error) {
+	switch variant := item.AsAny().(type) {
+	case responses.ResponseOutputItemMcpApprovalRequest:
+		request := protocol.ApprovalRequest{
+			ID:          variant.ID,
+			RunID:       command.RunID,
+			ProjectID:   command.ProjectID,
+			SessionID:   command.SessionID,
+			Category:    "mcp_tool",
+			Action:      strings.Trim(variant.ServerLabel+"."+variant.Name, "."),
+			RiskLevel:   "medium",
+			Description: "MCP tool requires approval",
+			Payload:     protocol.Raw(outputItemPayload(item)),
+			At:          time.Now().UTC(),
+		}
+		return &request, nil
+	default:
+		if err := emitOutputItem(ctx, sink, command, doneKindForOutputItem(item), item); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+}
+
+func doneKindForOutputItem(item responses.ResponseOutputItemUnion) string {
+	switch item.AsAny().(type) {
+	case responses.ResponseFunctionToolCall, responses.ResponseOutputItemMcpCall, responses.ResponseCodeInterpreterToolCall, responses.ResponseFileSearchToolCall, responses.ResponseOutputItemLocalShellCall:
+		return "tool.call.done"
+	default:
+		return "tool.output"
+	}
+}
+
+func outputItemPayload(item responses.ResponseOutputItemUnion) map[string]any {
+	switch variant := item.AsAny().(type) {
+	case responses.ResponseFunctionToolCall:
+		return map[string]any{"id": variant.ID, "tool_call_id": variant.CallID, "call_id": variant.CallID, "type": "function_call", "name": variant.Name, "arguments": variant.Arguments, "status": variant.Status, "raw": rawJSON(item)}
+	case responses.ResponseOutputItemMcpCall:
+		return map[string]any{"id": variant.ID, "tool_call_id": variant.ID, "type": "mcp_call", "name": variant.Name, "server_label": variant.ServerLabel, "arguments": variant.Arguments, "output": variant.Output, "error": variant.Error, "status": item.Status, "raw": rawJSON(item)}
+	case responses.ResponseOutputItemMcpApprovalRequest:
+		return map[string]any{"id": variant.ID, "approval_id": variant.ID, "tool_call_id": variant.ID, "type": "mcp_approval_request", "name": variant.Name, "server_label": variant.ServerLabel, "arguments": variant.Arguments, "status": "pending", "raw": rawJSON(item)}
+	case responses.ResponseCodeInterpreterToolCall:
+		return map[string]any{"id": variant.ID, "tool_call_id": variant.ID, "type": "code_interpreter_call", "name": "code_interpreter", "arguments": map[string]any{"code": variant.Code, "container_id": variant.ContainerID}, "output": variant.Outputs, "status": variant.Status, "raw": rawJSON(item)}
+	case responses.ResponseFileSearchToolCall:
+		return map[string]any{"id": variant.ID, "tool_call_id": variant.ID, "type": "file_search_call", "name": "file_search", "arguments": map[string]any{"queries": variant.Queries}, "output": variant.Results, "status": variant.Status, "raw": rawJSON(item)}
+	case responses.ResponseOutputItemLocalShellCall:
+		return map[string]any{"id": variant.ID, "tool_call_id": variant.CallID, "call_id": variant.CallID, "type": "local_shell_call", "name": "local_shell", "arguments": variant.Action, "status": variant.Status, "raw": rawJSON(item)}
+	case responses.ResponseOutputItemMcpListTools:
+		return map[string]any{"id": variant.ID, "tool_call_id": variant.ID, "type": "mcp_list_tools", "name": "mcp.list_tools", "server_label": variant.ServerLabel, "output": variant.Tools, "status": "completed", "raw": rawJSON(item)}
+	default:
+		return nil
+	}
+}
+
+func emitUsage(ctx context.Context, sink runtime.Sink, command protocol.Command, response responses.Response) error {
+	return emit(ctx, sink, command, "usage", map[string]any{
+		"response_id":      response.ID,
+		"model":            string(response.Model),
+		"input_tokens":     response.Usage.InputTokens,
+		"output_tokens":    response.Usage.OutputTokens,
+		"total_tokens":     response.Usage.TotalTokens,
+		"cached_tokens":    response.Usage.InputTokensDetails.CachedTokens,
+		"reasoning_tokens": response.Usage.OutputTokensDetails.ReasoningTokens,
+	})
+}
+
+func rawJSON(item responses.ResponseOutputItemUnion) json.RawMessage {
+	raw := item.RawJSON()
+	if raw == "" {
+		return nil
+	}
+	return json.RawMessage(raw)
+}
+
+func adapterFirstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (a *Adapter) promptWithHistory(ctx context.Context, command protocol.Command, prompt string) (string, error) {

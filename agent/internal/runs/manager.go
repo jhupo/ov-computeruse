@@ -15,15 +15,17 @@ var (
 	ErrRunAlreadyActive = errors.New("run already active")
 	ErrRunNotFound      = errors.New("run not found")
 	ErrRunIDRequired    = errors.New("run id required")
+	ErrApprovalNotFound = errors.New("approval request not found")
 )
 
 type State string
 
 const (
-	StateIdle     State = "idle"
-	StateStarting State = "starting"
-	StateRunning  State = "running"
-	StateStopping State = "stopping"
+	StateIdle             State = "idle"
+	StateStarting         State = "starting"
+	StateRunning          State = "running"
+	StateAwaitingApproval State = "awaiting_approval"
+	StateStopping         State = "stopping"
 )
 
 type EventSink interface {
@@ -42,9 +44,10 @@ type Manager struct {
 }
 
 type activeRun struct {
-	command protocol.Command
-	cancel  context.CancelFunc
-	state   State
+	command   protocol.Command
+	cancel    context.CancelFunc
+	state     State
+	approvals map[string]chan protocol.ApprovalDecision
 }
 
 func NewManager(rt runtime.Runtime, sink EventSink, logger *slog.Logger) *Manager {
@@ -157,11 +160,85 @@ func (m *Manager) start(ctx context.Context, command protocol.Command) protocol.
 		cancel()
 		return m.remember(protocol.Ack{CommandID: command.CommandID, RunID: command.RunID, Status: "duplicate", Message: "run already active", At: time.Now().UTC()})
 	}
-	m.active[command.RunID] = &activeRun{command: command, cancel: cancel, state: StateStarting}
+	m.active[command.RunID] = &activeRun{command: command, cancel: cancel, state: StateStarting, approvals: map[string]chan protocol.ApprovalDecision{}}
 	m.mu.Unlock()
 
 	go m.execute(runCtx, command)
 	return m.remember(protocol.Ack{CommandID: command.CommandID, RunID: command.RunID, Status: "ok", Message: "run accepted", At: time.Now().UTC()})
+}
+
+func (m *Manager) AwaitApproval(ctx context.Context, request protocol.ApprovalRequest) (protocol.ApprovalDecision, error) {
+	if request.ID == "" {
+		request.ID = protocol.NewID("apr")
+	}
+	if request.At.IsZero() {
+		request.At = time.Now().UTC()
+	}
+	ch := make(chan protocol.ApprovalDecision, 1)
+	m.mu.Lock()
+	run := m.active[request.RunID]
+	if run == nil {
+		m.mu.Unlock()
+		return protocol.ApprovalDecision{}, ErrRunNotFound
+	}
+	run.state = StateAwaitingApproval
+	run.approvals[request.ID] = ch
+	m.mu.Unlock()
+
+	_ = m.Emit(ctx, protocol.RunEvent{
+		RunID:     request.RunID,
+		ProjectID: request.ProjectID,
+		SessionID: request.SessionID,
+		Kind:      "run.awaiting_approval",
+		Payload:   protocol.Raw(map[string]string{"approval_id": request.ID}),
+	})
+	_ = m.Emit(ctx, protocol.RunEvent{
+		RunID:     request.RunID,
+		ProjectID: request.ProjectID,
+		SessionID: request.SessionID,
+		Kind:      "approval.requested",
+		Payload:   protocol.Raw(request),
+	})
+
+	select {
+	case decision := <-ch:
+		m.mu.Lock()
+		if run := m.active[request.RunID]; run != nil {
+			delete(run.approvals, request.ID)
+			if run.state == StateAwaitingApproval {
+				run.state = StateRunning
+			}
+		}
+		m.mu.Unlock()
+		return decision, nil
+	case <-ctx.Done():
+		m.mu.Lock()
+		if run := m.active[request.RunID]; run != nil {
+			delete(run.approvals, request.ID)
+			if run.state == StateAwaitingApproval {
+				run.state = StateRunning
+			}
+		}
+		m.mu.Unlock()
+		return protocol.ApprovalDecision{}, ctx.Err()
+	}
+}
+
+func (m *Manager) DecideApproval(ctx context.Context, decision protocol.ApprovalDecision) protocol.Ack {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, run := range m.active {
+		ch := run.approvals[decision.ApprovalID]
+		if ch == nil {
+			continue
+		}
+		select {
+		case ch <- decision:
+		default:
+		}
+		return protocol.Ack{RunID: run.command.RunID, Status: "ok", Message: "approval decision accepted", At: time.Now().UTC()}
+	}
+	return protocol.Ack{Status: "rejected", Message: ErrApprovalNotFound.Error(), At: time.Now().UTC()}
 }
 
 func (m *Manager) stop(ctx context.Context, command protocol.Command) protocol.Ack {

@@ -141,7 +141,7 @@ func (c *Client) register(ctx context.Context) error {
 			SupportsHistory:   true,
 			SupportsTerminal:  false,
 			SupportsGit:       false,
-			Features:          []string{"codex.scan", "run.events", "runtime.session", "command.new_session", "command.resume", "command.send", "command.stop", "command.refresh_index"},
+			Features:          []string{"codex.scan", "run.events", "runtime.session", "approval.decision", "command.new_session", "command.resume", "command.send", "command.stop", "command.refresh_index"},
 			MaxConcurrentRuns: 1,
 		},
 	}
@@ -356,6 +356,15 @@ func (c *Client) readLoop(ctx context.Context, conn Conn) error {
 			_ = c.send(ctx, "ack", ack)
 		case "command.refresh_index":
 			_ = c.uploadIndex(ctx)
+		case "approval.decision":
+			decision, err := protocol.Decode[protocol.ApprovalDecision](env.Data)
+			if err != nil {
+				_ = c.send(ctx, "ack", protocol.Ack{MessageID: env.MessageID, Status: "rejected", Message: err.Error(), At: time.Now().UTC()})
+				continue
+			}
+			ack := c.manager.DecideApproval(ctx, decision)
+			ack.MessageID = env.MessageID
+			_ = c.send(ctx, "ack", ack)
 		case "history.chunk.ack":
 			if c.state == nil {
 				continue
