@@ -37,6 +37,10 @@ func (s *Server) handleDashCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_command", err.Error())
 		return
 	}
+	if err := s.validateCommandTargets(r.Context(), req.AgentID, req.Command); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_command_target", err.Error())
+		return
+	}
 	if req.Command.CommandID == "" {
 		req.Command.CommandID = protocol.NewID("cmd")
 	}
@@ -116,6 +120,10 @@ func (s *Server) handleDashCommandRetry(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusConflict, "command_not_retryable", "command is not in a retryable state")
 		return
 	}
+	if err := s.validateCommandTargets(r.Context(), agentID, record.ToProtocol()); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_command_target", err.Error())
+		return
+	}
 	deadlineAt := time.Now().UTC().Add(10 * time.Minute)
 	expiresAt := deadlineAt.Add(50 * time.Minute)
 	if err := s.store.PrepareCommandRetry(r.Context(), agentID, commandID, deadlineAt, expiresAt); err != nil {
@@ -167,14 +175,14 @@ func validateCommand(command protocol.Command) error {
 	kind := strings.TrimPrefix(command.Kind, "command.")
 	switch kind {
 	case "new_session":
-		if len(command.Payload) == 0 {
+		if !hasPromptPayload(command.Payload) {
 			return errors.New("payload.prompt is required for new_session")
 		}
 	case "resume", "send":
 		if strings.TrimSpace(command.SessionID) == "" {
 			return errors.New("session_id is required for resume/send")
 		}
-		if len(command.Payload) == 0 {
+		if !hasPromptPayload(command.Payload) {
 			return errors.New("payload.prompt is required for resume/send")
 		}
 	case "stop":
@@ -186,6 +194,63 @@ func validateCommand(command protocol.Command) error {
 		return errors.New("unsupported command kind")
 	}
 	return nil
+}
+
+func (s *Server) validateCommandTargets(ctx context.Context, agentID string, command protocol.Command) error {
+	kind := strings.TrimPrefix(command.Kind, "command.")
+	if strings.TrimSpace(command.ProjectID) != "" {
+		exists, err := s.store.ProjectExists(ctx, agentID, strings.TrimSpace(command.ProjectID))
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return errors.New("project_id does not belong to this agent")
+		}
+	}
+	switch kind {
+	case "resume", "send":
+		exists, err := s.store.SessionExists(ctx, agentID, strings.TrimSpace(command.SessionID))
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return errors.New("session_id does not belong to this agent")
+		}
+	case "stop":
+		if strings.TrimSpace(command.RunID) != "" {
+			exists, err := s.store.RunExists(ctx, agentID, strings.TrimSpace(command.RunID))
+			if err != nil {
+				return err
+			}
+			if !exists {
+				return errors.New("run_id does not belong to this agent")
+			}
+		}
+		if strings.TrimSpace(command.SessionID) != "" {
+			exists, err := s.store.SessionExists(ctx, agentID, strings.TrimSpace(command.SessionID))
+			if err != nil {
+				return err
+			}
+			if !exists {
+				return errors.New("session_id does not belong to this agent")
+			}
+		}
+	}
+	return nil
+}
+
+func hasPromptPayload(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var payload struct {
+		Prompt string `json:"prompt"`
+		Text   string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return false
+	}
+	return strings.TrimSpace(payload.Prompt) != "" || strings.TrimSpace(payload.Text) != ""
 }
 
 func commandRetryable(status string) bool {

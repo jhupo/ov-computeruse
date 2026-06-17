@@ -37,6 +37,24 @@ func (s *Store) SaveSessions(ctx context.Context, agentID string, sessions []pro
 	return nil
 }
 
+func (s *Store) ProjectExists(ctx context.Context, agentID, projectID string) (bool, error) {
+	if projectID == "" {
+		return false, nil
+	}
+	var exists bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE agent_id=$1 AND id=$2 AND deleted_at IS NULL)`, agentID, projectID).Scan(&exists)
+	return exists, err
+}
+
+func (s *Store) SessionExists(ctx context.Context, agentID, sessionID string) (bool, error) {
+	if sessionID == "" {
+		return false, nil
+	}
+	var exists bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM codex_sessions WHERE agent_id=$1 AND id=$2 AND deleted_at IS NULL)`, agentID, sessionID).Scan(&exists)
+	return exists, err
+}
+
 func (s *Store) MarkIndexDeleted(ctx context.Context, agentID string, deleted protocol.DeletedIndex) error {
 	for _, project := range deleted.Projects {
 		if project.ID == "" {

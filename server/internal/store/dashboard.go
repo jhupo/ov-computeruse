@@ -303,6 +303,15 @@ func (s *Store) ListRuns(ctx context.Context, agentID, sessionID string, limit i
 	return out, rows.Err()
 }
 
+func (s *Store) RunExists(ctx context.Context, agentID, runID string) (bool, error) {
+	if runID == "" {
+		return false, nil
+	}
+	var exists bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM runs WHERE agent_id=$1 AND id=$2)`, agentID, runID).Scan(&exists)
+	return exists, err
+}
+
 func (s *Store) ListCommands(ctx context.Context, agentID, status string, limit int) ([]CommandRecord, error) {
 	if limit <= 0 || limit > 300 {
 		limit = 100

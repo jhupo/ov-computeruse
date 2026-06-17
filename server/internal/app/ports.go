@@ -25,6 +25,8 @@ type IndexRepository interface {
 	SaveRoots(context.Context, string, []protocol.Root) error
 	SaveProjects(context.Context, string, []protocol.Project) error
 	SaveSessions(context.Context, string, []protocol.Session) error
+	ProjectExists(context.Context, string, string) (bool, error)
+	SessionExists(context.Context, string, string) (bool, error)
 	MarkIndexDeleted(context.Context, string, protocol.DeletedIndex) error
 	SaveHistoryChunk(context.Context, string, protocol.HistoryChunk) error
 	SaveHistoryMessages(context.Context, string, protocol.HistoryMessages) error
@@ -55,6 +57,7 @@ type DashboardRepository interface {
 	ListProjects(context.Context, string) ([]store.ProjectSummary, error)
 	ListSessions(context.Context, string, string, int) ([]store.SessionSummary, error)
 	ListRuns(context.Context, string, string, int) ([]store.RunSummary, error)
+	RunExists(context.Context, string, string) (bool, error)
 	ListRunEvents(context.Context, string, string, uint64, int) ([]store.RunEventRecord, error)
 	ListHistoryItems(context.Context, string, string, int, int) ([]store.HistoryItem, error)
 	ListRunMessages(context.Context, string, string) ([]store.RunMessage, error)
