@@ -54,6 +54,9 @@ func (s *Store) SaveHistoryMessages(ctx context.Context, agentID string, batch p
 		if err != nil {
 			return err
 		}
+		if err := s.projectHistoryMessage(ctx, agentID, message); err != nil {
+			return err
+		}
 	}
 	return nil
 }

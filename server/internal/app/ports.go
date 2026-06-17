@@ -44,6 +44,10 @@ type DashboardRepository interface {
 	ListSessions(context.Context, string, string, int) ([]store.SessionSummary, error)
 	ListRuns(context.Context, string, string, int) ([]store.RunSummary, error)
 	ListRunEvents(context.Context, string, string, uint64, int) ([]store.RunEventRecord, error)
+	ListHistoryItems(context.Context, string, string, int, int) ([]store.HistoryItem, error)
+	ListRunMessages(context.Context, string, string) ([]store.RunMessage, error)
+	ListRunSteps(context.Context, string, string) ([]store.RunStep, error)
+	ListToolCalls(context.Context, string, string) ([]store.ToolCall, error)
 	ListRuntimeSessions(context.Context, string, string) ([]protocol.RuntimeSession, error)
 	SaveApprovalRequest(context.Context, string, protocol.ApprovalRequest) error
 	ListApprovals(context.Context, string, bool, string, int) ([]store.ApprovalSummary, error)

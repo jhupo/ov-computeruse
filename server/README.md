@@ -32,7 +32,9 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 - `GET /api/dash/sessions?agent_id=...&project_id=...`: list Codex sessions for an agent or project.
 - `GET /api/dash/runs?agent_id=...&session_id=...`: list persisted runs.
 - `GET /api/dash/runs/events?agent_id=...&run_id=...&after_seq=...`: replay run events for dash refresh/resume.
+- `GET /api/dash/runs/timeline?agent_id=...&run_id=...`: load projected run timeline, messages, and tool calls.
 - `GET /api/dash/runtime-sessions?agent_id=...&session_id=...`: list runtime/native session mappings.
+- `GET /api/dash/history/items?agent_id=...&session_id=...`: load projected history items for a Codex session.
 - `GET /api/dash/approvals?status=pending`: list approval requests.
 - `POST /api/dash/approvals/{approval_id}/decision`: approve or reject a pending request and forward the decision to the agent.
 - `GET /ws/dash`: dash websocket, bearer token is a dash session token or internal admin token.
