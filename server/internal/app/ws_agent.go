@@ -64,7 +64,9 @@ func (s *Server) agentReader(r *http.Request, agent *AgentConn) {
 
 func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env protocol.Envelope) {
 	ctx := r.Context()
-	s.hub.BroadcastDash(agent.UserID, protocol.Raw(env))
+	if env.Type != "history.chunk" {
+		s.hub.BroadcastDash(agent.UserID, protocol.Raw(env))
+	}
 	switch env.Type {
 	case "agent.register":
 		_ = s.store.TouchAgent(ctx, agent.AgentID)

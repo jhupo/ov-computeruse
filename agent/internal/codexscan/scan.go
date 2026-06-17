@@ -1,6 +1,7 @@
 package codexscan
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -68,12 +69,20 @@ type Project struct {
 
 type Session struct {
 	ID            string    `json:"id"`
+	IDSource      string    `json:"id_source,omitempty"`
 	ProjectID     string    `json:"project_id,omitempty"`
 	Title         string    `json:"title,omitempty"`
 	Path          string    `json:"path"`
+	CWD           string    `json:"cwd,omitempty"`
 	UpdatedAt     time.Time `json:"updated_at,omitempty"`
 	Size          int64     `json:"size,omitempty"`
 	ContentSHA256 string    `json:"content_sha256,omitempty"`
+}
+
+type SessionMessage struct {
+	Role string
+	Text string
+	At   time.Time
 }
 
 func NewScanner(codexHome string) Scanner {
@@ -189,6 +198,7 @@ func (s Scanner) Scan(ctx context.Context) (Result, error) {
 		if !exists {
 			continue
 		}
+		sessionTitles := readSessionIndex(filepath.Join(root, "session_index.jsonl"))
 
 		err = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 			if err != nil {
@@ -237,7 +247,11 @@ func (s Scanner) Scan(ctx context.Context) (Result, error) {
 			case "project":
 				result.Projects = append(result.Projects, projectFromFile(root, path, info))
 			case "session", "history":
-				result.Sessions = append(result.Sessions, sessionFromFile(path, info, maxBytes))
+				session := sessionFromFile(path, info, maxBytes, sessionTitles)
+				result.Sessions = append(result.Sessions, session)
+				if session.CWD != "" {
+					result.Projects = append(result.Projects, projectFromCWD(root, session.CWD, session.UpdatedAt))
+				}
 			}
 			return nil
 		})
@@ -502,18 +516,228 @@ func projectFromFile(root, path string, info os.FileInfo) Project {
 	}
 }
 
-func sessionFromFile(path string, info os.FileInfo, maxBytes int64) Session {
+func sessionFromFile(path string, info os.FileInfo, maxBytes int64, titles map[string]string) Session {
 	contentHash := ""
 	if maxBytes <= 0 || info.Size() <= maxBytes {
 		contentHash = fileHash(path)
 	}
+	meta := readSessionMeta(path)
+	id := meta.ID
+	idSource := "codex_session_meta"
+	if id == "" {
+		id = sessionIDFromFilename(path)
+		idSource = "filename"
+	}
+	if id == "" {
+		id = stableID(path)
+		idSource = "path_hash"
+	}
+	title := titles[id]
+	if title == "" {
+		title = firstSessionUserText(path, 96)
+	}
+	if title == "" {
+		title = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	}
+	projectID := ""
+	if meta.CWD != "" {
+		projectID = stableID(meta.CWD)
+	}
 	return Session{
-		ID:            stableID(path),
-		Title:         strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
+		ID:            id,
+		IDSource:      idSource,
+		ProjectID:     projectID,
+		Title:         title,
 		Path:          path,
+		CWD:           meta.CWD,
 		UpdatedAt:     info.ModTime().UTC(),
 		Size:          info.Size(),
 		ContentSHA256: contentHash,
+	}
+}
+
+type sessionMeta struct {
+	ID  string
+	CWD string
+}
+
+func readSessionMeta(path string) sessionMeta {
+	file, err := os.Open(path)
+	if err != nil {
+		return sessionMeta{}
+	}
+	defer file.Close()
+	scanner := newJSONLScanner(io.LimitReader(file, 512<<10))
+	for scanner.Scan() {
+		var raw struct {
+			Type    string `json:"type"`
+			Payload struct {
+				ID  string `json:"id"`
+				CWD string `json:"cwd"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
+			continue
+		}
+		if raw.Type == "session_meta" {
+			return sessionMeta{ID: strings.TrimSpace(raw.Payload.ID), CWD: cleanExistingPath(raw.Payload.CWD)}
+		}
+	}
+	return sessionMeta{}
+}
+
+func readSessionIndex(path string) map[string]string {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	titles := map[string]string{}
+	scanner := newJSONLScanner(file)
+	for scanner.Scan() {
+		var row struct {
+			ID         string `json:"id"`
+			ThreadName string `json:"thread_name"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
+			continue
+		}
+		if row.ID != "" && row.ThreadName != "" {
+			titles[row.ID] = row.ThreadName
+		}
+	}
+	return titles
+}
+
+func firstSessionUserText(path string, max int) string {
+	messages, _ := ReadSessionMessages(context.Background(), path, 16, max*8)
+	for _, message := range messages {
+		if message.Role == "user" && message.Text != "" && !looksLikeContextBlock(message.Text) {
+			return truncateText(message.Text, max)
+		}
+	}
+	return ""
+}
+
+func ReadSessionMessages(ctx context.Context, path string, maxMessages int, maxBytes int) ([]SessionMessage, error) {
+	if maxMessages <= 0 {
+		maxMessages = 24
+	}
+	if maxBytes <= 0 {
+		maxBytes = 24 << 10
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	scanner := newJSONLScanner(file)
+	messages := make([]SessionMessage, 0, maxMessages)
+	total := 0
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return messages, ctx.Err()
+		default:
+		}
+		var row struct {
+			Timestamp time.Time `json:"timestamp"`
+			Type      string    `json:"type"`
+			Payload   struct {
+				Type    string `json:"type"`
+				Role    string `json:"role"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
+			continue
+		}
+		if row.Type != "response_item" || row.Payload.Type != "message" {
+			continue
+		}
+		role := strings.TrimSpace(row.Payload.Role)
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		text := messageText(row.Payload.Content)
+		if text == "" {
+			continue
+		}
+		if role == "user" && looksLikeContextBlock(text) {
+			continue
+		}
+		text = truncateText(text, maxBytes)
+		total += len(text)
+		messages = append(messages, SessionMessage{Role: role, Text: text, At: row.Timestamp})
+		for len(messages) > maxMessages || total > maxBytes {
+			total -= len(messages[0].Text)
+			messages = messages[1:]
+		}
+	}
+	return messages, nil
+}
+
+func newJSONLScanner(r io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64<<10), 8<<20)
+	return scanner
+}
+
+func messageText(content []struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}) string {
+	var parts []string
+	for _, item := range content {
+		if item.Text != "" {
+			parts = append(parts, item.Text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func sessionIDFromFilename(path string) string {
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	for i := 0; i+36 <= len(base); i++ {
+		candidate := base[i : i+36]
+		if isUUIDLike(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func isUUIDLike(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for i, r := range value {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func projectFromCWD(root, cwd string, updatedAt time.Time) Project {
+	return Project{
+		ID:           stableID(cwd),
+		Name:         filepath.Base(cwd),
+		Path:         cwd,
+		Root:         root,
+		LastActiveAt: updatedAt,
+		HasAgentsMD:  fileExists(filepath.Join(cwd, "AGENTS.md")),
+		GitBranch:    readGitBranch(cwd),
 	}
 }
 
@@ -563,6 +787,33 @@ func readGitBranch(path string) string {
 
 func stableID(value string) string {
 	return bytesHash([]byte(strings.ToLower(filepath.Clean(value))))[:16]
+}
+
+func cleanExistingPath(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(path)
+}
+
+func truncateText(text string, max int) string {
+	text = strings.TrimSpace(text)
+	if max <= 0 || text == "" {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= max {
+		return text
+	}
+	return string(runes[:max])
+}
+
+func looksLikeContextBlock(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return strings.HasPrefix(trimmed, "<") || strings.HasPrefix(trimmed, "# AGENTS.md instructions") || strings.HasPrefix(trimmed, "# Codex desktop context") || strings.HasPrefix(trimmed, "The following is the Codex agent history")
 }
 
 func shouldSkipDir(root, path, name string, includeHidden bool) bool {

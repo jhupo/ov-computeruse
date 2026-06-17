@@ -85,9 +85,11 @@ type ProjectIndex struct {
 
 type Session struct {
 	ID            string    `json:"id"`
+	IDSource      string    `json:"id_source,omitempty"`
 	ProjectID     string    `json:"project_id,omitempty"`
 	Title         string    `json:"title,omitempty"`
 	Path          string    `json:"path"`
+	CWD           string    `json:"cwd,omitempty"`
 	UpdatedAt     time.Time `json:"updated_at,omitempty"`
 	Size          int64     `json:"size,omitempty"`
 	ContentSHA256 string    `json:"content_sha256,omitempty"`

@@ -28,7 +28,7 @@ func (s *Store) SaveProjects(ctx context.Context, agentID string, projects []pro
 
 func (s *Store) SaveSessions(ctx context.Context, agentID string, sessions []protocol.Session) error {
 	for _, session := range sessions {
-		_, err := s.pool.Exec(ctx, `INSERT INTO codex_sessions (agent_id, id, project_id, title, path, updated_at, size_bytes, content_sha256, indexed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now()) ON CONFLICT (agent_id, id) DO UPDATE SET project_id=EXCLUDED.project_id, title=EXCLUDED.title, path=EXCLUDED.path, updated_at=EXCLUDED.updated_at, size_bytes=EXCLUDED.size_bytes, content_sha256=EXCLUDED.content_sha256, indexed_at=now()`, agentID, session.ID, session.ProjectID, session.Title, session.Path, session.UpdatedAt, session.Size, session.ContentSHA256)
+		_, err := s.pool.Exec(ctx, `INSERT INTO codex_sessions (agent_id, id, id_source, project_id, title, path, cwd, updated_at, size_bytes, content_sha256, indexed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now()) ON CONFLICT (agent_id, id) DO UPDATE SET id_source=EXCLUDED.id_source, project_id=EXCLUDED.project_id, title=EXCLUDED.title, path=EXCLUDED.path, cwd=EXCLUDED.cwd, updated_at=EXCLUDED.updated_at, size_bytes=EXCLUDED.size_bytes, content_sha256=EXCLUDED.content_sha256, indexed_at=now()`, agentID, session.ID, session.IDSource, session.ProjectID, session.Title, session.Path, session.CWD, session.UpdatedAt, session.Size, session.ContentSHA256)
 		if err != nil {
 			return err
 		}

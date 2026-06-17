@@ -160,6 +160,7 @@ func runAgent(args []string) {
 	fs.Var((*stringList)(&cfg.ScanRoots), "scan-root", "local Codex root to scan; repeatable")
 	fs.Int64Var(&cfg.ScanMaxBytes, "scan-max-bytes", cfg.ScanMaxBytes, "maximum file size considered by scanner")
 	fs.BoolVar(&cfg.DisableScan, "disable-scan", cfg.DisableScan, "disable local Codex scan")
+	fs.BoolVar(&cfg.UploadHistory, "upload-history", cfg.UploadHistory, "upload raw Codex history chunks to server")
 	fs.BoolVar(&cfg.AllowSensitive, "allow-sensitive", cfg.AllowSensitive, "include paths that match sensitive-file filters")
 	_ = fs.Parse(args)
 	config.ApplyDerivedPaths(&cfg, explicitPathOverrides(fs))
@@ -198,12 +199,13 @@ func runAgent(args []string) {
 			BaseURL: credential.BaseURL,
 			APIKey:  credential.APIKey,
 			Model:   credential.Model,
+			Scanner: scanner,
 		})
 	} else {
 		logger.Warn("codex credential not found; runtime is noop", "error", err)
 	}
 	manager := runs.NewManager(rt, nil, logger)
-	client := transport.NewClient(identity, manager, scanner, deviceProfile, state, cfg.DisableScan, logger)
+	client := transport.NewClient(identity, manager, scanner, deviceProfile, state, cfg.DisableScan, cfg.UploadHistory, logger)
 	fatalIf(logger, client.Run(ctx))
 }
 

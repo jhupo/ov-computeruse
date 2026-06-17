@@ -19,33 +19,35 @@ import (
 )
 
 type Client struct {
-	identity securestore.Identity
-	manager  *runs.Manager
-	scanner  codexscan.Scanner
-	device   device.Info
-	state    *localstate.Store
-	noScan   bool
-	logger   *slog.Logger
-	dialer   Dialer
+	identity      securestore.Identity
+	manager       *runs.Manager
+	scanner       codexscan.Scanner
+	device        device.Info
+	state         *localstate.Store
+	noScan        bool
+	uploadHistory bool
+	logger        *slog.Logger
+	dialer        Dialer
 
 	mu   sync.Mutex
 	conn Conn
 	seq  uint64
 }
 
-func NewClient(identity securestore.Identity, manager *runs.Manager, scanner codexscan.Scanner, deviceInfo device.Info, state *localstate.Store, noScan bool, logger *slog.Logger) *Client {
+func NewClient(identity securestore.Identity, manager *runs.Manager, scanner codexscan.Scanner, deviceInfo device.Info, state *localstate.Store, noScan bool, uploadHistory bool, logger *slog.Logger) *Client {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Client{
-		identity: identity,
-		manager:  manager,
-		scanner:  scanner,
-		device:   deviceInfo,
-		state:    state,
-		noScan:   noScan,
-		logger:   logger,
-		dialer:   WebSocketDialer{},
+		identity:      identity,
+		manager:       manager,
+		scanner:       scanner,
+		device:        deviceInfo,
+		state:         state,
+		noScan:        noScan,
+		uploadHistory: uploadHistory,
+		logger:        logger,
+		dialer:        WebSocketDialer{},
 	}
 }
 
@@ -139,9 +141,12 @@ func (c *Client) register(ctx context.Context) error {
 			SupportsHistory:   true,
 			SupportsTerminal:  true,
 			SupportsGit:       true,
-			Features:          []string{"codex.scan", "history.upload", "run.events", "command.stop"},
+			Features:          []string{"codex.scan", "run.events", "command.new_session", "command.resume", "command.send", "command.stop"},
 			MaxConcurrentRuns: 1,
 		},
+	}
+	if c.uploadHistory {
+		register.Capabilities.Features = append(register.Capabilities.Features, "history.upload")
 	}
 	return c.send(ctx, "agent.register", register)
 }
@@ -192,9 +197,11 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 	for _, session := range result.Sessions {
 		sessions = append(sessions, protocol.Session{
 			ID:            session.ID,
+			IDSource:      session.IDSource,
 			ProjectID:     session.ProjectID,
 			Title:         session.Title,
 			Path:          session.Path,
+			CWD:           session.CWD,
 			UpdatedAt:     session.UpdatedAt,
 			Size:          session.Size,
 			ContentSHA256: session.ContentSHA256,
@@ -202,6 +209,15 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 	}
 	if err := c.send(ctx, "index.sessions", protocol.SessionIndex{Sessions: sessions}); err != nil {
 		return err
+	}
+	if !c.uploadHistory {
+		return c.send(ctx, "index.updated", map[string]any{
+			"roots":          len(roots),
+			"projects":       len(projects),
+			"sessions":       len(sessions),
+			"history_upload": false,
+			"at":             time.Now().UTC(),
+		})
 	}
 	for _, session := range result.Sessions {
 		err := c.scanner.ForEachHistoryChunk(ctx, session, 64<<10, func(chunk codexscan.HistoryChunk) error {

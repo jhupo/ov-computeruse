@@ -30,6 +30,7 @@ type Config struct {
 	ScanTimeout     time.Duration
 	DeviceSalt      string
 	DisableScan     bool
+	UploadHistory   bool
 	AllowSensitive  bool
 }
 
@@ -74,6 +75,7 @@ func Load(opts Options) (Config, error) {
 	fs.DurationVar(&cfg.ScanTimeout, "scan-timeout", cfg.ScanTimeout, "scanner timeout")
 	fs.StringVar(&cfg.DeviceSalt, "device-salt", cfg.DeviceSalt, "local salt for device hashes")
 	fs.BoolVar(&cfg.DisableScan, "disable-scan", cfg.DisableScan, "disable local Codex scan")
+	fs.BoolVar(&cfg.UploadHistory, "upload-history", cfg.UploadHistory, "upload raw Codex history chunks to server")
 	fs.BoolVar(&cfg.AllowSensitive, "allow-sensitive", cfg.AllowSensitive, "include paths that match sensitive-file filters")
 
 	if len(opts.Args) > 0 {
@@ -223,6 +225,9 @@ func applyEnv(cfg *Config, lookup func(string) (string, bool), explicit map[stri
 	}
 	if value, ok := lookup(envKey("DISABLE_SCAN")); ok {
 		cfg.DisableScan = parseBool(value)
+	}
+	if value, ok := lookup(envKey("UPLOAD_HISTORY")); ok {
+		cfg.UploadHistory = parseBool(value)
 	}
 	if value, ok := lookup(envKey("ALLOW_SENSITIVE")); ok {
 		cfg.AllowSensitive = parseBool(value)

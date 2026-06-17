@@ -225,10 +225,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_projects_path ON projects(path)`,
 		`CREATE TABLE IF NOT EXISTS sessions (
 			id TEXT PRIMARY KEY,
+			id_source TEXT,
 			root_path TEXT,
 			project_id TEXT,
 			title TEXT,
 			path TEXT NOT NULL,
+			cwd TEXT,
 			updated_at_remote TEXT,
 			size INTEGER NOT NULL,
 			content_sha256 TEXT,
@@ -238,6 +240,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id)`,
+		`ALTER TABLE sessions ADD COLUMN id_source TEXT`,
+		`ALTER TABLE sessions ADD COLUMN cwd TEXT`,
 		`CREATE TABLE IF NOT EXISTS history_chunks (
 			session_id TEXT NOT NULL,
 			chunk_index INTEGER NOT NULL,
@@ -261,6 +265,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column name") {
+				continue
+			}
 			return err
 		}
 	}
@@ -322,19 +329,21 @@ func upsertProjects(ctx context.Context, tx txLike, projects []codexscan.Project
 func upsertSessions(ctx context.Context, tx txLike, sessions []codexscan.Session) error {
 	for _, session := range sessions {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO sessions(id, project_id, title, path, updated_at_remote, size, content_sha256, fingerprint, updated_at)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO sessions(id, id_source, project_id, title, path, cwd, updated_at_remote, size, content_sha256, fingerprint, updated_at)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
+				id_source = excluded.id_source,
 				project_id = excluded.project_id,
 				title = excluded.title,
 				path = excluded.path,
+				cwd = excluded.cwd,
 				updated_at_remote = excluded.updated_at_remote,
 				size = excluded.size,
 				content_sha256 = excluded.content_sha256,
 				fingerprint = excluded.fingerprint,
 				deleted_at = NULL,
 				updated_at = excluded.updated_at
-		`, session.ID, session.ProjectID, session.Title, session.Path, timeString(session.UpdatedAt), session.Size, session.ContentSHA256, fingerprint(session), now()); err != nil {
+		`, session.ID, session.IDSource, session.ProjectID, session.Title, session.Path, session.CWD, timeString(session.UpdatedAt), session.Size, session.ContentSHA256, fingerprint(session), now()); err != nil {
 			return err
 		}
 	}

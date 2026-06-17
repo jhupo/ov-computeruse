@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -28,6 +29,10 @@ func (s *Server) handleDashCommand(w http.ResponseWriter, r *http.Request) {
 	req.Command.Kind = strings.TrimSpace(req.Command.Kind)
 	if req.AgentID == "" || req.Command.Kind == "" {
 		writeError(w, http.StatusBadRequest, "missing_command_fields", "agent_id and command.kind are required")
+		return
+	}
+	if err := validateCommand(req.Command); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_command", err.Error())
 		return
 	}
 	identity, err := s.store.AgentByID(r.Context(), req.AgentID)
@@ -59,4 +64,28 @@ func (s *Server) handleDashCommand(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.InfoContext(r.Context(), "command dispatched", "agent_id", req.AgentID, "user_id", identity.UserID, "command_id", req.Command.CommandID, "kind", req.Command.Kind)
 	writeJSON(w, http.StatusAccepted, map[string]string{"command_id": req.Command.CommandID})
+}
+
+func validateCommand(command protocol.Command) error {
+	kind := strings.TrimPrefix(command.Kind, "command.")
+	switch kind {
+	case "new_session":
+		if len(command.Payload) == 0 {
+			return errors.New("payload.prompt is required for new_session")
+		}
+	case "resume", "send":
+		if strings.TrimSpace(command.SessionID) == "" {
+			return errors.New("session_id is required for resume/send")
+		}
+		if len(command.Payload) == 0 {
+			return errors.New("payload.prompt is required for resume/send")
+		}
+	case "stop":
+		if strings.TrimSpace(command.RunID) == "" && strings.TrimSpace(command.SessionID) == "" {
+			return errors.New("run_id or session_id is required for stop")
+		}
+	default:
+		return errors.New("unsupported command kind")
+	}
+	return nil
 }
