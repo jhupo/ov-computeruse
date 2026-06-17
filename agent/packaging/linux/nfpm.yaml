@@ -1,0 +1,28 @@
+name: ov-agent
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: default
+priority: optional
+maintainer: ov-computeruse
+description: Cross-platform local Codex executor for ov-computeruse.
+homepage: https://github.com/Amber-Chiang/ov-computeruse
+license: MIT
+
+contents:
+  - src: ./dist/ov-agent-linux-${ARCH}
+    dst: /usr/local/bin/ov-agent
+    file_info:
+      mode: 0755
+  - src: ./packaging/unix/install.sh
+    dst: /usr/local/share/ov-computeruse/agent/install.sh
+    file_info:
+      mode: 0755
+  - src: ./packaging/linux/ov-computeruse-agent.service
+    dst: /usr/lib/systemd/user/ov-computeruse-agent.service
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: ./packaging/linux/postinstall.sh
+  preremove: ./packaging/linux/preremove.sh

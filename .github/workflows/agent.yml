@@ -1,0 +1,264 @@
+name: agent
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "agent-v*"
+
+permissions:
+  contents: write
+
+env:
+  BUILD_VERSION: ${{ github.ref_name }}@${{ github.sha }}
+  FALLBACK_PACKAGE_VERSION: 0.0.${{ github.run_number }}
+
+jobs:
+  build-raw:
+    name: raw-${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+            ext: .exe
+            archive: zip
+          - goos: darwin
+            goarch: arm64
+            ext: ""
+            archive: tar.gz
+          - goos: darwin
+            goarch: amd64
+            ext: ""
+            archive: tar.gz
+          - goos: linux
+            goarch: amd64
+            ext: ""
+            archive: tar.gz
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: agent/go.sum
+
+      - name: Validate server injection
+        env:
+          OV_SERVER_URL: ${{ secrets.OV_SERVER_URL }}
+          OV_SERVER_KEY_ID: ${{ secrets.OV_SERVER_KEY_ID }}
+          OV_SERVER_PUBLIC_KEY_B64: ${{ secrets.OV_SERVER_PUBLIC_KEY_B64 }}
+          OV_SERVER_PUBLIC_KEY_FINGERPRINT: ${{ secrets.OV_SERVER_PUBLIC_KEY_FINGERPRINT }}
+        run: |
+          test -n "$OV_SERVER_URL"
+          test -n "$OV_SERVER_KEY_ID"
+          test -n "$OV_SERVER_PUBLIC_KEY_B64"
+          test -n "$OV_SERVER_PUBLIC_KEY_FINGERPRINT"
+
+      - name: Resolve package version
+        run: |
+          version="${GITHUB_REF_NAME#agent-v}"
+          if [ "$version" = "$GITHUB_REF_NAME" ]; then
+            version="$FALLBACK_PACKAGE_VERSION"
+          fi
+          echo "PACKAGE_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Test agent
+        working-directory: agent
+        run: go test ./...
+
+      - name: Build agent
+        working-directory: agent
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          OV_SERVER_URL: ${{ secrets.OV_SERVER_URL }}
+          OV_SERVER_KEY_ID: ${{ secrets.OV_SERVER_KEY_ID }}
+          OV_SERVER_PUBLIC_KEY_B64: ${{ secrets.OV_SERVER_PUBLIC_KEY_B64 }}
+          OV_SERVER_PUBLIC_KEY_FINGERPRINT: ${{ secrets.OV_SERVER_PUBLIC_KEY_FINGERPRINT }}
+        run: |
+          mkdir -p dist
+          go build \
+            -ldflags "-s -w \
+              -X 'ov-computeruse/agent/internal/buildinfo.Version=${BUILD_VERSION}' \
+              -X 'ov-computeruse/agent/internal/buildinfo.ServerURL=${OV_SERVER_URL}' \
+              -X 'ov-computeruse/agent/internal/buildinfo.ServerKeyID=${OV_SERVER_KEY_ID}' \
+              -X 'ov-computeruse/agent/internal/buildinfo.ServerPublicKeyBase64=${OV_SERVER_PUBLIC_KEY_B64}' \
+              -X 'ov-computeruse/agent/internal/buildinfo.ServerPublicKeyFingerprint=${OV_SERVER_PUBLIC_KEY_FINGERPRINT}'" \
+            -o "dist/ov-agent-${GOOS}-${GOARCH}${{ matrix.ext }}" \
+            ./cmd/agent
+          if [ "${GOOS}" = "windows" ]; then
+            cp packaging/windows/install.ps1 dist/install.ps1
+          else
+            cp packaging/unix/install.sh dist/install.sh
+            chmod +x dist/install.sh
+          fi
+
+      - name: Package archive
+        working-directory: agent/dist
+        run: |
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            zip "ov-agent-${{ matrix.goos }}-${{ matrix.goarch }}.zip" "ov-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}" install.ps1
+          else
+            tar -czf "ov-agent-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" "ov-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}" install.sh
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ov-agent-${{ matrix.goos }}-${{ matrix.goarch }}-raw
+          path: agent/dist/ov-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ov-agent-${{ matrix.goos }}-${{ matrix.goarch }}-archive
+          path: agent/dist/ov-agent-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.archive }}
+
+  package-windows:
+    name: installer-windows-amd64
+    runs-on: windows-latest
+    needs: build-raw
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ov-agent-windows-amd64-raw
+          path: agent/dist
+
+      - name: Resolve package version
+        shell: pwsh
+        run: |
+          $version = "${env:GITHUB_REF_NAME}" -replace '^agent-v',''
+          if ($version -eq "${env:GITHUB_REF_NAME}") { $version = "${env:FALLBACK_PACKAGE_VERSION}" }
+          "PACKAGE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $env:OV_AGENT_VERSION = $env:PACKAGE_VERSION
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) {
+            $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          }
+          & $iscc "agent\packaging\windows\ov-agent.iss"
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          Rename-Item "agent\dist\ov-agent-setup.exe" "ov-agent-setup-windows-amd64.exe" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ov-agent-windows-amd64-installer
+          path: agent/dist/ov-agent-setup-windows-amd64.exe
+
+  package-macos:
+    name: pkg-darwin-${{ matrix.goarch }}
+    runs-on: macos-latest
+    needs: build-raw
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ov-agent-darwin-${{ matrix.goarch }}-raw
+          path: agent/dist
+
+      - name: Resolve package version
+        run: |
+          version="${GITHUB_REF_NAME#agent-v}"
+          if [ "$version" = "$GITHUB_REF_NAME" ]; then
+            version="$FALLBACK_PACKAGE_VERSION"
+          fi
+          echo "PACKAGE_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Build pkg
+        working-directory: agent
+        run: |
+          chmod +x packaging/macos/build-pkg.sh packaging/macos/postinstall
+          OV_AGENT_VERSION="$PACKAGE_VERSION" packaging/macos/build-pkg.sh "${{ matrix.goarch }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ov-agent-darwin-${{ matrix.goarch }}-pkg
+          path: agent/dist/ov-agent-darwin-${{ matrix.goarch }}.pkg
+
+  package-linux:
+    name: packages-linux-amd64
+    runs-on: ubuntu-latest
+    needs: build-raw
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ov-agent-linux-amd64-raw
+          path: agent/dist
+
+      - name: Resolve package version
+        run: |
+          version="${GITHUB_REF_NAME#agent-v}"
+          if [ "$version" = "$GITHUB_REF_NAME" ]; then
+            version="$FALLBACK_PACKAGE_VERSION"
+          fi
+          echo "PACKAGE_VERSION=$version" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: agent/go.sum
+
+      - name: Install nFPM
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+
+      - name: Build deb and rpm
+        working-directory: agent
+        env:
+          ARCH: amd64
+        run: |
+          export VERSION="$PACKAGE_VERSION"
+          nfpm pkg --packager deb --config packaging/linux/nfpm.yaml --target dist/ov-agent-linux-amd64.deb
+          nfpm pkg --packager rpm --config packaging/linux/nfpm.yaml --target dist/ov-agent-linux-amd64.rpm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ov-agent-linux-amd64-deb
+          path: agent/dist/ov-agent-linux-amd64.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ov-agent-linux-amd64-rpm
+          path: agent/dist/ov-agent-linux-amd64.rpm
+
+  release:
+    name: release-agent
+    runs-on: ubuntu-latest
+    needs:
+      - build-raw
+      - package-windows
+      - package-macos
+      - package-linux
+    if: startsWith(github.ref, 'refs/tags/agent-v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mapfile -t files < <(find dist -maxdepth 3 -type f | sort)
+          printf '%s\n' "${files[@]}"
+          gh release create "$GITHUB_REF_NAME" "${files[@]}" --title "$GITHUB_REF_NAME" --notes "ov-computeruse agent $GITHUB_REF_NAME"

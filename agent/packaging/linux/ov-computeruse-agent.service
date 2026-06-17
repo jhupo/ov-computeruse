@@ -1,0 +1,10 @@
+[Unit]
+Description=ov-computeruse agent
+
+[Service]
+ExecStart="/usr/local/bin/ov-agent" run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
