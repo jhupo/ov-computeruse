@@ -5,11 +5,14 @@ import (
 	"errors"
 	"log/slog"
 	"net/url"
+	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"ov-computeruse/agent/internal/codexscan"
+	"ov-computeruse/agent/internal/config"
 	"ov-computeruse/agent/internal/device"
 	"ov-computeruse/agent/internal/localstate"
 	"ov-computeruse/agent/internal/protocol"
@@ -23,9 +26,13 @@ type Client struct {
 	manager       *runs.Manager
 	scanner       codexscan.Scanner
 	device        device.Info
+	cfg           config.Config
 	state         *localstate.Store
 	noScan        bool
 	uploadHistory bool
+	startedAt     time.Time
+	lastScanAt    time.Time
+	lastScanErr   string
 	logger        *slog.Logger
 	dialer        Dialer
 
@@ -34,7 +41,7 @@ type Client struct {
 	seq  uint64
 }
 
-func NewClient(identity securestore.Identity, manager *runs.Manager, scanner codexscan.Scanner, deviceInfo device.Info, state *localstate.Store, noScan bool, uploadHistory bool, logger *slog.Logger) *Client {
+func NewClient(identity securestore.Identity, manager *runs.Manager, scanner codexscan.Scanner, deviceInfo device.Info, cfg config.Config, state *localstate.Store, noScan bool, uploadHistory bool, logger *slog.Logger) *Client {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -43,9 +50,11 @@ func NewClient(identity securestore.Identity, manager *runs.Manager, scanner cod
 		manager:       manager,
 		scanner:       scanner,
 		device:        deviceInfo,
+		cfg:           cfg,
 		state:         state,
 		noScan:        noScan,
 		uploadHistory: uploadHistory,
+		startedAt:     time.Now().UTC(),
 		logger:        logger,
 		dialer:        WebSocketDialer{},
 	}
@@ -128,6 +137,7 @@ func (c *Client) register(ctx context.Context) error {
 			Arch:         c.device.Arch,
 			UsernameHash: c.device.UsernameHash,
 			AgentVersion: c.device.AgentVersion,
+			InstallState: c.installState(""),
 		},
 		Credential: protocol.Credential{
 			BaseURLFingerprint: security.FingerprintSecret(strings.TrimRight(strings.ToLower(cred.BaseURL), "/")),
@@ -160,8 +170,10 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 	}
 	result, err := c.scanner.Scan(ctx)
 	if err != nil {
+		c.recordScan(time.Time{}, err)
 		return err
 	}
+	c.recordScan(time.Now().UTC(), nil)
 	if c.state != nil {
 		if err := c.state.SaveScanResult(ctx, result); err != nil {
 			return err
@@ -323,7 +335,107 @@ func (c *Client) heartbeat(ctx context.Context) error {
 		RunningRuns:  running,
 		LastEventSeq: lastSeq,
 		At:           time.Now().UTC(),
+		Health:       c.health(ctx),
 	})
+}
+
+func (c *Client) installState(lastError string) protocol.InstallState {
+	return protocol.InstallState{
+		Installed:          c.identity.AgentID != "",
+		ServiceRegistered:  envBool("OV_AGENT_SERVICE_REGISTERED"),
+		ServiceRunning:     envBool("OV_AGENT_SERVICE_RUNNING"),
+		AutostartEnabled:   envBool("OV_AGENT_AUTOSTART_ENABLED"),
+		PackageType:        firstNonEmpty(os.Getenv("OV_AGENT_PACKAGE_TYPE"), packageType()),
+		Channel:            os.Getenv("OV_AGENT_CHANNEL"),
+		ConfigDir:          c.cfg.ConfigDir,
+		DataDir:            c.cfg.DataDir,
+		StatePath:          c.cfg.StatePath,
+		StateDBPath:        c.cfg.StateDBPath,
+		LogDir:             c.cfg.LogDir,
+		CodexHome:          c.cfg.CodexHome,
+		LastStartAt:        c.startedAt,
+		LastInstallCheckAt: time.Now().UTC(),
+		LastError:          lastError,
+	}
+}
+
+func (c *Client) health(ctx context.Context) protocol.Health {
+	health := protocol.Health{Status: "ok"}
+	cred, err := c.scanner.Credential()
+	if err != nil {
+		health.Status = "degraded"
+		health.LastRuntimeError = err.Error()
+	} else {
+		health.CredentialOK = true
+		health.CredentialSource = cred.Source
+		health.BaseURLFingerprint = security.FingerprintSecret(strings.TrimRight(strings.ToLower(cred.BaseURL), "/"))
+		health.KeyFingerprint = cred.Fingerprint
+		health.Model = cred.Model
+	}
+	for _, root := range c.scanner.DiscoverRoots() {
+		health.CodexRoots++
+		if !root.Exists {
+			health.CodexRootsMissing++
+		}
+	}
+	if c.noScan {
+		health.Status = "scan_disabled"
+		return health
+	}
+	c.mu.Lock()
+	lastScanAt := c.lastScanAt
+	lastScanErr := c.lastScanErr
+	c.mu.Unlock()
+	health.LastScanAt = lastScanAt
+	if lastScanErr != "" {
+		health.Status = "degraded"
+		health.LastScanError = lastScanErr
+	}
+	return health
+}
+
+func (c *Client) recordScan(at time.Time, scanErr error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !at.IsZero() {
+		c.lastScanAt = at
+	}
+	if scanErr != nil {
+		c.lastScanErr = scanErr.Error()
+	} else {
+		c.lastScanErr = ""
+	}
+}
+
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "t", "true", "y", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func packageType() string {
+	switch runtime.GOOS {
+	case "windows":
+		return "inno"
+	case "darwin":
+		return "pkg"
+	case "linux":
+		return "deb_rpm"
+	default:
+		return runtime.GOOS
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (c *Client) readLoop(ctx context.Context, conn Conn) error {

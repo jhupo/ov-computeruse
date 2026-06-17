@@ -100,7 +100,12 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 	}
 	switch env.Type {
 	case "agent.register":
-		_ = s.store.TouchAgent(ctx, agent.AgentID)
+		register, err := protocol.Decode[protocol.AgentRegister](env.Data)
+		if err == nil {
+			_ = s.store.SaveAgentRegister(ctx, register)
+		} else {
+			_ = s.store.TouchAgent(ctx, agent.AgentID)
+		}
 	case "agent.heartbeat":
 		heartbeat, err := protocol.Decode[protocol.Heartbeat](env.Data)
 		if err == nil {

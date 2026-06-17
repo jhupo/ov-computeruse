@@ -14,17 +14,22 @@ import (
 )
 
 type AgentSummary struct {
-	ID          string          `json:"id"`
-	WorkspaceID string          `json:"workspace_id"`
-	UserID      string          `json:"user_id,omitempty"`
-	DeviceID    string          `json:"device_id"`
-	Hostname    string          `json:"hostname,omitempty"`
-	OS          string          `json:"os,omitempty"`
-	Arch        string          `json:"arch,omitempty"`
-	Version     string          `json:"version,omitempty"`
-	Status      string          `json:"status,omitempty"`
-	LastSeenAt  time.Time       `json:"last_seen_at,omitempty"`
-	Heartbeat   json.RawMessage `json:"heartbeat,omitempty"`
+	ID           string          `json:"id"`
+	WorkspaceID  string          `json:"workspace_id"`
+	UserID       string          `json:"user_id,omitempty"`
+	DeviceID     string          `json:"device_id"`
+	Hostname     string          `json:"hostname,omitempty"`
+	OS           string          `json:"os,omitempty"`
+	Arch         string          `json:"arch,omitempty"`
+	Version      string          `json:"version,omitempty"`
+	Status       string          `json:"status,omitempty"`
+	LastSeenAt   time.Time       `json:"last_seen_at,omitempty"`
+	Heartbeat    json.RawMessage `json:"heartbeat,omitempty"`
+	Capabilities json.RawMessage `json:"capabilities,omitempty"`
+	Credential   json.RawMessage `json:"credential,omitempty"`
+	InstallState json.RawMessage `json:"install_state,omitempty"`
+	RegisteredAt time.Time       `json:"registered_at,omitempty"`
+	Health       json.RawMessage `json:"health,omitempty"`
 }
 
 type ProjectSummary struct {
@@ -95,7 +100,7 @@ type ApprovalSummary struct {
 }
 
 func (s *Store) ListAgents(ctx context.Context, userID string, admin bool) ([]AgentSummary, error) {
-	query := `SELECT a.id, a.workspace_id, a.user_id, a.device_id, COALESCE(d.hostname, ''), COALESCE(d.os, ''), COALESCE(d.arch, ''), COALESCE(d.agent_version, ''), COALESCE(h.status, ''), COALESCE(a.last_seen_at, d.last_seen_at), h.payload
+	query := `SELECT a.id, a.workspace_id, a.user_id, a.device_id, COALESCE(d.hostname, ''), COALESCE(d.os, ''), COALESCE(d.arch, ''), COALESCE(d.agent_version, ''), COALESCE(h.status, ''), COALESCE(a.last_seen_at, d.last_seen_at), h.payload, a.capabilities, a.credential, d.install_state, a.registered_at
 		FROM agents a
 		JOIN devices d ON d.id = a.device_id
 		LEFT JOIN heartbeats h ON h.agent_id = a.id`
@@ -114,15 +119,35 @@ func (s *Store) ListAgents(ctx context.Context, userID string, admin bool) ([]Ag
 	for rows.Next() {
 		var item AgentSummary
 		var lastSeen sql.NullTime
+		var registeredAt sql.NullTime
 		var heartbeat []byte
-		if err := rows.Scan(&item.ID, &item.WorkspaceID, &item.UserID, &item.DeviceID, &item.Hostname, &item.OS, &item.Arch, &item.Version, &item.Status, &lastSeen, &heartbeat); err != nil {
+		var capabilities []byte
+		var credential []byte
+		var installState []byte
+		if err := rows.Scan(&item.ID, &item.WorkspaceID, &item.UserID, &item.DeviceID, &item.Hostname, &item.OS, &item.Arch, &item.Version, &item.Status, &lastSeen, &heartbeat, &capabilities, &credential, &installState, &registeredAt); err != nil {
 			return nil, err
 		}
 		if lastSeen.Valid {
 			item.LastSeenAt = lastSeen.Time
 		}
+		if registeredAt.Valid {
+			item.RegisteredAt = registeredAt.Time
+		}
 		if len(heartbeat) > 0 {
 			item.Heartbeat = append(json.RawMessage(nil), heartbeat...)
+			var hb protocol.Heartbeat
+			if json.Unmarshal(heartbeat, &hb) == nil && hb.Health.Status != "" {
+				item.Health = protocol.Raw(hb.Health)
+			}
+		}
+		if len(capabilities) > 0 {
+			item.Capabilities = append(json.RawMessage(nil), capabilities...)
+		}
+		if len(credential) > 0 {
+			item.Credential = append(json.RawMessage(nil), credential...)
+		}
+		if len(installState) > 0 {
+			item.InstallState = append(json.RawMessage(nil), installState...)
 		}
 		out = append(out, item)
 	}

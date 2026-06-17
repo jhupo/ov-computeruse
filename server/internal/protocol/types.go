@@ -24,13 +24,32 @@ type Envelope struct {
 }
 
 type DeviceInfo struct {
-	InstallID    string `json:"install_id"`
-	MachineHash  string `json:"machine_hash"`
-	Hostname     string `json:"hostname"`
-	OS           string `json:"os"`
-	Arch         string `json:"arch"`
-	UsernameHash string `json:"username_hash,omitempty"`
-	AgentVersion string `json:"agent_version"`
+	InstallID    string       `json:"install_id"`
+	MachineHash  string       `json:"machine_hash"`
+	Hostname     string       `json:"hostname"`
+	OS           string       `json:"os"`
+	Arch         string       `json:"arch"`
+	UsernameHash string       `json:"username_hash,omitempty"`
+	AgentVersion string       `json:"agent_version"`
+	InstallState InstallState `json:"install_state,omitempty"`
+}
+
+type InstallState struct {
+	Installed          bool      `json:"installed"`
+	ServiceRegistered  bool      `json:"service_registered"`
+	ServiceRunning     bool      `json:"service_running"`
+	AutostartEnabled   bool      `json:"autostart_enabled"`
+	PackageType        string    `json:"package_type,omitempty"`
+	Channel            string    `json:"channel,omitempty"`
+	ConfigDir          string    `json:"config_dir,omitempty"`
+	DataDir            string    `json:"data_dir,omitempty"`
+	StatePath          string    `json:"state_path,omitempty"`
+	StateDBPath        string    `json:"state_db_path,omitempty"`
+	LogDir             string    `json:"log_dir,omitempty"`
+	CodexHome          string    `json:"codex_home,omitempty"`
+	LastStartAt        time.Time `json:"last_start_at,omitempty"`
+	LastInstallCheckAt time.Time `json:"last_install_check_at,omitempty"`
+	LastError          string    `json:"last_error,omitempty"`
 }
 
 type Credential struct {
@@ -191,6 +210,21 @@ type Heartbeat struct {
 	RunningRuns  []string  `json:"running_runs"`
 	LastEventSeq uint64    `json:"last_event_seq"`
 	At           time.Time `json:"at"`
+	Health       Health    `json:"health,omitempty"`
+}
+
+type Health struct {
+	Status             string    `json:"status"`
+	CredentialOK       bool      `json:"credential_ok"`
+	CredentialSource   string    `json:"credential_source,omitempty"`
+	BaseURLFingerprint string    `json:"base_url_fingerprint,omitempty"`
+	KeyFingerprint     string    `json:"key_fingerprint,omitempty"`
+	Model              string    `json:"model,omitempty"`
+	CodexRoots         int       `json:"codex_roots"`
+	CodexRootsMissing  int       `json:"codex_roots_missing"`
+	LastScanAt         time.Time `json:"last_scan_at,omitempty"`
+	LastScanError      string    `json:"last_scan_error,omitempty"`
+	LastRuntimeError   string    `json:"last_runtime_error,omitempty"`
 }
 
 type HistoryChunkAck struct {

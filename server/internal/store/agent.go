@@ -5,6 +5,8 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
+
+	"ov-computeruse/server/internal/protocol"
 )
 
 func (s *Store) AgentBySecret(ctx context.Context, secret string) (AgentIdentity, error) {
@@ -23,6 +25,17 @@ func (s *Store) AgentByID(ctx context.Context, agentID string) (AgentIdentity, e
 		return AgentIdentity{}, errors.New("agent not found")
 	}
 	return identity, err
+}
+
+func (s *Store) SaveAgentRegister(ctx context.Context, register protocol.AgentRegister) error {
+	_, err := s.pool.Exec(ctx, `UPDATE devices SET hostname=$1, os=$2, arch=$3, username_hash=$4, agent_version=$5, install_state=$6, last_seen_at=now() WHERE id=$7`,
+		register.Device.Hostname, register.Device.OS, register.Device.Arch, register.Device.UsernameHash, register.Device.AgentVersion, jsonRaw(register.Device.InstallState), register.DeviceID)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `UPDATE agents SET protocol_version=$1, capabilities=$2, credential=$3, registered_at=now(), last_seen_at=now() WHERE id=$4`,
+		protocol.Version, jsonRaw(register.Capabilities), jsonRaw(register.Credential), register.AgentID)
+	return err
 }
 
 func (s *Store) TouchAgent(ctx context.Context, agentID string) error {

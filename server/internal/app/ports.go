@@ -10,6 +10,7 @@ import (
 type AgentRepository interface {
 	AgentBySecret(context.Context, string) (store.AgentIdentity, error)
 	AgentByID(context.Context, string) (store.AgentIdentity, error)
+	SaveAgentRegister(context.Context, protocol.AgentRegister) error
 	TouchAgent(context.Context, string) error
 }
 
