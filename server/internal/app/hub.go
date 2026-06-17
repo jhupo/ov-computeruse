@@ -11,6 +11,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
+
+	"ov-computeruse/server/internal/protocol"
 )
 
 type AgentConn struct {
@@ -21,6 +23,7 @@ type AgentConn struct {
 	Conn        *websocket.Conn
 	Send        chan []byte
 	ConnectedAt time.Time
+	Replay      *protocol.ReplayGuard
 }
 
 type DashConn struct {

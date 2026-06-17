@@ -484,6 +484,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 func (c *Client) readLoop(ctx context.Context, conn Conn) error {
+	replay := protocol.NewReplayGuard(10 * time.Minute)
 	for {
 		env, err := conn.ReadEnvelope(ctx)
 		if err != nil {
@@ -499,6 +500,10 @@ func (c *Client) readLoop(ctx context.Context, conn Conn) error {
 			continue
 		}
 		env = decrypted
+		if err := replay.Accept(env, time.Now().UTC()); err != nil {
+			_ = c.send(ctx, "ack", protocol.Ack{MessageID: env.MessageID, Status: "rejected", Message: err.Error(), At: time.Now().UTC()})
+			continue
+		}
 		switch env.Type {
 		case "command":
 			command, err := protocol.Decode[protocol.Command](env.Data)

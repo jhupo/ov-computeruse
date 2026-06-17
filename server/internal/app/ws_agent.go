@@ -33,7 +33,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	agent := &AgentConn{AgentID: identity.AgentID, UserID: identity.UserID, DeviceID: identity.DeviceID, Secret: identity.AgentSecret, Conn: conn, Send: make(chan []byte, 64), ConnectedAt: time.Now().UTC()}
+	agent := &AgentConn{AgentID: identity.AgentID, UserID: identity.UserID, DeviceID: identity.DeviceID, Secret: identity.AgentSecret, Conn: conn, Send: make(chan []byte, 64), ConnectedAt: time.Now().UTC(), Replay: protocol.NewReplayGuard(envelopeClockSkew * 2)}
 	conn.SetReadLimit(maxAgentEnvelopeBytes)
 	s.hub.AddAgent(r.Context(), agent)
 	_ = s.store.TouchAgent(r.Context(), identity.AgentID)
@@ -75,6 +75,10 @@ func (s *Server) agentReader(r *http.Request, agent *AgentConn) {
 		env = decrypted
 		if err := validateAgentEnvelope(agent, env); err != nil {
 			s.log.WarnContext(r.Context(), "invalid agent envelope", "agent_id", agent.AgentID, "type", env.Type, "error", err)
+			continue
+		}
+		if err := agent.Replay.Accept(env, time.Now().UTC()); err != nil {
+			s.log.WarnContext(r.Context(), "replayed agent envelope rejected", "agent_id", agent.AgentID, "type", env.Type, "message_id", env.MessageID, "error", err)
 			continue
 		}
 		s.handleAgentEnvelope(r, agent, env)
