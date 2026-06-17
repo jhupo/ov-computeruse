@@ -73,6 +73,7 @@ type Session struct {
 	ProjectID     string    `json:"project_id,omitempty"`
 	Title         string    `json:"title,omitempty"`
 	Path          string    `json:"path"`
+	Root          string    `json:"root,omitempty"`
 	CWD           string    `json:"cwd,omitempty"`
 	UpdatedAt     time.Time `json:"updated_at,omitempty"`
 	Size          int64     `json:"size,omitempty"`
@@ -248,6 +249,7 @@ func (s Scanner) Scan(ctx context.Context) (Result, error) {
 				result.Projects = append(result.Projects, projectFromFile(root, path, info))
 			case "session", "history":
 				session := sessionFromFile(path, info, maxBytes, sessionTitles)
+				session.Root = root
 				result.Sessions = append(result.Sessions, session)
 				if session.CWD != "" {
 					result.Projects = append(result.Projects, projectFromCWD(root, session.CWD, session.UpdatedAt))

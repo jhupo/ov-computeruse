@@ -174,8 +174,11 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 		return err
 	}
 	c.recordScan(time.Now().UTC(), nil)
+	var deleted localstate.DeletedIndex
 	if c.state != nil {
-		if err := c.state.SaveScanResult(ctx, result); err != nil {
+		var err error
+		deleted, err = c.state.SaveScanResult(ctx, result)
+		if err != nil {
 			return err
 		}
 	}
@@ -221,6 +224,14 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 	}
 	if err := c.send(ctx, "index.sessions", protocol.SessionIndex{Sessions: sessions}); err != nil {
 		return err
+	}
+	if len(deleted.Projects) > 0 || len(deleted.Sessions) > 0 {
+		if err := c.send(ctx, "index.deleted", protocol.DeletedIndex{
+			Projects: protocolDeletedRefs(deleted.Projects),
+			Sessions: protocolDeletedRefs(deleted.Sessions),
+		}); err != nil {
+			return err
+		}
 	}
 	for _, session := range result.Sessions {
 		if err := c.uploadHistoryMessages(ctx, session); err != nil {
@@ -278,6 +289,14 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 		"sessions": len(sessions),
 		"at":       time.Now().UTC(),
 	})
+}
+
+func protocolDeletedRefs(items []localstate.DeletedRef) []protocol.DeletedRef {
+	out := make([]protocol.DeletedRef, 0, len(items))
+	for _, item := range items {
+		out = append(out, protocol.DeletedRef{ID: item.ID, DeletedAt: item.DeletedAt})
+	}
+	return out
 }
 
 func (c *Client) uploadHistoryMessages(ctx context.Context, session codexscan.Session) error {

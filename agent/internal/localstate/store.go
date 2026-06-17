@@ -61,31 +61,39 @@ func (s *Store) SaveCodexRoots(ctx context.Context, roots []codexscan.Root) erro
 	return tx.Commit()
 }
 
-func (s *Store) SaveScanResult(ctx context.Context, result codexscan.Result) error {
+func (s *Store) SaveScanResult(ctx context.Context, result codexscan.Result) (DeletedIndex, error) {
 	if s == nil {
-		return nil
+		return DeletedIndex{}, nil
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return DeletedIndex{}, err
 	}
 	if err := upsertRoots(ctx, tx, result.Roots, true); err != nil {
 		_ = tx.Rollback()
-		return err
+		return DeletedIndex{}, err
 	}
 	if err := upsertProjects(ctx, tx, result.Projects); err != nil {
 		_ = tx.Rollback()
-		return err
+		return DeletedIndex{}, err
 	}
 	if err := upsertSessions(ctx, tx, result.Sessions); err != nil {
 		_ = tx.Rollback()
-		return err
+		return DeletedIndex{}, err
+	}
+	deleted, err := markMissingDeleted(ctx, tx, result)
+	if err != nil {
+		_ = tx.Rollback()
+		return DeletedIndex{}, err
 	}
 	if err := saveKV(ctx, tx, "last_scan_at", now()); err != nil {
 		_ = tx.Rollback()
-		return err
+		return DeletedIndex{}, err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return DeletedIndex{}, err
+	}
+	return deleted, nil
 }
 
 func (s *Store) SaveHistoryChunk(ctx context.Context, chunk codexscan.HistoryChunk) error {
@@ -243,6 +251,16 @@ type RuntimeSession struct {
 	LastRunID       string
 }
 
+type DeletedIndex struct {
+	Projects []DeletedRef
+	Sessions []DeletedRef
+}
+
+type DeletedRef struct {
+	ID        string
+	DeletedAt time.Time
+}
+
 func (s *Store) migrate(ctx context.Context) error {
 	stmts := []string{
 		`PRAGMA journal_mode = WAL`,
@@ -340,6 +358,11 @@ type txLike interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
+type queryTxLike interface {
+	txLike
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
 func upsertRoots(ctx context.Context, tx txLike, roots []codexscan.Root, scanned bool) error {
 	for _, root := range roots {
 		source := root.Source
@@ -391,10 +414,11 @@ func upsertProjects(ctx context.Context, tx txLike, projects []codexscan.Project
 func upsertSessions(ctx context.Context, tx txLike, sessions []codexscan.Session) error {
 	for _, session := range sessions {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO sessions(id, id_source, project_id, title, path, cwd, updated_at_remote, size, content_sha256, fingerprint, updated_at)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO sessions(id, id_source, root_path, project_id, title, path, cwd, updated_at_remote, size, content_sha256, fingerprint, updated_at)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				id_source = excluded.id_source,
+				root_path = excluded.root_path,
 				project_id = excluded.project_id,
 				title = excluded.title,
 				path = excluded.path,
@@ -405,11 +429,88 @@ func upsertSessions(ctx context.Context, tx txLike, sessions []codexscan.Session
 				fingerprint = excluded.fingerprint,
 				deleted_at = NULL,
 				updated_at = excluded.updated_at
-		`, session.ID, session.IDSource, session.ProjectID, session.Title, session.Path, session.CWD, timeString(session.UpdatedAt), session.Size, session.ContentSHA256, fingerprint(session), now()); err != nil {
+		`, session.ID, session.IDSource, session.Root, session.ProjectID, session.Title, session.Path, session.CWD, timeString(session.UpdatedAt), session.Size, session.ContentSHA256, fingerprint(session), now()); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func markMissingDeleted(ctx context.Context, tx queryTxLike, result codexscan.Result) (DeletedIndex, error) {
+	deletedAt := time.Now().UTC()
+	seenProjects := map[string]struct{}{}
+	for _, project := range result.Projects {
+		seenProjects[project.ID] = struct{}{}
+	}
+	seenSessions := map[string]struct{}{}
+	for _, session := range result.Sessions {
+		seenSessions[session.ID] = struct{}{}
+	}
+	scannedRoots := map[string]struct{}{}
+	for _, root := range result.Roots {
+		if root.Exists {
+			scannedRoots[root.Path] = struct{}{}
+		}
+	}
+
+	deletedProjects, err := missingIDs(ctx, tx, "projects", "root_path", seenProjects, scannedRoots)
+	if err != nil {
+		return DeletedIndex{}, err
+	}
+	deletedSessions, err := missingIDs(ctx, tx, "sessions", "root_path", seenSessions, scannedRoots)
+	if err != nil {
+		return DeletedIndex{}, err
+	}
+	for _, id := range deletedProjects {
+		if _, err := tx.ExecContext(ctx, `UPDATE projects SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`, deletedAt.Format(time.RFC3339Nano), now(), id); err != nil {
+			return DeletedIndex{}, err
+		}
+	}
+	for _, id := range deletedSessions {
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`, deletedAt.Format(time.RFC3339Nano), now(), id); err != nil {
+			return DeletedIndex{}, err
+		}
+	}
+	return DeletedIndex{
+		Projects: deletedRefs(deletedProjects, deletedAt),
+		Sessions: deletedRefs(deletedSessions, deletedAt),
+	}, nil
+}
+
+func missingIDs(ctx context.Context, tx queryTxLike, table, rootColumn string, seen, scannedRoots map[string]struct{}) ([]string, error) {
+	if len(scannedRoots) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id, `+rootColumn+` FROM `+table+` WHERE deleted_at IS NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var id string
+		var root sql.NullString
+		if err := rows.Scan(&id, &root); err != nil {
+			return nil, err
+		}
+		if root.Valid {
+			if _, scanned := scannedRoots[root.String]; !scanned {
+				continue
+			}
+		}
+		if _, ok := seen[id]; !ok {
+			out = append(out, id)
+		}
+	}
+	return out, rows.Err()
+}
+
+func deletedRefs(ids []string, deletedAt time.Time) []DeletedRef {
+	out := make([]DeletedRef, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, DeletedRef{ID: id, DeletedAt: deletedAt})
+	}
+	return out
 }
 
 func saveKV(ctx context.Context, tx txLike, key, value string) error {

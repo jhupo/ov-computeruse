@@ -119,6 +119,16 @@ type SessionIndex struct {
 	Sessions []Session `json:"sessions"`
 }
 
+type DeletedIndex struct {
+	Projects []DeletedRef `json:"projects,omitempty"`
+	Sessions []DeletedRef `json:"sessions,omitempty"`
+}
+
+type DeletedRef struct {
+	ID        string    `json:"id"`
+	DeletedAt time.Time `json:"deleted_at"`
+}
+
 type RuntimeSession struct {
 	ID              string    `json:"id,omitempty"`
 	Runtime         string    `json:"runtime"`

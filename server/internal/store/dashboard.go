@@ -200,7 +200,7 @@ func (s *Store) ListProjects(ctx context.Context, agentID string) ([]ProjectSumm
 	rows, err := s.pool.Query(ctx, `SELECT p.agent_id, p.id, COALESCE(p.name, ''), COALESCE(p.path, ''), p.last_active_at, p.has_agents_md, COALESCE(p.git_branch, ''), p.updated_at, COUNT(cs.id)
 		FROM projects p
 		LEFT JOIN codex_sessions cs ON cs.agent_id = p.agent_id AND cs.project_id = p.id
-		WHERE p.agent_id=$1
+		WHERE p.agent_id=$1 AND p.deleted_at IS NULL
 		GROUP BY p.agent_id, p.id, p.name, p.path, p.last_active_at, p.has_agents_md, p.git_branch, p.updated_at
 		ORDER BY COALESCE(p.last_active_at, p.updated_at) DESC`, agentID)
 	if err != nil {
@@ -229,7 +229,7 @@ func (s *Store) ListSessions(ctx context.Context, agentID, projectID string, lim
 	query := `SELECT cs.agent_id, cs.id, COALESCE(cs.id_source, ''), COALESCE(cs.project_id, ''), COALESCE(cs.title, ''), COALESCE(cs.path, ''), COALESCE(cs.cwd, ''), cs.updated_at, COALESCE(cs.size_bytes, 0), COALESCE(cs.content_sha256, ''), COUNT(hm.message_index), MAX(hm.message_at)
 		FROM codex_sessions cs
 		LEFT JOIN history_messages hm ON hm.agent_id = cs.agent_id AND hm.session_id = cs.id
-		WHERE cs.agent_id=$1`
+		WHERE cs.agent_id=$1 AND cs.deleted_at IS NULL`
 	args := []any{agentID}
 	if projectID != "" {
 		query += ` AND cs.project_id=$2`

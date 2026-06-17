@@ -19,7 +19,7 @@ func (s *Store) SaveRoots(ctx context.Context, agentID string, roots []protocol.
 
 func (s *Store) SaveProjects(ctx context.Context, agentID string, projects []protocol.Project) error {
 	for _, project := range projects {
-		_, err := s.pool.Exec(ctx, `INSERT INTO projects (agent_id, id, name, path, last_active_at, has_agents_md, git_branch, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,now()) ON CONFLICT (agent_id, id) DO UPDATE SET name=EXCLUDED.name, path=EXCLUDED.path, last_active_at=EXCLUDED.last_active_at, has_agents_md=EXCLUDED.has_agents_md, git_branch=EXCLUDED.git_branch, updated_at=now()`, agentID, project.ID, project.Name, project.Path, project.LastActiveAt, project.HasAgentsMD, project.GitBranch)
+		_, err := s.pool.Exec(ctx, `INSERT INTO projects (agent_id, id, name, path, last_active_at, has_agents_md, git_branch, deleted_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,now()) ON CONFLICT (agent_id, id) DO UPDATE SET name=EXCLUDED.name, path=EXCLUDED.path, last_active_at=EXCLUDED.last_active_at, has_agents_md=EXCLUDED.has_agents_md, git_branch=EXCLUDED.git_branch, deleted_at=NULL, updated_at=now()`, agentID, project.ID, project.Name, project.Path, project.LastActiveAt, project.HasAgentsMD, project.GitBranch)
 		if err != nil {
 			return err
 		}
@@ -29,8 +29,36 @@ func (s *Store) SaveProjects(ctx context.Context, agentID string, projects []pro
 
 func (s *Store) SaveSessions(ctx context.Context, agentID string, sessions []protocol.Session) error {
 	for _, session := range sessions {
-		_, err := s.pool.Exec(ctx, `INSERT INTO codex_sessions (agent_id, id, id_source, project_id, title, path, cwd, updated_at, size_bytes, content_sha256, indexed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now()) ON CONFLICT (agent_id, id) DO UPDATE SET id_source=EXCLUDED.id_source, project_id=EXCLUDED.project_id, title=EXCLUDED.title, path=EXCLUDED.path, cwd=EXCLUDED.cwd, updated_at=EXCLUDED.updated_at, size_bytes=EXCLUDED.size_bytes, content_sha256=EXCLUDED.content_sha256, indexed_at=now()`, agentID, session.ID, session.IDSource, session.ProjectID, session.Title, session.Path, session.CWD, session.UpdatedAt, session.Size, session.ContentSHA256)
+		_, err := s.pool.Exec(ctx, `INSERT INTO codex_sessions (agent_id, id, id_source, project_id, title, path, cwd, updated_at, size_bytes, content_sha256, deleted_at, indexed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULL,now()) ON CONFLICT (agent_id, id) DO UPDATE SET id_source=EXCLUDED.id_source, project_id=EXCLUDED.project_id, title=EXCLUDED.title, path=EXCLUDED.path, cwd=EXCLUDED.cwd, updated_at=EXCLUDED.updated_at, size_bytes=EXCLUDED.size_bytes, content_sha256=EXCLUDED.content_sha256, deleted_at=NULL, indexed_at=now()`, agentID, session.ID, session.IDSource, session.ProjectID, session.Title, session.Path, session.CWD, session.UpdatedAt, session.Size, session.ContentSHA256)
 		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) MarkIndexDeleted(ctx context.Context, agentID string, deleted protocol.DeletedIndex) error {
+	for _, project := range deleted.Projects {
+		if project.ID == "" {
+			continue
+		}
+		deletedAt := project.DeletedAt
+		if deletedAt.IsZero() {
+			deletedAt = now()
+		}
+		if _, err := s.pool.Exec(ctx, `UPDATE projects SET deleted_at=$3, updated_at=now() WHERE agent_id=$1 AND id=$2`, agentID, project.ID, deletedAt); err != nil {
+			return err
+		}
+	}
+	for _, session := range deleted.Sessions {
+		if session.ID == "" {
+			continue
+		}
+		deletedAt := session.DeletedAt
+		if deletedAt.IsZero() {
+			deletedAt = now()
+		}
+		if _, err := s.pool.Exec(ctx, `UPDATE codex_sessions SET deleted_at=$3, indexed_at=now() WHERE agent_id=$1 AND id=$2`, agentID, session.ID, deletedAt); err != nil {
 			return err
 		}
 	}

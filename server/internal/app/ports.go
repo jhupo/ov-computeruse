@@ -25,6 +25,7 @@ type IndexRepository interface {
 	SaveRoots(context.Context, string, []protocol.Root) error
 	SaveProjects(context.Context, string, []protocol.Project) error
 	SaveSessions(context.Context, string, []protocol.Session) error
+	MarkIndexDeleted(context.Context, string, protocol.DeletedIndex) error
 	SaveHistoryChunk(context.Context, string, protocol.HistoryChunk) error
 	SaveHistoryMessages(context.Context, string, protocol.HistoryMessages) error
 	SaveSyncCursor(context.Context, string, protocol.SyncCursor) error

@@ -135,6 +135,12 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 		if err == nil {
 			_ = s.store.SaveSessions(ctx, agent.AgentID, index.Sessions)
 		}
+	case "index.deleted":
+		deleted, err := protocol.Decode[protocol.DeletedIndex](env.Data)
+		if err == nil {
+			_ = s.store.MarkIndexDeleted(ctx, agent.AgentID, deleted)
+			s.hub.BroadcastDash(agent.UserID, protocol.Raw(map[string]any{"type": "index.deleted", "agent_id": agent.AgentID, "projects": len(deleted.Projects), "sessions": len(deleted.Sessions)}))
+		}
 	case "history.chunk":
 		chunk, err := protocol.Decode[protocol.HistoryChunk](env.Data)
 		if err == nil {
