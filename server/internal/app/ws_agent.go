@@ -12,6 +12,7 @@ import (
 
 	"ov-computeruse/server/internal/protocol"
 	"ov-computeruse/server/internal/security"
+	"ov-computeruse/server/internal/store"
 )
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -38,6 +39,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	_ = s.store.TouchAgent(r.Context(), identity.AgentID)
 	s.log.InfoContext(r.Context(), "agent connected", "agent_id", agent.AgentID, "user_id", agent.UserID, "device_id", agent.DeviceID)
 	go s.agentWriter(agent)
+	go s.replayPendingCommands(r, identity)
 	s.agentReader(r, agent)
 }
 
@@ -155,6 +157,18 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 		if err == nil {
 			_ = s.store.MarkCommandAck(ctx, agent.AgentID, ack)
 		}
+	}
+}
+
+func (s *Server) replayPendingCommands(r *http.Request, identity store.AgentIdentity) {
+	commands, err := s.store.PendingCommands(r.Context(), identity.AgentID, 50)
+	if err != nil {
+		s.log.WarnContext(r.Context(), "pending command load failed", "agent_id", identity.AgentID, "error", err)
+		return
+	}
+	for _, command := range commands {
+		record, dispatched := s.dispatchStoredCommand(r, identity, command.ToProtocol())
+		s.log.InfoContext(r.Context(), "pending command replayed", "agent_id", identity.AgentID, "command_id", command.ID, "status", record.Status, "dispatched", dispatched)
 	}
 }
 

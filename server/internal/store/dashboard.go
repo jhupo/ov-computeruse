@@ -6,9 +6,12 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"ov-computeruse/server/internal/protocol"
 )
@@ -60,13 +63,52 @@ type SessionSummary struct {
 }
 
 type RunSummary struct {
-	ID         string    `json:"id"`
-	AgentID    string    `json:"agent_id"`
-	ProjectID  string    `json:"project_id,omitempty"`
-	SessionID  string    `json:"session_id,omitempty"`
-	Status     string    `json:"status"`
-	StartedAt  time.Time `json:"started_at"`
-	FinishedAt time.Time `json:"finished_at,omitempty"`
+	ID           string    `json:"id"`
+	AgentID      string    `json:"agent_id"`
+	CommandID    string    `json:"command_id,omitempty"`
+	ProjectID    string    `json:"project_id,omitempty"`
+	SessionID    string    `json:"session_id,omitempty"`
+	Status       string    `json:"status"`
+	StatusReason string    `json:"status_reason,omitempty"`
+	LastEventSeq uint64    `json:"last_event_seq"`
+	LastEventAt  time.Time `json:"last_event_at,omitempty"`
+	StartedAt    time.Time `json:"started_at"`
+	FinishedAt   time.Time `json:"finished_at,omitempty"`
+}
+
+type CommandRecord struct {
+	ID             string          `json:"id"`
+	AgentID        string          `json:"agent_id"`
+	RunID          string          `json:"run_id,omitempty"`
+	SessionID      string          `json:"session_id,omitempty"`
+	ProjectID      string          `json:"project_id,omitempty"`
+	Kind           string          `json:"kind"`
+	Mode           string          `json:"mode,omitempty"`
+	Payload        json.RawMessage `json:"payload,omitempty"`
+	Status         string          `json:"status"`
+	StatusReason   string          `json:"status_reason,omitempty"`
+	CreatedAt      time.Time       `json:"created_at"`
+	DispatchedAt   time.Time       `json:"dispatched_at,omitempty"`
+	AckedAt        time.Time       `json:"acked_at,omitempty"`
+	DeadlineAt     time.Time       `json:"deadline_at,omitempty"`
+	ExpiresAt      time.Time       `json:"expires_at,omitempty"`
+	RetryCount     int             `json:"retry_count"`
+	IdempotencyKey string          `json:"idempotency_key,omitempty"`
+}
+
+func (c CommandRecord) ToProtocol() protocol.Command {
+	return protocol.Command{
+		CommandID:      c.ID,
+		RunID:          c.RunID,
+		Kind:           c.Kind,
+		ProjectID:      c.ProjectID,
+		SessionID:      c.SessionID,
+		Mode:           c.Mode,
+		IdempotencyKey: c.IdempotencyKey,
+		DeadlineAt:     c.DeadlineAt,
+		ExpiresAt:      c.ExpiresAt,
+		Payload:        c.Payload,
+	}
 }
 
 type RunEventRecord struct {
@@ -224,7 +266,7 @@ func (s *Store) ListRuns(ctx context.Context, agentID, sessionID string, limit i
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
-	query := `SELECT id, agent_id, COALESCE(project_id, ''), COALESCE(session_id, ''), status, started_at, finished_at FROM runs WHERE agent_id=$1`
+	query := `SELECT id, agent_id, COALESCE(command_id, ''), COALESCE(project_id, ''), COALESCE(session_id, ''), status, COALESCE(status_reason, ''), last_event_seq, last_event_at, started_at, finished_at FROM runs WHERE agent_id=$1`
 	args := []any{agentID}
 	if sessionID != "" {
 		query += ` AND session_id=$2`
@@ -240,9 +282,13 @@ func (s *Store) ListRuns(ctx context.Context, agentID, sessionID string, limit i
 	out := []RunSummary{}
 	for rows.Next() {
 		var item RunSummary
+		var lastEventAt sql.NullTime
 		var finished sql.NullTime
-		if err := rows.Scan(&item.ID, &item.AgentID, &item.ProjectID, &item.SessionID, &item.Status, &item.StartedAt, &finished); err != nil {
+		if err := rows.Scan(&item.ID, &item.AgentID, &item.CommandID, &item.ProjectID, &item.SessionID, &item.Status, &item.StatusReason, &item.LastEventSeq, &lastEventAt, &item.StartedAt, &finished); err != nil {
 			return nil, err
+		}
+		if lastEventAt.Valid {
+			item.LastEventAt = lastEventAt.Time
 		}
 		if finished.Valid {
 			item.FinishedAt = finished.Time
@@ -250,6 +296,119 @@ func (s *Store) ListRuns(ctx context.Context, agentID, sessionID string, limit i
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) ListCommands(ctx context.Context, agentID, status string, limit int) ([]CommandRecord, error) {
+	if limit <= 0 || limit > 300 {
+		limit = 100
+	}
+	query := `SELECT id, agent_id, COALESCE(run_id, ''), COALESCE(session_id, ''), COALESCE(project_id, ''), kind, COALESCE(mode, ''), payload, status, COALESCE(status_reason, ''), created_at, dispatched_at, acked_at, deadline_at, expires_at, retry_count, COALESCE(idempotency_key, '')
+		FROM commands WHERE agent_id=$1`
+	args := []any{agentID}
+	if status != "" {
+		args = append(args, status)
+		query += ` AND status=$` + strconv.Itoa(len(args))
+	}
+	args = append(args, limit)
+	query += ` ORDER BY created_at DESC LIMIT $` + strconv.Itoa(len(args))
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CommandRecord{}
+	for rows.Next() {
+		item, err := scanCommandRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) CommandByID(ctx context.Context, agentID, commandID string) (CommandRecord, bool, error) {
+	row := s.pool.QueryRow(ctx, `SELECT id, agent_id, COALESCE(run_id, ''), COALESCE(session_id, ''), COALESCE(project_id, ''), kind, COALESCE(mode, ''), payload, status, COALESCE(status_reason, ''), created_at, dispatched_at, acked_at, deadline_at, expires_at, retry_count, COALESCE(idempotency_key, '')
+		FROM commands WHERE agent_id=$1 AND id=$2`, agentID, commandID)
+	item, err := scanCommandRecord(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return CommandRecord{}, false, nil
+		}
+		return CommandRecord{}, false, err
+	}
+	return item, true, nil
+}
+
+func (s *Store) CommandByIdempotencyKey(ctx context.Context, agentID, key string) (CommandRecord, bool, error) {
+	row := s.pool.QueryRow(ctx, `SELECT id, agent_id, COALESCE(run_id, ''), COALESCE(session_id, ''), COALESCE(project_id, ''), kind, COALESCE(mode, ''), payload, status, COALESCE(status_reason, ''), created_at, dispatched_at, acked_at, deadline_at, expires_at, retry_count, COALESCE(idempotency_key, '')
+		FROM commands WHERE agent_id=$1 AND idempotency_key=$2`, agentID, key)
+	item, err := scanCommandRecord(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return CommandRecord{}, false, nil
+		}
+		return CommandRecord{}, false, err
+	}
+	return item, true, nil
+}
+
+func (s *Store) PendingCommands(ctx context.Context, agentID string, limit int) ([]CommandRecord, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id, agent_id, COALESCE(run_id, ''), COALESCE(session_id, ''), COALESCE(project_id, ''), kind, COALESCE(mode, ''), payload, status, COALESCE(status_reason, ''), created_at, dispatched_at, acked_at, deadline_at, expires_at, retry_count, COALESCE(idempotency_key, '')
+		FROM commands
+		WHERE agent_id=$1
+			AND status IN ('queued','dispatch_failed','dispatched')
+			AND (expires_at IS NULL OR expires_at > now())
+		ORDER BY created_at ASC
+		LIMIT $2`, agentID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CommandRecord{}
+	for rows.Next() {
+		item, err := scanCommandRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+type commandRowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanCommandRecord(scanner commandRowScanner) (CommandRecord, error) {
+	var item CommandRecord
+	var payload []byte
+	var dispatchedAt sql.NullTime
+	var ackedAt sql.NullTime
+	var deadlineAt sql.NullTime
+	var expiresAt sql.NullTime
+	if err := scanner.Scan(&item.ID, &item.AgentID, &item.RunID, &item.SessionID, &item.ProjectID, &item.Kind, &item.Mode, &payload, &item.Status, &item.StatusReason, &item.CreatedAt, &dispatchedAt, &ackedAt, &deadlineAt, &expiresAt, &item.RetryCount, &item.IdempotencyKey); err != nil {
+		return CommandRecord{}, err
+	}
+	if len(payload) > 0 {
+		item.Payload = append(json.RawMessage(nil), payload...)
+	}
+	if dispatchedAt.Valid {
+		item.DispatchedAt = dispatchedAt.Time
+	}
+	if ackedAt.Valid {
+		item.AckedAt = ackedAt.Time
+	}
+	if deadlineAt.Valid {
+		item.DeadlineAt = deadlineAt.Time
+	}
+	if expiresAt.Valid {
+		item.ExpiresAt = expiresAt.Time
+	}
+	return item, nil
 }
 
 func (s *Store) ListRunEvents(ctx context.Context, agentID, runID string, afterSeq uint64, limit int) ([]RunEventRecord, error) {

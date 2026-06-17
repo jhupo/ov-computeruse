@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"ov-computeruse/server/internal/store"
 )
 
 func (s *Server) handleDashMe(w http.ResponseWriter, r *http.Request) {
@@ -169,16 +171,36 @@ func (s *Server) authorizeAgentQuery(w http.ResponseWriter, r *http.Request) (Da
 		writeError(w, http.StatusBadRequest, "missing_agent_id", "agent_id is required")
 		return DashPrincipal{}, "", false
 	}
-	identity, err := s.store.AgentByID(r.Context(), agentID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "agent_not_found", "agent not found")
-		return DashPrincipal{}, "", false
-	}
-	if !principal.Admin && identity.UserID != principal.UserID {
-		writeError(w, http.StatusForbidden, "forbidden", "agent does not belong to this user")
+	if _, _, ok := s.authorizeAgentIdentity(w, r, principal, agentID); !ok {
 		return DashPrincipal{}, "", false
 	}
 	return principal, agentID, true
+}
+
+func (s *Server) authorizeAgentByID(w http.ResponseWriter, r *http.Request, agentID string) (DashPrincipal, store.AgentIdentity, bool) {
+	principal, ok := s.requireDash(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "dash session is required")
+		return DashPrincipal{}, store.AgentIdentity{}, false
+	}
+	if agentID == "" {
+		writeError(w, http.StatusBadRequest, "missing_agent_id", "agent_id is required")
+		return DashPrincipal{}, store.AgentIdentity{}, false
+	}
+	return s.authorizeAgentIdentity(w, r, principal, agentID)
+}
+
+func (s *Server) authorizeAgentIdentity(w http.ResponseWriter, r *http.Request, principal DashPrincipal, agentID string) (DashPrincipal, store.AgentIdentity, bool) {
+	identity, err := s.store.AgentByID(r.Context(), agentID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "agent_not_found", "agent not found")
+		return DashPrincipal{}, store.AgentIdentity{}, false
+	}
+	if !principal.Admin && identity.UserID != principal.UserID {
+		writeError(w, http.StatusForbidden, "forbidden", "agent does not belong to this user")
+		return DashPrincipal{}, store.AgentIdentity{}, false
+	}
+	return principal, identity, true
 }
 
 func queryInt(r *http.Request, key string, fallback int) int {

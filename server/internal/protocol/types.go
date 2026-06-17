@@ -151,13 +151,16 @@ type HistoryMessages struct {
 }
 
 type Command struct {
-	CommandID string          `json:"command_id"`
-	RunID     string          `json:"run_id,omitempty"`
-	Kind      string          `json:"kind"`
-	ProjectID string          `json:"project_id,omitempty"`
-	SessionID string          `json:"session_id,omitempty"`
-	Mode      string          `json:"mode,omitempty"`
-	Payload   json.RawMessage `json:"payload,omitempty"`
+	CommandID      string          `json:"command_id"`
+	RunID          string          `json:"run_id,omitempty"`
+	Kind           string          `json:"kind"`
+	ProjectID      string          `json:"project_id,omitempty"`
+	SessionID      string          `json:"session_id,omitempty"`
+	Mode           string          `json:"mode,omitempty"`
+	IdempotencyKey string          `json:"idempotency_key,omitempty"`
+	DeadlineAt     time.Time       `json:"deadline_at,omitempty"`
+	ExpiresAt      time.Time       `json:"expires_at,omitempty"`
+	Payload        json.RawMessage `json:"payload,omitempty"`
 }
 
 type RunEvent struct {

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"ov-computeruse/server/internal/protocol"
@@ -56,6 +57,7 @@ func (s *Store) projectRunState(ctx context.Context, agentID string, event proto
 		return nil
 	}
 	status := ""
+	statusReason := ""
 	finished := false
 	switch event.Kind {
 	case "run.started":
@@ -65,6 +67,7 @@ func (s *Store) projectRunState(ctx context.Context, agentID string, event proto
 		finished = true
 	case "run.error", "run.failed":
 		status = "error"
+		statusReason = runEventReason(event)
 		finished = true
 	case "run.stopped":
 		status = "stopped"
@@ -80,11 +83,27 @@ func (s *Store) projectRunState(ctx context.Context, agentID string, event proto
 		startedAt = time.Now().UTC()
 	}
 	if finished {
-		_, err := s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, started_at, finished_at) VALUES ($1,$2,$3,$4,$5,$6,$7,now()) ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=EXCLUDED.project_id, session_id=EXCLUDED.session_id, finished_at=now()`, event.RunID, agentID, event.CommandID, event.ProjectID, event.SessionID, status, startedAt)
+		_, err := s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at, finished_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now()) ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, status_reason=COALESCE(NULLIF(EXCLUDED.status_reason, ''), runs.status_reason), command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id), last_event_seq=GREATEST(runs.last_event_seq, EXCLUDED.last_event_seq), last_event_at=EXCLUDED.last_event_at, finished_at=now()`, event.RunID, agentID, event.CommandID, event.ProjectID, event.SessionID, status, statusReason, event.Seq, startedAt, startedAt)
 		return err
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, started_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=EXCLUDED.project_id, session_id=EXCLUDED.session_id`, event.RunID, agentID, event.CommandID, event.ProjectID, event.SessionID, status, startedAt)
+	_, err := s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, status_reason=COALESCE(NULLIF(EXCLUDED.status_reason, ''), runs.status_reason), command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id), last_event_seq=GREATEST(runs.last_event_seq, EXCLUDED.last_event_seq), last_event_at=EXCLUDED.last_event_at`, event.RunID, agentID, event.CommandID, event.ProjectID, event.SessionID, status, statusReason, event.Seq, startedAt, startedAt)
 	return err
+}
+
+func runEventReason(event protocol.RunEvent) string {
+	if len(event.Payload) == 0 {
+		return ""
+	}
+	var payload map[string]any
+	if json.Unmarshal(event.Payload, &payload) != nil {
+		return ""
+	}
+	for _, key := range []string{"error", "reason", "message", "status"} {
+		if value, ok := payload[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (s *Store) projectRuntimeSession(ctx context.Context, agentID string, event protocol.RunEvent) error {
@@ -128,29 +147,61 @@ func storeFirstNonEmpty(values ...string) string {
 }
 
 func (s *Store) SaveHeartbeat(ctx context.Context, agentID, deviceID string, heartbeat protocol.Heartbeat) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO heartbeats (agent_id, device_id, status, payload, received_at) VALUES ($1,$2,$3,$4,now()) ON CONFLICT (agent_id) DO UPDATE SET device_id=EXCLUDED.device_id, status=EXCLUDED.status, payload=EXCLUDED.payload, received_at=now()`, agentID, deviceID, heartbeat.Status, jsonRaw(heartbeat))
-	return err
-}
-
-func (s *Store) SaveCommand(ctx context.Context, agentID string, command protocol.Command) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO commands (id, agent_id, run_id, session_id, project_id, kind, payload, status) VALUES ($1,$2,$3,$4,$5,$6,$7,'queued') ON CONFLICT (id) DO NOTHING`, command.CommandID, agentID, command.RunID, command.SessionID, command.ProjectID, command.Kind, jsonRaw(command.Payload))
-	if err != nil {
+	if _, err := s.pool.Exec(ctx, `INSERT INTO heartbeats (agent_id, device_id, status, payload, received_at) VALUES ($1,$2,$3,$4,now()) ON CONFLICT (agent_id) DO UPDATE SET device_id=EXCLUDED.device_id, status=EXCLUDED.status, payload=EXCLUDED.payload, received_at=now()`, agentID, deviceID, heartbeat.Status, jsonRaw(heartbeat)); err != nil {
 		return err
 	}
-	if command.RunID == "" {
-		return nil
+	return s.ReconcileHeartbeatRuns(ctx, agentID, heartbeat)
+}
+
+func (s *Store) SaveCommand(ctx context.Context, agentID string, command protocol.Command) (protocol.Command, error) {
+	command = normalizeCommand(command)
+	if strings.TrimSpace(command.IdempotencyKey) != "" {
+		existing, ok, err := s.CommandByIdempotencyKey(ctx, agentID, command.IdempotencyKey)
+		if err != nil {
+			return protocol.Command{}, err
+		}
+		if ok {
+			return existing.ToProtocol(), nil
+		}
 	}
-	_, err = s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, started_at) VALUES ($1,$2,$3,$4,$5,'queued',now()) ON CONFLICT (id) DO UPDATE SET command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id)`, command.RunID, agentID, command.CommandID, command.ProjectID, command.SessionID)
-	return err
+	tag, err := s.pool.Exec(ctx, `INSERT INTO commands (id, agent_id, run_id, session_id, project_id, kind, mode, payload, status, deadline_at, expires_at, idempotency_key) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,$10,$11) ON CONFLICT (id) DO NOTHING`, command.CommandID, agentID, command.RunID, command.SessionID, command.ProjectID, command.Kind, command.Mode, jsonRaw(command.Payload), nullTime(command.DeadlineAt), nullTime(command.ExpiresAt), nullString(command.IdempotencyKey))
+	if err != nil {
+		return protocol.Command{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		existing, ok, err := s.CommandByID(ctx, agentID, command.CommandID)
+		if err != nil {
+			return protocol.Command{}, err
+		}
+		if ok {
+			return existing.ToProtocol(), nil
+		}
+		return protocol.Command{}, nil
+	}
+	if command.RunID == "" {
+		return command, nil
+	}
+	_, err = s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, started_at) VALUES ($1,$2,$3,$4,$5,'queued','command_queued',now()) ON CONFLICT (id) DO UPDATE SET command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id)`, command.RunID, agentID, command.CommandID, command.ProjectID, command.SessionID)
+	return command, err
 }
 
 func (s *Store) MarkCommandDispatched(ctx context.Context, agentID, commandID string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE commands SET status='dispatched' WHERE agent_id=$1 AND id=$2 AND status IN ('queued','failed')`, agentID, commandID)
+	_, err := s.pool.Exec(ctx, `UPDATE commands SET status='dispatched', status_reason='', dispatched_at=now(), retry_count=retry_count+1 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatch_failed','failed','expired')`, agentID, commandID)
 	return err
 }
 
-func (s *Store) MarkCommandFailed(ctx context.Context, agentID, commandID string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE commands SET status='failed' WHERE agent_id=$1 AND id=$2 AND status='queued'`, agentID, commandID)
+func (s *Store) MarkCommandFailed(ctx context.Context, agentID, commandID, reason string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE commands SET status='dispatch_failed', status_reason=$3 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, reason)
+	return err
+}
+
+func (s *Store) MarkCommandExpired(ctx context.Context, agentID, commandID, reason string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE commands SET status='expired', status_reason=$3 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, reason)
+	return err
+}
+
+func (s *Store) PrepareCommandRetry(ctx context.Context, agentID, commandID string, deadlineAt, expiresAt time.Time) error {
+	_, err := s.pool.Exec(ctx, `UPDATE commands SET status='queued', status_reason='retry requested', deadline_at=$3, expires_at=$4 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, deadlineAt.UTC(), expiresAt.UTC())
 	return err
 }
 
@@ -158,6 +209,78 @@ func (s *Store) MarkCommandAck(ctx context.Context, agentID string, ack protocol
 	if ack.CommandID == "" {
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, `UPDATE commands SET status=$1, acked_at=now() WHERE agent_id=$2 AND id=$3`, ack.Status, agentID, ack.CommandID)
+	status := commandStatusFromAck(ack)
+	_, err := s.pool.Exec(ctx, `UPDATE commands SET status=$1, status_reason=$2, acked_at=now() WHERE agent_id=$3 AND id=$4`, status, ack.Message, agentID, ack.CommandID)
 	return err
+}
+
+func (s *Store) ExpireCommands(ctx context.Context, agentID string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE commands SET status='expired', status_reason='command expired before agent accepted it' WHERE agent_id=$1 AND status IN ('queued','dispatch_failed','dispatched') AND expires_at IS NOT NULL AND expires_at < now()`, agentID)
+	return err
+}
+
+func (s *Store) ReconcileHeartbeatRuns(ctx context.Context, agentID string, heartbeat protocol.Heartbeat) error {
+	running := map[string]struct{}{}
+	for _, runID := range heartbeat.RunningRuns {
+		if strings.TrimSpace(runID) != "" {
+			running[strings.TrimSpace(runID)] = struct{}{}
+		}
+	}
+	for runID := range running {
+		if _, err := s.pool.Exec(ctx, `UPDATE runs SET status='running', status_reason='reported_by_agent_heartbeat', last_event_seq=GREATEST(last_event_seq, $3), last_event_at=$4 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','accepted','running','awaiting_approval','stale')`, agentID, runID, heartbeat.LastEventSeq, heartbeat.At); err != nil {
+			return err
+		}
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id FROM runs WHERE agent_id=$1 AND status IN ('running','awaiting_approval')`, agentID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	stale := []string{}
+	for rows.Next() {
+		var runID string
+		if err := rows.Scan(&runID); err != nil {
+			return err
+		}
+		if _, ok := running[runID]; !ok {
+			stale = append(stale, runID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, runID := range stale {
+		if _, err := s.pool.Exec(ctx, `UPDATE runs SET status='stale', status_reason='missing_from_agent_heartbeat', last_event_seq=GREATEST(last_event_seq, $3), last_event_at=$4 WHERE agent_id=$1 AND id=$2 AND status IN ('running','awaiting_approval')`, agentID, runID, heartbeat.LastEventSeq, heartbeat.At); err != nil {
+			return err
+		}
+	}
+	return s.ExpireCommands(ctx, agentID)
+}
+
+func normalizeCommand(command protocol.Command) protocol.Command {
+	now := time.Now().UTC()
+	if command.DeadlineAt.IsZero() {
+		command.DeadlineAt = now.Add(10 * time.Minute)
+	}
+	if command.ExpiresAt.IsZero() {
+		command.ExpiresAt = command.DeadlineAt.Add(50 * time.Minute)
+	}
+	command.IdempotencyKey = strings.TrimSpace(command.IdempotencyKey)
+	return command
+}
+
+func commandStatusFromAck(ack protocol.Ack) string {
+	switch strings.ToLower(strings.TrimSpace(ack.Status)) {
+	case "ok", "accepted", "duplicate":
+		return "accepted"
+	case "rejected":
+		return "rejected"
+	case "failed", "error":
+		return "failed"
+	default:
+		if strings.TrimSpace(ack.Status) == "" {
+			return "acked"
+		}
+		return strings.ToLower(strings.TrimSpace(ack.Status))
+	}
 }

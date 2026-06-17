@@ -5,8 +5,10 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"ov-computeruse/server/internal/protocol"
+	"ov-computeruse/server/internal/store"
 )
 
 type dashCommandRequest struct {
@@ -15,17 +17,16 @@ type dashCommandRequest struct {
 }
 
 func (s *Server) handleDashCommand(w http.ResponseWriter, r *http.Request) {
-	principal, ok := s.requireDash(r)
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "dash session is required")
-		return
-	}
 	var req dashCommandRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", "invalid command payload")
 		return
 	}
 	req.AgentID = strings.TrimSpace(req.AgentID)
+	principal, identity, ok := s.authorizeAgentByID(w, r, req.AgentID)
+	if !ok {
+		return
+	}
 	req.Command.Kind = strings.TrimSpace(req.Command.Kind)
 	if req.AgentID == "" || req.Command.Kind == "" {
 		writeError(w, http.StatusBadRequest, "missing_command_fields", "agent_id and command.kind are required")
@@ -35,38 +36,126 @@ func (s *Server) handleDashCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_command", err.Error())
 		return
 	}
-	identity, err := s.store.AgentByID(r.Context(), req.AgentID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "agent_not_found", "agent not found")
-		return
-	}
-	if !principal.Admin && identity.UserID != principal.UserID {
-		writeError(w, http.StatusForbidden, "forbidden", "agent does not belong to this user")
-		return
-	}
 	if req.Command.CommandID == "" {
 		req.Command.CommandID = protocol.NewID("cmd")
 	}
 	if req.Command.RunID == "" && commandCreatesRun(req.Command.Kind) {
 		req.Command.RunID = protocol.NewID("run")
 	}
-	if err := s.store.SaveCommand(r.Context(), req.AgentID, req.Command); err != nil {
+	command, err := s.store.SaveCommand(r.Context(), req.AgentID, req.Command)
+	if err != nil {
 		s.log.ErrorContext(r.Context(), "save command failed", "agent_id", req.AgentID, "command_id", req.Command.CommandID, "error", err)
 		writeError(w, http.StatusInternalServerError, "store_failed", "unable to save command")
 		return
 	}
-	message := s.agentEnvelope(&AgentConn{AgentID: identity.AgentID, UserID: identity.UserID, DeviceID: identity.DeviceID, Secret: identity.AgentSecret}, "command", req.Command)
+	record, _ := s.dispatchStoredCommand(r, identity, command)
+	s.log.InfoContext(r.Context(), "command accepted", "agent_id", req.AgentID, "user_id", principal.UserID, "command_id", command.CommandID, "kind", command.Kind, "status", record.Status)
+	writeJSON(w, http.StatusAccepted, map[string]any{"command": record, "command_id": command.CommandID, "run_id": command.RunID})
+}
+
+func (s *Server) handleDashCommands(w http.ResponseWriter, r *http.Request) {
+	_, agentID, ok := s.authorizeAgentQuery(w, r)
+	if !ok {
+		return
+	}
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	commands, err := s.store.ListCommands(r.Context(), agentID, status, queryInt(r, "limit", 100))
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "command list failed", "agent_id", agentID, "status", status, "error", err)
+		writeError(w, http.StatusInternalServerError, "command_list_failed", "unable to load commands")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agent_id": agentID, "status": status, "commands": commands})
+}
+
+func (s *Server) handleDashCommandDetail(w http.ResponseWriter, r *http.Request) {
+	_, agentID, ok := s.authorizeAgentQuery(w, r)
+	if !ok {
+		return
+	}
+	commandID := strings.TrimSpace(r.PathValue("command_id"))
+	if commandID == "" {
+		writeError(w, http.StatusBadRequest, "missing_command_id", "command_id is required")
+		return
+	}
+	record, found, err := s.store.CommandByID(r.Context(), agentID, commandID)
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "command load failed", "agent_id", agentID, "command_id", commandID, "error", err)
+		writeError(w, http.StatusInternalServerError, "command_load_failed", "unable to load command")
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "command_not_found", "command not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agent_id": agentID, "command": record})
+}
+
+func (s *Server) handleDashCommandRetry(w http.ResponseWriter, r *http.Request) {
+	_, agentID, ok := s.authorizeAgentQuery(w, r)
+	if !ok {
+		return
+	}
+	commandID := strings.TrimSpace(r.PathValue("command_id"))
+	if commandID == "" {
+		writeError(w, http.StatusBadRequest, "missing_command_id", "command_id is required")
+		return
+	}
+	record, found, err := s.store.CommandByID(r.Context(), agentID, commandID)
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "command retry load failed", "agent_id", agentID, "command_id", commandID, "error", err)
+		writeError(w, http.StatusInternalServerError, "command_load_failed", "unable to load command")
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "command_not_found", "command not found")
+		return
+	}
+	if !commandRetryable(record.Status) {
+		writeError(w, http.StatusConflict, "command_not_retryable", "command is not in a retryable state")
+		return
+	}
+	deadlineAt := time.Now().UTC().Add(10 * time.Minute)
+	expiresAt := deadlineAt.Add(50 * time.Minute)
+	if err := s.store.PrepareCommandRetry(r.Context(), agentID, commandID, deadlineAt, expiresAt); err != nil {
+		s.log.ErrorContext(r.Context(), "command retry prepare failed", "agent_id", agentID, "command_id", commandID, "error", err)
+		writeError(w, http.StatusInternalServerError, "command_retry_failed", "unable to prepare command retry")
+		return
+	}
+	record, found, err = s.store.CommandByID(r.Context(), agentID, commandID)
+	if err != nil || !found {
+		s.log.ErrorContext(r.Context(), "command retry reload failed", "agent_id", agentID, "command_id", commandID, "error", err)
+		writeError(w, http.StatusInternalServerError, "command_reload_failed", "unable to reload command")
+		return
+	}
+	identity, err := s.store.AgentByID(r.Context(), agentID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "agent_not_found", "agent not found")
+		return
+	}
+	refreshed, _ := s.dispatchStoredCommand(r, identity, record.ToProtocol())
+	writeJSON(w, http.StatusAccepted, map[string]any{"agent_id": agentID, "command": refreshed})
+}
+
+func (s *Server) dispatchStoredCommand(r *http.Request, identity store.AgentIdentity, command protocol.Command) (store.CommandRecord, bool) {
+	if !command.ExpiresAt.IsZero() && command.ExpiresAt.Before(time.Now().UTC()) {
+		_ = s.store.MarkCommandExpired(r.Context(), identity.AgentID, command.CommandID, "command expired")
+		record, _, _ := s.store.CommandByID(r.Context(), identity.AgentID, command.CommandID)
+		return record, false
+	}
+	message := s.agentEnvelope(&AgentConn{AgentID: identity.AgentID, UserID: identity.UserID, DeviceID: identity.DeviceID, Secret: identity.AgentSecret}, "command", command)
 	if message == nil {
-		writeError(w, http.StatusInternalServerError, "encode_failed", "unable to encode command")
-		return
+		_ = s.store.MarkCommandFailed(r.Context(), identity.AgentID, command.CommandID, "unable to encode command")
+		record, _, _ := s.store.CommandByID(r.Context(), identity.AgentID, command.CommandID)
+		return record, false
 	}
-	if !s.hub.DispatchCommand(r.Context(), req.AgentID, identity.UserID, req.Command.CommandID, message) {
-		_ = s.store.MarkCommandFailed(r.Context(), req.AgentID, req.Command.CommandID)
-		writeError(w, http.StatusConflict, "agent_offline", "agent is not connected")
-		return
+	if !s.hub.DispatchCommand(r.Context(), identity.AgentID, identity.UserID, command.CommandID, message) {
+		_ = s.store.MarkCommandFailed(r.Context(), identity.AgentID, command.CommandID, "agent offline or send queue full")
+		record, _, _ := s.store.CommandByID(r.Context(), identity.AgentID, command.CommandID)
+		return record, false
 	}
-	s.log.InfoContext(r.Context(), "command dispatched", "agent_id", req.AgentID, "user_id", identity.UserID, "command_id", req.Command.CommandID, "kind", req.Command.Kind)
-	writeJSON(w, http.StatusAccepted, map[string]string{"command_id": req.Command.CommandID})
+	record, _, _ := s.store.CommandByID(r.Context(), identity.AgentID, command.CommandID)
+	return record, true
 }
 
 func validateCommand(command protocol.Command) error {
@@ -92,6 +181,15 @@ func validateCommand(command protocol.Command) error {
 		return errors.New("unsupported command kind")
 	}
 	return nil
+}
+
+func commandRetryable(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "queued", "dispatch_failed", "dispatched", "expired", "failed":
+		return true
+	default:
+		return false
+	}
 }
 
 func commandCreatesRun(kind string) bool {

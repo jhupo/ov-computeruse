@@ -48,6 +48,20 @@ func jsonRaw(value any) []byte {
 	return raw
 }
 
+func nullString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func nullTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value.UTC()
+}
+
 func now() time.Time {
 	return time.Now().UTC()
 }

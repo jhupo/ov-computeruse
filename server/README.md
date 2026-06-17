@@ -28,6 +28,9 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 - `POST /api/dash/login`: username/password login, returns a short-lived dash session token.
 - `GET /api/dash/me`: return the current dash principal.
 - `GET /api/dash/agents`: list the current user's agents and device heartbeat snapshots.
+- `GET /api/dash/commands?agent_id=...&status=...`: list persisted command lifecycle records.
+- `GET /api/dash/commands/{command_id}?agent_id=...`: load one command record with dispatch/ack/deadline metadata.
+- `POST /api/dash/commands/{command_id}/retry?agent_id=...`: retry a queued, dispatched, dispatch-failed, expired, or failed command.
 - `GET /api/dash/projects?agent_id=...`: list projects indexed from an agent.
 - `GET /api/dash/sessions?agent_id=...&project_id=...`: list Codex sessions for an agent or project.
 - `GET /api/dash/runs?agent_id=...&session_id=...`: list persisted runs.
@@ -38,7 +41,7 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 - `GET /api/dash/approvals?status=pending`: list approval requests.
 - `POST /api/dash/approvals/{approval_id}/decision`: approve or reject a pending request and forward the decision to the agent.
 - `GET /ws/dash`: dash websocket, bearer token is a dash session token or internal admin token.
-- `POST /api/dash/commands`: dash command dispatch to an online agent.
+- `POST /api/dash/commands`: create a durable command intent and dispatch it when the agent is online. Returns the command record plus `command_id` and `run_id`.
 - `GET /api/dash/history/messages?agent_id=...&session_id=...`: load stored displayable history messages for a session.
 - `GET /healthz`: liveness.
 

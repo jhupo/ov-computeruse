@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"time"
 
 	"ov-computeruse/server/internal/protocol"
 	"ov-computeruse/server/internal/store"
@@ -34,14 +35,19 @@ type IndexRepository interface {
 type EventRepository interface {
 	SaveRunEvent(context.Context, string, string, protocol.RunEvent) error
 	SaveHeartbeat(context.Context, string, string, protocol.Heartbeat) error
-	SaveCommand(context.Context, string, protocol.Command) error
+	SaveCommand(context.Context, string, protocol.Command) (protocol.Command, error)
 	MarkCommandDispatched(context.Context, string, string) error
-	MarkCommandFailed(context.Context, string, string) error
+	MarkCommandFailed(context.Context, string, string, string) error
+	MarkCommandExpired(context.Context, string, string, string) error
+	PrepareCommandRetry(context.Context, string, string, time.Time, time.Time) error
 	MarkCommandAck(context.Context, string, protocol.Ack) error
 }
 
 type DashboardRepository interface {
 	ListAgents(context.Context, string, bool) ([]store.AgentSummary, error)
+	ListCommands(context.Context, string, string, int) ([]store.CommandRecord, error)
+	CommandByID(context.Context, string, string) (store.CommandRecord, bool, error)
+	PendingCommands(context.Context, string, int) ([]store.CommandRecord, error)
 	ListProjects(context.Context, string) ([]store.ProjectSummary, error)
 	ListSessions(context.Context, string, string, int) ([]store.SessionSummary, error)
 	ListRuns(context.Context, string, string, int) ([]store.RunSummary, error)
