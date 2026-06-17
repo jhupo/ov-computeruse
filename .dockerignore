@@ -1,0 +1,10 @@
+.git
+.github
+agent/dist
+server/dist
+**/node_modules
+**/.DS_Store
+**/*.log
+**/tmp
+**/.cache
+**/coverage.out
