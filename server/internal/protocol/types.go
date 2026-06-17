@@ -99,6 +99,18 @@ type SessionIndex struct {
 	Sessions []Session `json:"sessions"`
 }
 
+type RuntimeSession struct {
+	ID              string    `json:"id,omitempty"`
+	Runtime         string    `json:"runtime"`
+	ProjectID       string    `json:"project_id,omitempty"`
+	SessionID       string    `json:"session_id,omitempty"`
+	NativeSessionID string    `json:"native_session_id,omitempty"`
+	LastResponseID  string    `json:"last_response_id,omitempty"`
+	ResumeMode      string    `json:"resume_mode,omitempty"`
+	LastRunID       string    `json:"last_run_id,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at,omitempty"`
+}
+
 type HistoryChunk struct {
 	SessionID string `json:"session_id"`
 	Index     int    `json:"index"`
@@ -151,6 +163,27 @@ type Ack struct {
 	At        time.Time `json:"at"`
 }
 
+type ApprovalRequest struct {
+	ID          string          `json:"id"`
+	RunID       string          `json:"run_id,omitempty"`
+	ProjectID   string          `json:"project_id,omitempty"`
+	SessionID   string          `json:"session_id,omitempty"`
+	Category    string          `json:"category,omitempty"`
+	Action      string          `json:"action,omitempty"`
+	RiskLevel   string          `json:"risk_level,omitempty"`
+	Description string          `json:"description,omitempty"`
+	Payload     json.RawMessage `json:"payload,omitempty"`
+	At          time.Time       `json:"at,omitempty"`
+}
+
+type ApprovalDecision struct {
+	ApprovalID string    `json:"approval_id"`
+	Decision   string    `json:"decision"`
+	Reason     string    `json:"reason,omitempty"`
+	DecidedBy  string    `json:"decided_by,omitempty"`
+	DecidedAt  time.Time `json:"decided_at"`
+}
+
 type Heartbeat struct {
 	AgentID      string    `json:"agent_id"`
 	DeviceID     string    `json:"device_id"`
@@ -161,10 +194,19 @@ type Heartbeat struct {
 }
 
 type HistoryChunkAck struct {
-	SessionID string `json:"session_id"`
-	Index     int    `json:"index"`
-	SHA256    string `json:"sha256"`
-	Status    string `json:"status"`
+	SessionID string    `json:"session_id"`
+	Index     int       `json:"index"`
+	SHA256    string    `json:"sha256,omitempty"`
+	Status    string    `json:"status,omitempty"`
+	Message   string    `json:"message,omitempty"`
+	At        time.Time `json:"at,omitempty"`
+}
+
+type SyncCursor struct {
+	Stream    string    `json:"stream"`
+	SubjectID string    `json:"subject_id,omitempty"`
+	Cursor    string    `json:"cursor"`
+	At        time.Time `json:"at,omitempty"`
 }
 
 func Raw(value any) json.RawMessage {

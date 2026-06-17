@@ -26,6 +26,15 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 - `POST /api/agents/bind`: installer bind flow, decrypts agent payload with the server private key.
 - `GET /ws/agent`: outbound agent websocket, bearer token is the per-agent secret.
 - `POST /api/dash/login`: username/password login, returns a short-lived dash session token.
+- `GET /api/dash/me`: return the current dash principal.
+- `GET /api/dash/agents`: list the current user's agents and device heartbeat snapshots.
+- `GET /api/dash/projects?agent_id=...`: list projects indexed from an agent.
+- `GET /api/dash/sessions?agent_id=...&project_id=...`: list Codex sessions for an agent or project.
+- `GET /api/dash/runs?agent_id=...&session_id=...`: list persisted runs.
+- `GET /api/dash/runs/events?agent_id=...&run_id=...&after_seq=...`: replay run events for dash refresh/resume.
+- `GET /api/dash/runtime-sessions?agent_id=...&session_id=...`: list runtime/native session mappings.
+- `GET /api/dash/approvals?status=pending`: list approval requests.
+- `POST /api/dash/approvals/{approval_id}/decision`: approve or reject a pending request and forward the decision to the agent.
 - `GET /ws/dash`: dash websocket, bearer token is a dash session token or internal admin token.
 - `POST /api/dash/commands`: dash command dispatch to an online agent.
 - `GET /api/dash/history/messages?agent_id=...&session_id=...`: load stored displayable history messages for a session.

@@ -47,6 +47,9 @@ func (s *Server) handleDashCommand(w http.ResponseWriter, r *http.Request) {
 	if req.Command.CommandID == "" {
 		req.Command.CommandID = protocol.NewID("cmd")
 	}
+	if req.Command.RunID == "" && commandCreatesRun(req.Command.Kind) {
+		req.Command.RunID = protocol.NewID("run")
+	}
 	if err := s.store.SaveCommand(r.Context(), req.AgentID, req.Command); err != nil {
 		s.log.ErrorContext(r.Context(), "save command failed", "agent_id", req.AgentID, "command_id", req.Command.CommandID, "error", err)
 		writeError(w, http.StatusInternalServerError, "store_failed", "unable to save command")
@@ -84,8 +87,18 @@ func validateCommand(command protocol.Command) error {
 		if strings.TrimSpace(command.RunID) == "" && strings.TrimSpace(command.SessionID) == "" {
 			return errors.New("run_id or session_id is required for stop")
 		}
+	case "refresh_index":
 	default:
 		return errors.New("unsupported command kind")
 	}
 	return nil
+}
+
+func commandCreatesRun(kind string) bool {
+	switch strings.TrimPrefix(kind, "command.") {
+	case "new_session", "resume", "send":
+		return true
+	default:
+		return false
+	}
 }

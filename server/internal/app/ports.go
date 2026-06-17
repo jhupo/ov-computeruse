@@ -26,6 +26,7 @@ type IndexRepository interface {
 	SaveHistoryChunk(context.Context, string, protocol.HistoryChunk) error
 	SaveHistoryMessages(context.Context, string, protocol.HistoryMessages) error
 	HistoryMessages(context.Context, string, string) ([]protocol.HistoryMessage, error)
+	UpsertRuntimeSession(context.Context, string, protocol.RuntimeSession) error
 }
 
 type EventRepository interface {
@@ -37,9 +38,23 @@ type EventRepository interface {
 	MarkCommandAck(context.Context, string, protocol.Ack) error
 }
 
+type DashboardRepository interface {
+	ListAgents(context.Context, string, bool) ([]store.AgentSummary, error)
+	ListProjects(context.Context, string) ([]store.ProjectSummary, error)
+	ListSessions(context.Context, string, string, int) ([]store.SessionSummary, error)
+	ListRuns(context.Context, string, string, int) ([]store.RunSummary, error)
+	ListRunEvents(context.Context, string, string, uint64, int) ([]store.RunEventRecord, error)
+	ListRuntimeSessions(context.Context, string, string) ([]protocol.RuntimeSession, error)
+	SaveApprovalRequest(context.Context, string, protocol.ApprovalRequest) error
+	ListApprovals(context.Context, string, bool, string, int) ([]store.ApprovalSummary, error)
+	ApprovalAgent(context.Context, string) (store.AgentIdentity, error)
+	DecideApproval(context.Context, string, protocol.ApprovalDecision) error
+}
+
 type Repository interface {
 	AgentRepository
 	BindRepository
 	IndexRepository
 	EventRepository
+	DashboardRepository
 }
