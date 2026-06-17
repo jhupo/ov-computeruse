@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -14,6 +15,11 @@ import (
 )
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+const (
+	maxAgentEnvelopeBytes = 2 << 20
+	envelopeClockSkew     = 5 * time.Minute
+)
 
 func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -27,6 +33,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agent := &AgentConn{AgentID: identity.AgentID, UserID: identity.UserID, DeviceID: identity.DeviceID, Secret: identity.AgentSecret, Conn: conn, Send: make(chan []byte, 64), ConnectedAt: time.Now().UTC()}
+	conn.SetReadLimit(maxAgentEnvelopeBytes)
 	s.hub.AddAgent(r.Context(), agent)
 	_ = s.store.TouchAgent(r.Context(), identity.AgentID)
 	s.log.InfoContext(r.Context(), "agent connected", "agent_id", agent.AgentID, "user_id", agent.UserID, "device_id", agent.DeviceID)
@@ -58,8 +65,32 @@ func (s *Server) agentReader(r *http.Request, agent *AgentConn) {
 			s.log.WarnContext(r.Context(), "invalid agent envelope signature", "agent_id", agent.AgentID, "type", env.Type)
 			continue
 		}
+		if err := validateAgentEnvelope(agent, env); err != nil {
+			s.log.WarnContext(r.Context(), "invalid agent envelope", "agent_id", agent.AgentID, "type", env.Type, "error", err)
+			continue
+		}
 		s.handleAgentEnvelope(r, agent, env)
 	}
+}
+
+func validateAgentEnvelope(agent *AgentConn, env protocol.Envelope) error {
+	if env.Version != protocol.Version {
+		return errors.New("unsupported protocol version")
+	}
+	if env.AgentID != "" && env.AgentID != agent.AgentID {
+		return errors.New("agent id mismatch")
+	}
+	if env.DeviceID != "" && env.DeviceID != agent.DeviceID {
+		return errors.New("device id mismatch")
+	}
+	if env.MessageID == "" || env.Nonce == "" || env.Type == "" {
+		return errors.New("message id, nonce, and type are required")
+	}
+	now := time.Now().UTC()
+	if env.Timestamp.IsZero() || env.Timestamp.Before(now.Add(-envelopeClockSkew)) || env.Timestamp.After(now.Add(envelopeClockSkew)) {
+		return errors.New("message timestamp outside allowed window")
+	}
+	return nil
 }
 
 func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env protocol.Envelope) {

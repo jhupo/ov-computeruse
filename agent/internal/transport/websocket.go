@@ -10,6 +10,8 @@ import (
 	"ov-computeruse/agent/internal/protocol"
 )
 
+const maxEnvelopeBytes = 2 << 20
+
 type WebSocketDialer struct {
 	Dialer *websocket.Dialer
 	Header http.Header
@@ -30,6 +32,7 @@ func (d WebSocketDialer) Dial(ctx context.Context, endpoint Endpoint) (Conn, err
 	if err != nil {
 		return nil, err
 	}
+	conn.SetReadLimit(maxEnvelopeBytes)
 	return &webSocketConn{conn: conn}, nil
 }
 
