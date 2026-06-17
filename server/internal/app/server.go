@@ -32,6 +32,7 @@ func New(cfg config.Config, st Repository, redisClient *redis.Client, logger *sl
 
 func (s *Server) Run(ctx context.Context) {
 	s.hub.Run(ctx)
+	go s.runCommandDispatcher(ctx)
 }
 
 func (s *Server) Routes() http.Handler {

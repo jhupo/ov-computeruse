@@ -41,6 +41,7 @@ type EventRepository interface {
 	MarkCommandFailed(context.Context, string, string, string) error
 	MarkCommandExpired(context.Context, string, string, string) error
 	PrepareCommandRetry(context.Context, string, string, time.Time, time.Time) error
+	ExpireCommands(context.Context, string) error
 	MarkCommandAck(context.Context, string, protocol.Ack) error
 }
 
@@ -49,6 +50,7 @@ type DashboardRepository interface {
 	ListCommands(context.Context, string, string, int) ([]store.CommandRecord, error)
 	CommandByID(context.Context, string, string) (store.CommandRecord, bool, error)
 	PendingCommands(context.Context, string, int) ([]store.CommandRecord, error)
+	PendingDispatchCommands(context.Context, int) ([]store.CommandRecord, error)
 	ListProjects(context.Context, string) ([]store.ProjectSummary, error)
 	ListSessions(context.Context, string, string, int) ([]store.SessionSummary, error)
 	ListRuns(context.Context, string, string, int) ([]store.RunSummary, error)

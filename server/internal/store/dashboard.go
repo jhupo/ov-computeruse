@@ -379,6 +379,32 @@ func (s *Store) PendingCommands(ctx context.Context, agentID string, limit int) 
 	return out, rows.Err()
 }
 
+func (s *Store) PendingDispatchCommands(ctx context.Context, limit int) ([]CommandRecord, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id, agent_id, COALESCE(run_id, ''), COALESCE(session_id, ''), COALESCE(project_id, ''), kind, COALESCE(mode, ''), payload, status, COALESCE(status_reason, ''), created_at, dispatched_at, acked_at, deadline_at, expires_at, retry_count, COALESCE(idempotency_key, '')
+		FROM commands
+		WHERE status IN ('queued','dispatch_failed','dispatched')
+			AND (expires_at IS NULL OR expires_at > now())
+			AND (dispatched_at IS NULL OR dispatched_at < now() - interval '15 seconds')
+		ORDER BY created_at ASC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CommandRecord{}
+	for rows.Next() {
+		item, err := scanCommandRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 type commandRowScanner interface {
 	Scan(dest ...any) error
 }

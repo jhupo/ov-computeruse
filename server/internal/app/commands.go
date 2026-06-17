@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -138,23 +139,27 @@ func (s *Server) handleDashCommandRetry(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) dispatchStoredCommand(r *http.Request, identity store.AgentIdentity, command protocol.Command) (store.CommandRecord, bool) {
+	return s.dispatchCommand(r.Context(), identity, command)
+}
+
+func (s *Server) dispatchCommand(ctx context.Context, identity store.AgentIdentity, command protocol.Command) (store.CommandRecord, bool) {
 	if !command.ExpiresAt.IsZero() && command.ExpiresAt.Before(time.Now().UTC()) {
-		_ = s.store.MarkCommandExpired(r.Context(), identity.AgentID, command.CommandID, "command expired")
-		record, _, _ := s.store.CommandByID(r.Context(), identity.AgentID, command.CommandID)
+		_ = s.store.MarkCommandExpired(ctx, identity.AgentID, command.CommandID, "command expired")
+		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
 		return record, false
 	}
 	message := s.agentEnvelope(&AgentConn{AgentID: identity.AgentID, UserID: identity.UserID, DeviceID: identity.DeviceID, Secret: identity.AgentSecret}, "command", command)
 	if message == nil {
-		_ = s.store.MarkCommandFailed(r.Context(), identity.AgentID, command.CommandID, "unable to encode command")
-		record, _, _ := s.store.CommandByID(r.Context(), identity.AgentID, command.CommandID)
+		_ = s.store.MarkCommandFailed(ctx, identity.AgentID, command.CommandID, "unable to encode command")
+		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
 		return record, false
 	}
-	if !s.hub.DispatchCommand(r.Context(), identity.AgentID, identity.UserID, command.CommandID, message) {
-		_ = s.store.MarkCommandFailed(r.Context(), identity.AgentID, command.CommandID, "agent offline or send queue full")
-		record, _, _ := s.store.CommandByID(r.Context(), identity.AgentID, command.CommandID)
+	if !s.hub.DispatchCommand(ctx, identity.AgentID, identity.UserID, command.CommandID, message) {
+		_ = s.store.MarkCommandFailed(ctx, identity.AgentID, command.CommandID, "agent offline or send queue full")
+		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
 		return record, false
 	}
-	record, _, _ := s.store.CommandByID(r.Context(), identity.AgentID, command.CommandID)
+	record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
 	return record, true
 }
 
