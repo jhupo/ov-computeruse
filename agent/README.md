@@ -46,6 +46,7 @@ Default paths:
 | Linux | `${XDG_CONFIG_HOME:-~/.config}/ov-computeruse/agent` | `${XDG_DATA_HOME:-~/.local/share}/ov-computeruse/agent` |
 
 `state.db` stores discovered Codex roots, project/session indexes, history chunk upload state, and sync cursors. It does not store raw API keys or copied Codex auth files.
+On Windows, `identity.json` is protected with DPAPI before it is written to disk; other platforms store it with user-only file permissions.
 
 `agent.toml` or `agent.json` can define the same operational settings as environment variables and flags, for example:
 

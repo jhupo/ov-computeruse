@@ -33,7 +33,7 @@ func New(path string) (*Store, error) {
 }
 
 func (s *Store) LoadIdentity() (Identity, error) {
-	data, err := os.ReadFile(s.path)
+	data, err := readPrivateFile(s.path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Identity{}, ErrNotFound
