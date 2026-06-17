@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 
 	"ov-computeruse/server/internal/protocol"
 )
@@ -39,4 +40,41 @@ func (s *Store) SaveSessions(ctx context.Context, agentID string, sessions []pro
 func (s *Store) SaveHistoryChunk(ctx context.Context, agentID string, chunk protocol.HistoryChunk) error {
 	_, err := s.pool.Exec(ctx, `INSERT INTO history_chunks (agent_id, session_id, chunk_index, sha256, size_bytes, received_at) VALUES ($1,$2,$3,$4,$5,now()) ON CONFLICT DO NOTHING`, agentID, chunk.SessionID, chunk.Index, chunk.SHA256, len(chunk.Data))
 	return err
+}
+
+func (s *Store) SaveHistoryMessages(ctx context.Context, agentID string, batch protocol.HistoryMessages) error {
+	for _, message := range batch.Messages {
+		if message.SessionID == "" {
+			message.SessionID = batch.SessionID
+		}
+		if message.SessionID == "" || message.Text == "" {
+			continue
+		}
+		_, err := s.pool.Exec(ctx, `INSERT INTO history_messages (agent_id, session_id, message_index, role, text, message_at, received_at) VALUES ($1,$2,$3,$4,$5,$6,now()) ON CONFLICT (agent_id, session_id, message_index) DO UPDATE SET role=EXCLUDED.role, text=EXCLUDED.text, message_at=EXCLUDED.message_at, received_at=now()`, agentID, message.SessionID, message.Index, message.Role, message.Text, message.At)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) HistoryMessages(ctx context.Context, agentID, sessionID string) ([]protocol.HistoryMessage, error) {
+	rows, err := s.pool.Query(ctx, `SELECT session_id, message_index, role, text, message_at FROM history_messages WHERE agent_id=$1 AND session_id=$2 ORDER BY message_index ASC`, agentID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	messages := []protocol.HistoryMessage{}
+	for rows.Next() {
+		var message protocol.HistoryMessage
+		var at sql.NullTime
+		if err := rows.Scan(&message.SessionID, &message.Index, &message.Role, &message.Text, &at); err != nil {
+			return nil, err
+		}
+		if at.Valid {
+			message.At = at.Time
+		}
+		messages = append(messages, message)
+	}
+	return messages, rows.Err()
 }

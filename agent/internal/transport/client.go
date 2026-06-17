@@ -210,6 +210,11 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 	if err := c.send(ctx, "index.sessions", protocol.SessionIndex{Sessions: sessions}); err != nil {
 		return err
 	}
+	for _, session := range result.Sessions {
+		if err := c.uploadHistoryMessages(ctx, session); err != nil {
+			c.logger.Warn("history messages upload skipped", "session_id", session.ID, "error", err)
+		}
+	}
 	if !c.uploadHistory {
 		return c.send(ctx, "index.updated", map[string]any{
 			"roots":          len(roots),
@@ -261,6 +266,27 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 		"sessions": len(sessions),
 		"at":       time.Now().UTC(),
 	})
+}
+
+func (c *Client) uploadHistoryMessages(ctx context.Context, session codexscan.Session) error {
+	messages, err := codexscan.ReadSessionMessages(ctx, session.Path, 200, 256<<10)
+	if err != nil {
+		return err
+	}
+	if len(messages) == 0 {
+		return nil
+	}
+	out := make([]protocol.HistoryMessage, 0, len(messages))
+	for idx, message := range messages {
+		out = append(out, protocol.HistoryMessage{
+			SessionID: session.ID,
+			Index:     idx,
+			Role:      message.Role,
+			Text:      message.Text,
+			At:        message.At,
+		})
+	}
+	return c.send(ctx, "history.messages", protocol.HistoryMessages{SessionID: session.ID, Messages: out})
 }
 
 func (c *Client) heartbeatLoop(ctx context.Context) error {

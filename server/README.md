@@ -28,6 +28,7 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 - `POST /api/dash/login`: username/password login, returns a short-lived dash session token.
 - `GET /ws/dash`: dash websocket, bearer token is a dash session token or internal admin token.
 - `POST /api/dash/commands`: dash command dispatch to an online agent.
+- `GET /api/dash/history/messages?agent_id=...&session_id=...`: load stored displayable history messages for a session.
 - `GET /healthz`: liveness.
 
 ## Tag release

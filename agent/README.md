@@ -58,6 +58,7 @@ Runtime behavior:
 - scan local Codex config, projects, sessions, history, worktrees, and git metadata.
 - connect to server over WSS only.
 - send register, project/session index, history chunks, heartbeat, and run events.
+- upload displayable user/assistant history messages for dash history views; raw history chunks require explicit `--upload-history`.
 - receive server commands for new session, resume, send, stop, and index refresh.
 - stream structured events for dash to render like Codex desktop.
 

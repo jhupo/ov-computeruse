@@ -42,6 +42,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /ws/agent", s.handleAgentWS)
 	mux.HandleFunc("GET /ws/dash", s.handleDashWS)
 	mux.HandleFunc("POST /api/dash/commands", s.handleDashCommand)
+	mux.HandleFunc("GET /api/dash/history/messages", s.handleDashHistoryMessages)
 	return httpx.Middleware(s.log, mux)
 }
 

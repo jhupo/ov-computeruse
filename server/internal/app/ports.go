@@ -24,6 +24,8 @@ type IndexRepository interface {
 	SaveProjects(context.Context, string, []protocol.Project) error
 	SaveSessions(context.Context, string, []protocol.Session) error
 	SaveHistoryChunk(context.Context, string, protocol.HistoryChunk) error
+	SaveHistoryMessages(context.Context, string, protocol.HistoryMessages) error
+	HistoryMessages(context.Context, string, string) ([]protocol.HistoryMessage, error)
 }
 
 type EventRepository interface {

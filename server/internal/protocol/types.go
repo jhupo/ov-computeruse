@@ -106,6 +106,19 @@ type HistoryChunk struct {
 	SHA256    string `json:"sha256"`
 }
 
+type HistoryMessage struct {
+	SessionID string    `json:"session_id"`
+	Index     int       `json:"index"`
+	Role      string    `json:"role"`
+	Text      string    `json:"text"`
+	At        time.Time `json:"at,omitempty"`
+}
+
+type HistoryMessages struct {
+	SessionID string           `json:"session_id"`
+	Messages  []HistoryMessage `json:"messages"`
+}
+
 type Command struct {
 	CommandID string          `json:"command_id"`
 	RunID     string          `json:"run_id,omitempty"`
