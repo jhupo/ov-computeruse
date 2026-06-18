@@ -100,6 +100,33 @@ func (s *Server) handleDashCommandDetail(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"agent_id": agentID, "command": record})
 }
 
+func (s *Server) handleDashCommandAttempts(w http.ResponseWriter, r *http.Request) {
+	_, agentID, ok := s.authorizeAgentQuery(w, r)
+	if !ok {
+		return
+	}
+	commandID := strings.TrimSpace(r.PathValue("command_id"))
+	if commandID == "" {
+		writeError(w, http.StatusBadRequest, "missing_command_id", "command_id is required")
+		return
+	}
+	if _, found, err := s.store.CommandByID(r.Context(), agentID, commandID); err != nil {
+		s.log.ErrorContext(r.Context(), "command attempt command load failed", "agent_id", agentID, "command_id", commandID, "error", err)
+		writeError(w, http.StatusInternalServerError, "command_load_failed", "unable to load command")
+		return
+	} else if !found {
+		writeError(w, http.StatusNotFound, "command_not_found", "command not found")
+		return
+	}
+	attempts, err := s.store.ListCommandAttempts(r.Context(), agentID, commandID, queryInt(r, "limit", 200))
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "command attempts query failed", "agent_id", agentID, "command_id", commandID, "error", err)
+		writeError(w, http.StatusInternalServerError, "command_attempts_failed", "unable to load command attempts")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agent_id": agentID, "command_id": commandID, "attempts": attempts})
+}
+
 func (s *Server) handleDashCommandRetry(w http.ResponseWriter, r *http.Request) {
 	_, agentID, ok := s.authorizeAgentQuery(w, r)
 	if !ok {

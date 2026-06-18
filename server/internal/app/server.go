@@ -44,6 +44,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/dash/agents", s.handleDashAgents)
 	mux.HandleFunc("GET /api/dash/commands", s.handleDashCommands)
 	mux.HandleFunc("GET /api/dash/commands/{command_id}", s.handleDashCommandDetail)
+	mux.HandleFunc("GET /api/dash/commands/{command_id}/attempts", s.handleDashCommandAttempts)
 	mux.HandleFunc("POST /api/dash/commands/{command_id}/retry", s.handleDashCommandRetry)
 	mux.HandleFunc("GET /api/dash/projects", s.handleDashProjects)
 	mux.HandleFunc("GET /api/dash/sessions", s.handleDashSessions)

@@ -45,6 +45,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE commands ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`,
 		`ALTER TABLE commands ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE commands ADD COLUMN IF NOT EXISTS idempotency_key TEXT`,
+		`CREATE TABLE IF NOT EXISTS command_attempts (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), command_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, phase TEXT NOT NULL, status TEXT NOT NULL, reason TEXT, payload JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
 		`CREATE TABLE IF NOT EXISTS heartbeats (agent_id TEXT PRIMARY KEY REFERENCES agents(id), device_id TEXT NOT NULL, status TEXT NOT NULL, payload JSONB NOT NULL, received_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
 		`CREATE TABLE IF NOT EXISTS approval_requests (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), run_id TEXT, project_id TEXT, session_id TEXT, category TEXT, action TEXT, risk_level TEXT, payload JSONB, status TEXT NOT NULL, requested_at TIMESTAMPTZ NOT NULL DEFAULT now(), decided_at TIMESTAMPTZ)`,
 		`CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, user_id TEXT, agent_id TEXT, action TEXT NOT NULL, payload JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
@@ -75,6 +76,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_tool_calls_run ON tool_calls(agent_id, run_id, seq_start)`,
 		`CREATE INDEX IF NOT EXISTS idx_commands_agent_status ON commands(agent_id, status, created_at)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_commands_agent_idempotency ON commands(agent_id, idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key <> ''`,
+		`CREATE INDEX IF NOT EXISTS idx_command_attempts_command ON command_attempts(agent_id, command_id, created_at)`,
 	}
 	for _, stmt := range indexes {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {

@@ -97,6 +97,18 @@ type CommandRecord struct {
 	IdempotencyKey string          `json:"idempotency_key,omitempty"`
 }
 
+type CommandAttempt struct {
+	ID        string          `json:"id"`
+	AgentID   string          `json:"agent_id"`
+	CommandID string          `json:"command_id"`
+	AttemptNo int             `json:"attempt_no"`
+	Phase     string          `json:"phase"`
+	Status    string          `json:"status"`
+	Reason    string          `json:"reason,omitempty"`
+	Payload   json.RawMessage `json:"payload,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
 func (c CommandRecord) ToProtocol() protocol.Command {
 	return protocol.Command{
 		CommandID:      c.ID,
@@ -449,6 +461,47 @@ func scanCommandRecord(scanner commandRowScanner) (CommandRecord, error) {
 		item.ExpiresAt = expiresAt.Time
 	}
 	return item, nil
+}
+
+func (s *Store) SaveCommandAttempt(ctx context.Context, agentID, commandID, phase, status, reason string, payload json.RawMessage) error {
+	if agentID == "" || commandID == "" || phase == "" || status == "" {
+		return nil
+	}
+	var attemptNo int
+	if err := s.pool.QueryRow(ctx, `SELECT COALESCE(MAX(attempt_no), 0) + 1 FROM command_attempts WHERE agent_id=$1 AND command_id=$2`, agentID, commandID).Scan(&attemptNo); err != nil {
+		return err
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO command_attempts (id, agent_id, command_id, attempt_no, phase, status, reason, payload, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now())`, protocol.NewID("cat"), agentID, commandID, attemptNo, phase, status, nullString(reason), jsonRaw(payload))
+	return err
+}
+
+func (s *Store) ListCommandAttempts(ctx context.Context, agentID, commandID string, limit int) ([]CommandAttempt, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id, agent_id, command_id, attempt_no, phase, status, COALESCE(reason, ''), payload, created_at
+		FROM command_attempts
+		WHERE agent_id=$1 AND command_id=$2
+		ORDER BY attempt_no ASC, created_at ASC
+		LIMIT $3`, agentID, commandID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CommandAttempt{}
+	for rows.Next() {
+		var item CommandAttempt
+		var payload []byte
+		if err := rows.Scan(&item.ID, &item.AgentID, &item.CommandID, &item.AttemptNo, &item.Phase, &item.Status, &item.Reason, &payload, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		if len(payload) > 0 {
+			item.Payload = append(json.RawMessage(nil), payload...)
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) ListRunEvents(ctx context.Context, agentID, runID string, afterSeq uint64, limit int) ([]RunEventRecord, error) {

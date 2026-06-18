@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"ov-computeruse/server/internal/protocol"
@@ -41,6 +42,7 @@ type EventRepository interface {
 	RebuildRunProjections(context.Context, string, string) (store.ProjectionRebuildResult, error)
 	SaveHeartbeat(context.Context, string, string, protocol.Heartbeat) error
 	SaveCommand(context.Context, string, protocol.Command) (protocol.Command, error)
+	SaveCommandAttempt(context.Context, string, string, string, string, string, json.RawMessage) error
 	MarkCommandDispatched(context.Context, string, string) error
 	MarkCommandFailed(context.Context, string, string, string) error
 	MarkCommandExpired(context.Context, string, string, string) error
@@ -53,6 +55,7 @@ type DashboardRepository interface {
 	ListAgents(context.Context, string, bool) ([]store.AgentSummary, error)
 	ListCommands(context.Context, string, string, int) ([]store.CommandRecord, error)
 	CommandByID(context.Context, string, string) (store.CommandRecord, bool, error)
+	ListCommandAttempts(context.Context, string, string, int) ([]store.CommandAttempt, error)
 	PendingCommands(context.Context, string, int) ([]store.CommandRecord, error)
 	PendingDispatchCommands(context.Context, int) ([]store.CommandRecord, error)
 	ListProjects(context.Context, string) ([]store.ProjectSummary, error)

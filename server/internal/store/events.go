@@ -361,6 +361,9 @@ func (s *Store) SaveCommand(ctx context.Context, agentID string, command protoco
 		}
 		return protocol.Command{}, nil
 	}
+	if err := s.SaveCommandAttempt(ctx, agentID, command.CommandID, "queued", "queued", "command queued", nil); err != nil {
+		return protocol.Command{}, err
+	}
 	if command.RunID == "" {
 		return command, nil
 	}
@@ -369,23 +372,31 @@ func (s *Store) SaveCommand(ctx context.Context, agentID string, command protoco
 }
 
 func (s *Store) MarkCommandDispatched(ctx context.Context, agentID, commandID string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE commands SET status='dispatched', status_reason='', dispatched_at=now(), retry_count=retry_count+1 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatch_failed','failed','expired')`, agentID, commandID)
-	return err
+	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status='dispatched', status_reason='', dispatched_at=now(), retry_count=retry_count+1 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatch_failed','failed','expired')`, agentID, commandID); err != nil {
+		return err
+	}
+	return s.SaveCommandAttempt(ctx, agentID, commandID, "dispatch", "dispatched", "command written to agent transport", nil)
 }
 
 func (s *Store) MarkCommandFailed(ctx context.Context, agentID, commandID, reason string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE commands SET status='dispatch_failed', status_reason=$3 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, reason)
-	return err
+	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status='dispatch_failed', status_reason=$3 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, reason); err != nil {
+		return err
+	}
+	return s.SaveCommandAttempt(ctx, agentID, commandID, "dispatch", "failed", reason, nil)
 }
 
 func (s *Store) MarkCommandExpired(ctx context.Context, agentID, commandID, reason string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE commands SET status='expired', status_reason=$3 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, reason)
-	return err
+	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status='expired', status_reason=$3 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, reason); err != nil {
+		return err
+	}
+	return s.SaveCommandAttempt(ctx, agentID, commandID, "expire", "expired", reason, nil)
 }
 
 func (s *Store) PrepareCommandRetry(ctx context.Context, agentID, commandID string, deadlineAt, expiresAt time.Time) error {
-	_, err := s.pool.Exec(ctx, `UPDATE commands SET status='queued', status_reason='retry requested', deadline_at=$3, expires_at=$4 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, deadlineAt.UTC(), expiresAt.UTC())
-	return err
+	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status='queued', status_reason='retry requested', deadline_at=$3, expires_at=$4 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, deadlineAt.UTC(), expiresAt.UTC()); err != nil {
+		return err
+	}
+	return s.SaveCommandAttempt(ctx, agentID, commandID, "retry", "queued", "retry requested", protocol.Raw(map[string]any{"deadline_at": deadlineAt.UTC(), "expires_at": expiresAt.UTC()}))
 }
 
 func (s *Store) MarkCommandAck(ctx context.Context, agentID string, ack protocol.Ack) error {
@@ -393,13 +404,40 @@ func (s *Store) MarkCommandAck(ctx context.Context, agentID string, ack protocol
 		return nil
 	}
 	status := commandStatusFromAck(ack)
-	_, err := s.pool.Exec(ctx, `UPDATE commands SET status=$1, status_reason=$2, acked_at=now() WHERE agent_id=$3 AND id=$4`, status, ack.Message, agentID, ack.CommandID)
-	return err
+	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status=$1, status_reason=$2, acked_at=now() WHERE agent_id=$3 AND id=$4`, status, ack.Message, agentID, ack.CommandID); err != nil {
+		return err
+	}
+	return s.SaveCommandAttempt(ctx, agentID, ack.CommandID, "ack", status, ack.Message, protocol.Raw(ack))
 }
 
 func (s *Store) ExpireCommands(ctx context.Context, agentID string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE commands SET status='expired', status_reason='command expired before agent accepted it' WHERE agent_id=$1 AND status IN ('queued','dispatch_failed','dispatched') AND expires_at IS NOT NULL AND expires_at < now()`, agentID)
-	return err
+	rows, err := s.pool.Query(ctx, `SELECT id FROM commands WHERE agent_id=$1 AND status IN ('queued','dispatch_failed','dispatched') AND expires_at IS NOT NULL AND expires_at < now()`, agentID)
+	if err != nil {
+		return err
+	}
+	expired := []string{}
+	for rows.Next() {
+		var commandID string
+		if err := rows.Scan(&commandID); err != nil {
+			rows.Close()
+			return err
+		}
+		expired = append(expired, commandID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status='expired', status_reason='command expired before agent accepted it' WHERE agent_id=$1 AND status IN ('queued','dispatch_failed','dispatched') AND expires_at IS NOT NULL AND expires_at < now()`, agentID); err != nil {
+		return err
+	}
+	for _, commandID := range expired {
+		if err := s.SaveCommandAttempt(ctx, agentID, commandID, "expire", "expired", "command expired before agent accepted it", nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) ReconcileHeartbeatRuns(ctx context.Context, agentID string, heartbeat protocol.Heartbeat) error {
