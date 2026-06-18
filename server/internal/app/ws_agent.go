@@ -139,6 +139,13 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 		if err == nil {
 			_ = s.store.SaveSessions(ctx, agent.AgentID, index.Sessions)
 		}
+	case "index.runtime_sessions":
+		index, err := protocol.Decode[protocol.RuntimeSessionIndex](env.Data)
+		if err == nil {
+			for _, runtimeSession := range index.RuntimeSessions {
+				_ = s.store.UpsertRuntimeSession(ctx, agent.AgentID, runtimeSession)
+			}
+		}
 	case "index.deleted":
 		deleted, err := protocol.Decode[protocol.DeletedIndex](env.Data)
 		if err == nil {

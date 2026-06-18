@@ -34,10 +34,11 @@ type Credential struct {
 }
 
 type Result struct {
-	Roots    []Root    `json:"roots"`
-	Files    []File    `json:"files"`
-	Projects []Project `json:"projects"`
-	Sessions []Session `json:"sessions"`
+	Roots           []Root           `json:"roots"`
+	Files           []File           `json:"files"`
+	Projects        []Project        `json:"projects"`
+	Sessions        []Session        `json:"sessions"`
+	RuntimeSessions []RuntimeSession `json:"runtime_sessions"`
 }
 
 type Root struct {
@@ -78,6 +79,16 @@ type Session struct {
 	UpdatedAt     time.Time `json:"updated_at,omitempty"`
 	Size          int64     `json:"size,omitempty"`
 	ContentSHA256 string    `json:"content_sha256,omitempty"`
+}
+
+type RuntimeSession struct {
+	Runtime         string    `json:"runtime"`
+	ProjectID       string    `json:"project_id,omitempty"`
+	SessionID       string    `json:"session_id,omitempty"`
+	NativeSessionID string    `json:"native_session_id,omitempty"`
+	LastResponseID  string    `json:"last_response_id,omitempty"`
+	ResumeMode      string    `json:"resume_mode,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at,omitempty"`
 }
 
 type SessionMessage struct {
@@ -262,6 +273,9 @@ func (s Scanner) Scan(ctx context.Context) (Result, error) {
 				session := sessionFromFile(path, info, maxBytes, sessionTitles)
 				session.Root = root
 				result.Sessions = append(result.Sessions, session)
+				if runtimeSession := runtimeSessionFromFile(session); runtimeSession.SessionID != "" || runtimeSession.LastResponseID != "" {
+					result.RuntimeSessions = append(result.RuntimeSessions, runtimeSession)
+				}
 				if session.CWD != "" {
 					result.Projects = append(result.Projects, projectFromCWD(root, session.CWD, session.UpdatedAt))
 				}
@@ -282,6 +296,10 @@ func (s Scanner) Scan(ctx context.Context) (Result, error) {
 	result.Sessions = uniqueSessions(result.Sessions)
 	sort.Slice(result.Sessions, func(i, j int) bool {
 		return result.Sessions[i].UpdatedAt.After(result.Sessions[j].UpdatedAt)
+	})
+	result.RuntimeSessions = uniqueRuntimeSessions(result.RuntimeSessions)
+	sort.Slice(result.RuntimeSessions, func(i, j int) bool {
+		return result.RuntimeSessions[i].UpdatedAt.After(result.RuntimeSessions[j].UpdatedAt)
 	})
 	return result, nil
 }
@@ -597,6 +615,81 @@ func readSessionMeta(path string) sessionMeta {
 		}
 	}
 	return sessionMeta{}
+}
+
+func runtimeSessionFromFile(session Session) RuntimeSession {
+	if session.Path == "" {
+		return RuntimeSession{}
+	}
+	file, err := os.Open(session.Path)
+	if err != nil {
+		return RuntimeSession{}
+	}
+	defer file.Close()
+	scanner := newJSONLScanner(file)
+	lastResponseID := ""
+	nativeSessionID := session.ID
+	updatedAt := session.UpdatedAt
+	for scanner.Scan() {
+		var row struct {
+			Timestamp time.Time       `json:"timestamp"`
+			Type      string          `json:"type"`
+			Payload   json.RawMessage `json:"payload"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
+			continue
+		}
+		if row.Timestamp.After(updatedAt) {
+			updatedAt = row.Timestamp
+		}
+		if row.Type == "session_meta" {
+			var meta struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal(row.Payload, &meta) == nil && strings.TrimSpace(meta.ID) != "" {
+				nativeSessionID = strings.TrimSpace(meta.ID)
+			}
+		}
+		if responseID := responseIDFromPayload(row.Payload); responseID != "" {
+			lastResponseID = responseID
+		}
+	}
+	if lastResponseID == "" && nativeSessionID == "" {
+		return RuntimeSession{}
+	}
+	return RuntimeSession{
+		Runtime:         "openai.responses",
+		ProjectID:       session.ProjectID,
+		SessionID:       session.ID,
+		NativeSessionID: nativeSessionID,
+		LastResponseID:  lastResponseID,
+		ResumeMode:      "codex_history_index",
+		UpdatedAt:       updatedAt,
+	}
+}
+
+func responseIDFromPayload(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var value map[string]any
+	if json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	for _, key := range []string{"response_id", "last_response_id"} {
+		if id := stringFromAny(value[key]); strings.HasPrefix(id, "resp_") {
+			return id
+		}
+	}
+	if response, ok := value["response"].(map[string]any); ok {
+		if id := stringFromAny(response["id"]); strings.HasPrefix(id, "resp_") {
+			return id
+		}
+	}
+	if id := stringFromAny(value["id"]); strings.HasPrefix(id, "resp_") {
+		return id
+	}
+	return ""
 }
 
 func readSessionIndex(path string) map[string]string {
@@ -954,6 +1047,22 @@ func uniqueSessions(sessions []Session) []Session {
 		seen[session.ID] = session
 	}
 	out := make([]Session, 0, len(seen))
+	for _, session := range seen {
+		out = append(out, session)
+	}
+	return out
+}
+
+func uniqueRuntimeSessions(sessions []RuntimeSession) []RuntimeSession {
+	seen := map[string]RuntimeSession{}
+	for _, session := range sessions {
+		key := session.Runtime + "\x00" + session.SessionID
+		if existing, ok := seen[key]; ok && existing.UpdatedAt.After(session.UpdatedAt) {
+			continue
+		}
+		seen[key] = session
+	}
+	out := make([]RuntimeSession, 0, len(seen))
 	for _, session := range seen {
 		out = append(out, session)
 	}

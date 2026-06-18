@@ -141,6 +141,10 @@ type RuntimeSession struct {
 	UpdatedAt       time.Time `json:"updated_at,omitempty"`
 }
 
+type RuntimeSessionIndex struct {
+	RuntimeSessions []RuntimeSession `json:"runtime_sessions"`
+}
+
 type HistoryChunk struct {
 	SessionID string `json:"session_id"`
 	Index     int    `json:"index"`

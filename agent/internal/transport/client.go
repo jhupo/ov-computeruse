@@ -151,7 +151,7 @@ func (c *Client) register(ctx context.Context) error {
 			SupportsHistory:   true,
 			SupportsTerminal:  false,
 			SupportsGit:       false,
-			Features:          []string{"codex.scan", "history.items", "run.events", "runtime.session", "approval.decision", "command.new_session", "command.resume", "command.send", "command.stop", "command.refresh_index"},
+			Features:          []string{"codex.scan", "history.items", "index.runtime_sessions", "run.events", "runtime.session", "approval.decision", "command.new_session", "command.resume", "command.send", "command.stop", "command.refresh_index"},
 			MaxConcurrentRuns: 1,
 		},
 	}
@@ -224,6 +224,23 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 	}
 	if err := c.send(ctx, "index.sessions", protocol.SessionIndex{Sessions: sessions}); err != nil {
 		return err
+	}
+	runtimeSessions := make([]protocol.RuntimeSession, 0, len(result.RuntimeSessions))
+	for _, session := range result.RuntimeSessions {
+		runtimeSessions = append(runtimeSessions, protocol.RuntimeSession{
+			Runtime:         session.Runtime,
+			ProjectID:       session.ProjectID,
+			SessionID:       session.SessionID,
+			NativeSessionID: session.NativeSessionID,
+			LastResponseID:  session.LastResponseID,
+			ResumeMode:      session.ResumeMode,
+			UpdatedAt:       session.UpdatedAt,
+		})
+	}
+	if len(runtimeSessions) > 0 {
+		if err := c.send(ctx, "index.runtime_sessions", protocol.RuntimeSessionIndex{RuntimeSessions: runtimeSessions}); err != nil {
+			return err
+		}
 	}
 	if len(deleted.Projects) > 0 || len(deleted.Sessions) > 0 {
 		if err := c.send(ctx, "index.deleted", protocol.DeletedIndex{

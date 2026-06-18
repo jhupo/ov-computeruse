@@ -81,6 +81,10 @@ func (s *Store) SaveScanResult(ctx context.Context, result codexscan.Result) (De
 		_ = tx.Rollback()
 		return DeletedIndex{}, err
 	}
+	if err := upsertRuntimeSessions(ctx, tx, result.RuntimeSessions); err != nil {
+		_ = tx.Rollback()
+		return DeletedIndex{}, err
+	}
 	deleted, err := markMissingDeleted(ctx, tx, result)
 	if err != nil {
 		_ = tx.Rollback()
@@ -430,6 +434,26 @@ func upsertSessions(ctx context.Context, tx txLike, sessions []codexscan.Session
 				deleted_at = NULL,
 				updated_at = excluded.updated_at
 		`, session.ID, session.IDSource, session.Root, session.ProjectID, session.Title, session.Path, session.CWD, timeString(session.UpdatedAt), session.Size, session.ContentSHA256, fingerprint(session), now()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func upsertRuntimeSessions(ctx context.Context, tx txLike, sessions []codexscan.RuntimeSession) error {
+	for _, session := range sessions {
+		if session.SessionID == "" || session.Runtime == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO runtime_sessions(session_id, runtime, native_session_id, last_response_id, resume_mode, last_run_id, updated_at)
+			VALUES(?, ?, ?, ?, ?, '', ?)
+			ON CONFLICT(session_id, runtime) DO UPDATE SET
+				native_session_id = COALESCE(NULLIF(excluded.native_session_id, ''), runtime_sessions.native_session_id),
+				last_response_id = COALESCE(NULLIF(excluded.last_response_id, ''), runtime_sessions.last_response_id),
+				resume_mode = COALESCE(NULLIF(excluded.resume_mode, ''), runtime_sessions.resume_mode),
+				updated_at = excluded.updated_at
+		`, session.SessionID, session.Runtime, session.NativeSessionID, session.LastResponseID, session.ResumeMode, now()); err != nil {
 			return err
 		}
 	}
