@@ -5,8 +5,18 @@ import "context"
 func (s *Store) migrate(ctx context.Context) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_at TIMESTAMPTZ`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_reason TEXT`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_by TEXT`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ`,
 		`CREATE TABLE IF NOT EXISTS user_keys (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), base_url TEXT NOT NULL, key_fingerprint TEXT NOT NULL, disabled_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
 		`ALTER TABLE user_keys ADD COLUMN IF NOT EXISTS base_url_fingerprint TEXT`,
+		`ALTER TABLE user_keys ADD COLUMN IF NOT EXISTS name TEXT`,
+		`ALTER TABLE user_keys ADD COLUMN IF NOT EXISTS provider TEXT`,
+		`ALTER TABLE user_keys ADD COLUMN IF NOT EXISTS model TEXT`,
+		`ALTER TABLE user_keys ADD COLUMN IF NOT EXISTS disabled_reason TEXT`,
+		`ALTER TABLE user_keys ADD COLUMN IF NOT EXISTS disabled_by TEXT`,
+		`ALTER TABLE user_keys ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ`,
 		`CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), install_id TEXT NOT NULL, machine_hash TEXT NOT NULL, hostname TEXT, os TEXT, arch TEXT, username_hash TEXT, agent_version TEXT, install_state JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), last_seen_at TIMESTAMPTZ)`,
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS install_state JSONB`,
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS disabled_at TIMESTAMPTZ`,
@@ -65,8 +75,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	indexes := []string{
 		`CREATE INDEX IF NOT EXISTS idx_agents_user ON agents(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_users_active ON users(created_at DESC) WHERE disabled_at IS NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_agents_active_user ON agents(user_id, last_seen_at DESC) WHERE disabled_at IS NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_user_keys_credential ON user_keys(user_id, key_fingerprint, base_url_fingerprint) WHERE disabled_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_user_keys_user ON user_keys(user_id, created_at DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_device ON agents(device_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_devices_active_user ON devices(user_id, last_seen_at DESC) WHERE disabled_at IS NULL`,

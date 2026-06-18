@@ -19,7 +19,7 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 - `OV_SERVER_DASH_TOKEN`, internal/admin bearer token; normal users should use `/api/dash/login`
 - `OV_SERVER_BIND_USERS_JSON`, optional bootstrap users for local/dev binding
 
-`OV_SERVER_BIND_USERS_JSON` is a JSON array with username/password and allowed Codex key fingerprint records. It is only a bootstrap path until the real user/key admin service exists.
+`OV_SERVER_BIND_USERS_JSON` is a JSON array with username/password and allowed Codex key fingerprint records. It is a bootstrap seed path; ongoing user/key management should use the admin API.
 
 ## Endpoints
 
@@ -27,6 +27,14 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 - `GET /ws/agent`: outbound agent websocket, bearer token is the per-agent secret.
 - `POST /api/dash/login`: username/password login, returns a short-lived dash session token.
 - `GET /api/dash/me`: return the current dash principal.
+- `GET /api/admin/users`: admin-only list of users.
+- `POST /api/admin/users`: admin-only create/update user. Body includes `username`, optional `id`, and `password`.
+- `POST /api/admin/users/{user_id}/disable`: admin-only disable user, invalidating sessions and disconnecting agents.
+- `POST /api/admin/users/{user_id}/enable`: admin-only enable user.
+- `GET /api/admin/users/{user_id}/keys`: admin-only list of a user's Codex credential fingerprints.
+- `POST /api/admin/users/{user_id}/keys`: admin-only create/update Codex key fingerprint record. Body includes `base_url`, `key_fingerprint`, optional `id`, `name`, `provider`, `model`.
+- `POST /api/admin/users/{user_id}/keys/{key_id}/disable`: admin-only disable one Codex key fingerprint.
+- `POST /api/admin/users/{user_id}/keys/{key_id}/enable`: admin-only enable one Codex key fingerprint.
 - `GET /api/dash/agents`: list the current user's agents and device heartbeat snapshots.
 - `POST /api/dash/agents/{agent_id}/disable`: disable one agent or its device. JSON body accepts `scope` as `agent` or `device` and optional `reason`.
 - `POST /api/dash/agents/{agent_id}/enable`: enable one agent or its device. JSON body accepts `scope` as `agent` or `device`.

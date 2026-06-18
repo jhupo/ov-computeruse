@@ -22,6 +22,9 @@ type BindUser struct {
 	Password    string `json:"password"`
 	BaseURL     string `json:"base_url"`
 	Fingerprint string `json:"fingerprint"`
+	Name        string `json:"name,omitempty"`
+	Provider    string `json:"provider,omitempty"`
+	Model       string `json:"model,omitempty"`
 }
 
 type DeviceProfile struct {
@@ -44,34 +47,27 @@ type Credential struct {
 }
 
 func (s *Store) EnsureBindUser(ctx context.Context, user BindUser) error {
-	passwordHash, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
+	record, err := s.UpsertUser(ctx, UserUpsert{ID: user.ID, Username: user.Username, Password: user.Password, Actor: "bootstrap"})
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `INSERT INTO users (id, username, password_hash) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET username=EXCLUDED.username, password_hash=EXCLUDED.password_hash`, user.ID, user.Username, string(passwordHash))
-	if err != nil {
-		return err
-	}
-	baseURL, err := normalizeBaseURL(user.BaseURL)
-	if err != nil {
-		return err
-	}
-	_, err = s.pool.Exec(ctx, `INSERT INTO user_keys (id, user_id, base_url, base_url_fingerprint, key_fingerprint)
-		VALUES ($1,$2,$3,$4,$5)
-		ON CONFLICT (id) DO UPDATE SET base_url=EXCLUDED.base_url, base_url_fingerprint=EXCLUDED.base_url_fingerprint, key_fingerprint=EXCLUDED.key_fingerprint`,
-		"key_"+user.ID, user.ID, baseURL, security.FingerprintSecret(baseURL), user.Fingerprint)
+	_, err = s.UpsertUserKey(ctx, UserKeyUpsert{ID: "key_" + record.ID, UserID: record.ID, Name: user.Name, BaseURL: user.BaseURL, KeyFingerprint: user.Fingerprint, Provider: user.Provider, Model: user.Model, Actor: "bootstrap"})
 	return err
 }
 
 func (s *Store) AuthenticateUser(ctx context.Context, username, password string) (UserIdentity, error) {
 	var user UserIdentity
 	var passwordHash string
-	err := s.pool.QueryRow(ctx, `SELECT id, username, password_hash FROM users WHERE username=$1`, username).Scan(&user.UserID, &user.Username, &passwordHash)
+	var disabledAt sql.NullTime
+	err := s.pool.QueryRow(ctx, `SELECT id, username, password_hash, disabled_at FROM users WHERE username=$1`, username).Scan(&user.UserID, &user.Username, &passwordHash, &disabledAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return UserIdentity{}, errors.New("invalid username or password")
 	}
 	if err != nil {
 		return UserIdentity{}, err
+	}
+	if disabledAt.Valid {
+		return UserIdentity{}, errors.New("user is disabled")
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)); err != nil {
 		return UserIdentity{}, errors.New("invalid username or password")

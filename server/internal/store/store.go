@@ -17,6 +17,8 @@ type AgentIdentity struct {
 	AgentID              string          `json:"agent_id"`
 	WorkspaceID          string          `json:"workspace_id"`
 	UserID               string          `json:"-"`
+	UserDisabledAt       time.Time       `json:"user_disabled_at,omitempty"`
+	UserDisabledReason   string          `json:"user_disabled_reason,omitempty"`
 	DeviceID             string          `json:"device_id"`
 	AgentSecret          string          `json:"-"`
 	ServerURL            string          `json:"server_url"`
@@ -35,6 +37,12 @@ type UserIdentity struct {
 }
 
 func (a AgentIdentity) AccessError() error {
+	if !a.UserDisabledAt.IsZero() {
+		if a.UserDisabledReason != "" {
+			return errors.New("user is disabled: " + a.UserDisabledReason)
+		}
+		return errors.New("user is disabled")
+	}
 	if !a.DisabledAt.IsZero() {
 		if a.DisabledReason != "" {
 			return errors.New("agent is disabled: " + a.DisabledReason)

@@ -249,3 +249,18 @@ func queryInt(r *http.Request, key string, fallback int) int {
 	}
 	return parsed
 }
+
+func queryBool(r *http.Request, key string, fallback bool) bool {
+	value := strings.ToLower(strings.TrimSpace(r.URL.Query().Get(key)))
+	if value == "" {
+		return fallback
+	}
+	switch value {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}

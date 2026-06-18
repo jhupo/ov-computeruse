@@ -41,6 +41,14 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/agents/bind", s.handleBind)
 	mux.HandleFunc("POST /api/dash/login", s.handleDashLogin)
 	mux.HandleFunc("GET /api/dash/me", s.handleDashMe)
+	mux.HandleFunc("GET /api/admin/users", s.handleAdminUsers)
+	mux.HandleFunc("POST /api/admin/users", s.handleAdminUserUpsert)
+	mux.HandleFunc("POST /api/admin/users/{user_id}/disable", s.handleAdminUserDisable)
+	mux.HandleFunc("POST /api/admin/users/{user_id}/enable", s.handleAdminUserEnable)
+	mux.HandleFunc("GET /api/admin/users/{user_id}/keys", s.handleAdminUserKeys)
+	mux.HandleFunc("POST /api/admin/users/{user_id}/keys", s.handleAdminUserKeyUpsert)
+	mux.HandleFunc("POST /api/admin/users/{user_id}/keys/{key_id}/disable", s.handleAdminUserKeyDisable)
+	mux.HandleFunc("POST /api/admin/users/{user_id}/keys/{key_id}/enable", s.handleAdminUserKeyEnable)
 	mux.HandleFunc("GET /api/dash/agents", s.handleDashAgents)
 	mux.HandleFunc("POST /api/dash/agents/{agent_id}/disable", s.handleDashAgentDisable)
 	mux.HandleFunc("POST /api/dash/agents/{agent_id}/enable", s.handleDashAgentEnable)
@@ -84,6 +92,12 @@ func (s *Server) requireDash(r *http.Request) (DashPrincipal, bool) {
 	principal, err := s.sessions.Principal(r.Context(), token)
 	if err != nil {
 		return DashPrincipal{}, false
+	}
+	if principal.UserID != "" {
+		user, found, err := s.store.UserByID(r.Context(), principal.UserID)
+		if err != nil || !found || user.Disabled {
+			return DashPrincipal{}, false
+		}
 	}
 	return principal, true
 }

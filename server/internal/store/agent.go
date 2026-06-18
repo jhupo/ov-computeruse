@@ -39,15 +39,17 @@ func (s *Store) agentIdentityBy(ctx context.Context, predicate string, args ...a
 	var identity AgentIdentity
 	var capabilities []byte
 	var credential []byte
+	var userDisabledAt sql.NullTime
 	var agentDisabledAt sql.NullTime
 	var deviceDisabledAt sql.NullTime
-	err := s.pool.QueryRow(ctx, `SELECT a.id, a.workspace_id, a.user_id, a.device_id, a.agent_secret, a.server_key_id,
+	err := s.pool.QueryRow(ctx, `SELECT a.id, a.workspace_id, a.user_id, COALESCE(u.disabled_reason, ''), u.disabled_at, a.device_id, a.agent_secret, a.server_key_id,
 			COALESCE(a.capabilities, '{}'::jsonb), COALESCE(a.credential, '{}'::jsonb),
 			a.disabled_at, COALESCE(a.disabled_reason, ''), d.disabled_at, COALESCE(d.disabled_reason, '')
 		FROM agents a
+		JOIN users u ON u.id = a.user_id
 		JOIN devices d ON d.id = a.device_id
 		WHERE `+predicate, args...).Scan(
-		&identity.AgentID, &identity.WorkspaceID, &identity.UserID, &identity.DeviceID, &identity.AgentSecret, &identity.ServerKeyID,
+		&identity.AgentID, &identity.WorkspaceID, &identity.UserID, &identity.UserDisabledReason, &userDisabledAt, &identity.DeviceID, &identity.AgentSecret, &identity.ServerKeyID,
 		&capabilities, &credential, &agentDisabledAt, &identity.DisabledReason, &deviceDisabledAt, &identity.DeviceDisabledReason,
 	)
 	if len(capabilities) > 0 {
@@ -55,6 +57,9 @@ func (s *Store) agentIdentityBy(ctx context.Context, predicate string, args ...a
 	}
 	if len(credential) > 0 {
 		identity.Credential = append(identity.Credential, credential...)
+	}
+	if userDisabledAt.Valid {
+		identity.UserDisabledAt = userDisabledAt.Time
 	}
 	if agentDisabledAt.Valid {
 		identity.DisabledAt = agentDisabledAt.Time

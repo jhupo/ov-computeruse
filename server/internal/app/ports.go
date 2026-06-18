@@ -26,6 +26,17 @@ type BindRepository interface {
 	EnsureBindUser(context.Context, store.BindUser) error
 }
 
+type UserAdminRepository interface {
+	ListUsers(context.Context, bool) ([]store.UserRecord, error)
+	UserByID(context.Context, string) (store.UserRecord, bool, error)
+	UpsertUser(context.Context, store.UserUpsert) (store.UserRecord, error)
+	SetUserAccess(context.Context, string, store.AccessChange) (store.UserRecord, error)
+	ListUserKeys(context.Context, string, bool) ([]store.UserKeyRecord, error)
+	UserKeyByID(context.Context, string) (store.UserKeyRecord, bool, error)
+	UpsertUserKey(context.Context, store.UserKeyUpsert) (store.UserKeyRecord, error)
+	SetUserKeyAccess(context.Context, string, store.AccessChange) (store.UserKeyRecord, error)
+}
+
 type IndexRepository interface {
 	SaveRoots(context.Context, string, []protocol.Root) error
 	SaveProjects(context.Context, string, []protocol.Project) error
@@ -82,6 +93,7 @@ type DashboardRepository interface {
 type Repository interface {
 	AgentRepository
 	BindRepository
+	UserAdminRepository
 	IndexRepository
 	EventRepository
 	DashboardRepository

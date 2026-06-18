@@ -57,6 +57,7 @@ type DashBroadcastEnvelope struct {
 type AgentDisconnectEnvelope struct {
 	Origin  string `json:"origin"`
 	AgentID string `json:"agent_id"`
+	UserID  string `json:"user_id,omitempty"`
 	Reason  string `json:"reason,omitempty"`
 }
 
@@ -130,6 +131,18 @@ func (h *Hub) DisconnectAgent(ctx context.Context, agentID string) {
 	_ = h.redis.Publish(ctx, "ov:agent:disconnects", raw).Err()
 }
 
+func (h *Hub) DisconnectUserAgents(ctx context.Context, userID string) {
+	h.disconnectUserAgentsLocal(ctx, userID)
+	if h.redis == nil {
+		return
+	}
+	raw, err := json.Marshal(AgentDisconnectEnvelope{Origin: h.instanceID, UserID: userID, Reason: "user_access_changed"})
+	if err != nil {
+		return
+	}
+	_ = h.redis.Publish(ctx, "ov:agent:disconnects", raw).Err()
+}
+
 func (h *Hub) disconnectAgentLocal(ctx context.Context, agentID string) {
 	h.mu.Lock()
 	conn := h.agents[agentID]
@@ -138,6 +151,25 @@ func (h *Hub) disconnectAgentLocal(ctx context.Context, agentID string) {
 	h.removeAgentLease(ctx, agentID)
 	if conn != nil && conn.Conn != nil {
 		_ = conn.Conn.Close()
+	}
+}
+
+func (h *Hub) disconnectUserAgentsLocal(ctx context.Context, userID string) {
+	h.mu.Lock()
+	conns := []*AgentConn{}
+	for agentID, conn := range h.agents {
+		if conn.UserID != userID {
+			continue
+		}
+		conns = append(conns, conn)
+		delete(h.agents, agentID)
+	}
+	h.mu.Unlock()
+	for _, conn := range conns {
+		h.removeAgentLease(ctx, conn.AgentID)
+		if conn.Conn != nil {
+			_ = conn.Conn.Close()
+		}
 	}
 }
 
@@ -352,10 +384,16 @@ func (h *Hub) subscribeAgentDisconnects(ctx context.Context) {
 			h.log.WarnContext(ctx, "invalid agent disconnect envelope", "error", err)
 			continue
 		}
-		if env.Origin == h.instanceID || env.AgentID == "" {
+		if env.Origin == h.instanceID {
 			continue
 		}
-		h.disconnectAgentLocal(ctx, env.AgentID)
+		if env.UserID != "" {
+			h.disconnectUserAgentsLocal(ctx, env.UserID)
+			continue
+		}
+		if env.AgentID != "" {
+			h.disconnectAgentLocal(ctx, env.AgentID)
+		}
 	}
 }
 
