@@ -14,7 +14,7 @@ server 是多用户控制平面，负责 agent 绑定、设备治理、Codex 索
 - `internal/store`: Postgres repository，封装用户、key、设备、agent、索引、历史、命令、运行事件、审批、审计持久化。
 - `internal/app`: 应用服务层，定义 repository ports，组合 bind service、dash session service、websocket hub 和 HTTP handlers。
 
-业务代码只依赖 app ports，不直接穿透到 pgx/redis。平台能力只在 `platform`、`store` 和 `hub` 内部出现。
+业务路径只依赖 app ports，不直接穿透到 pgx/redis。平台能力主要在 `platform`、`store` 和 `hub` 内部出现；`/readyz` 作为运维入口会直接 ping Postgres 和 Redis。
 
 ## 多用户与设备模型
 
@@ -78,6 +78,8 @@ agent websocket 使用 per-agent `agent_secret`：
 被禁用用户不能继续使用旧 dash session，用户下所有在线 agent 会被强制断开。被禁用 key 不会影响历史展示，但会阻止新的 `new_session/resume/send` 执行类命令通过 credential 校验。
 
 HTTP 请求统一经过 request id、panic recovery 和结构化日志 middleware。API 错误返回稳定 `{error:{code,message}}`，内部错误写日志，不把数据库、私钥或 agent secret 细节透给 dash。
+
+`/healthz` 只表示进程存活；`/readyz` 会 ping Postgres 和 Redis，任一依赖不可用时返回 503，并给出依赖状态。容器和负载均衡应使用 readiness 控制流量接入。
 
 ## 命令生命周期
 

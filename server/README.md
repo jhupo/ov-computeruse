@@ -55,6 +55,7 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 - `POST /api/dash/commands`: create a durable command intent and dispatch it when the agent is online. Returns the command record plus `command_id` and `run_id`.
 - `GET /api/dash/history/messages?agent_id=...&session_id=...`: load stored displayable history messages for a session.
 - `GET /healthz`: liveness.
+- `GET /readyz`: readiness; pings Postgres and Redis and returns dependency status.
 
 Agent websocket envelopes encrypt `data` with AES-256-GCM derived from the per-agent secret and then sign the encrypted envelope with HMAC-SHA256. Bind requests still use the server public key because they happen before an agent secret exists.
 

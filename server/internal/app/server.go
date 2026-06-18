@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
 	"ov-computeruse/server/internal/config"
@@ -17,6 +18,7 @@ import (
 type Server struct {
 	cfg      config.Config
 	store    Repository
+	postgres *pgxpool.Pool
 	redis    *redis.Client
 	hub      *Hub
 	log      *slog.Logger
@@ -24,11 +26,11 @@ type Server struct {
 	sessions SessionService
 }
 
-func New(cfg config.Config, st Repository, redisClient *redis.Client, logger *slog.Logger) *Server {
+func New(cfg config.Config, st Repository, postgresPool *pgxpool.Pool, redisClient *redis.Client, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{cfg: cfg, store: st, redis: redisClient, hub: NewHub(redisClient, st, logger), log: logger, bind: NewBindService(st, cfg.PublicURL, cfg.ServerKeyID), sessions: NewSessionService(redisClient, st, logger)}
+	return &Server{cfg: cfg, store: st, postgres: postgresPool, redis: redisClient, hub: NewHub(redisClient, st, logger), log: logger, bind: NewBindService(st, cfg.PublicURL, cfg.ServerKeyID), sessions: NewSessionService(redisClient, st, logger)}
 }
 
 func (s *Server) Run(ctx context.Context) {
@@ -39,6 +41,7 @@ func (s *Server) Run(ctx context.Context) {
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.HandleFunc("POST /api/agents/bind", s.handleBind)
 	mux.HandleFunc("POST /api/dash/login", s.handleDashLogin)
 	mux.HandleFunc("GET /api/dash/me", s.handleDashMe)
@@ -78,6 +81,31 @@ func (s *Server) Routes() http.Handler {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	status := map[string]string{}
+	code := http.StatusOK
+	if s.postgres == nil {
+		status["postgres"] = "missing"
+		code = http.StatusServiceUnavailable
+	} else if err := s.postgres.Ping(r.Context()); err != nil {
+		status["postgres"] = "unavailable"
+		code = http.StatusServiceUnavailable
+	} else {
+		status["postgres"] = "ok"
+	}
+	if s.redis == nil {
+		status["redis"] = "missing"
+		code = http.StatusServiceUnavailable
+	} else if err := s.redis.Ping(r.Context()).Err(); err != nil {
+		status["redis"] = "unavailable"
+		code = http.StatusServiceUnavailable
+	} else {
+		status["redis"] = "ok"
+	}
+	ready := code == http.StatusOK
+	writeJSON(w, code, map[string]any{"ready": ready, "dependencies": status})
 }
 
 func (s *Server) requireDash(r *http.Request) (DashPrincipal, bool) {

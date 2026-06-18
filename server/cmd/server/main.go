@@ -33,7 +33,7 @@ func main() {
 	defer postgresPool.Close()
 	st, err := store.New(ctx, postgresPool)
 	fatalIf(log, err)
-	server := app.New(cfg, st, redisClient, log)
+	server := app.New(cfg, st, postgresPool, redisClient, log)
 	server.Run(ctx)
 	if cfg.BindUsersJSON != "" {
 		var users []store.BindUser
