@@ -33,6 +33,10 @@ func (s *Server) handleDashCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing_command_fields", "agent_id and command.kind are required")
 		return
 	}
+	if err := identity.AccessError(); err != nil {
+		writeError(w, http.StatusConflict, "agent_disabled", err.Error())
+		return
+	}
 	if err := validateCommand(req.Command); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_command", err.Error())
 		return
@@ -168,6 +172,10 @@ func (s *Server) handleDashCommandRetry(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusConflict, "command_not_supported", err.Error())
 		return
 	}
+	if err := identity.AccessError(); err != nil {
+		writeError(w, http.StatusConflict, "agent_disabled", err.Error())
+		return
+	}
 	if err := s.validateExecutionCredential(r.Context(), identity, record.ToProtocol()); err != nil {
 		writeError(w, http.StatusConflict, "credential_not_authorized", err.Error())
 		return
@@ -194,6 +202,11 @@ func (s *Server) dispatchStoredCommand(r *http.Request, identity store.AgentIden
 }
 
 func (s *Server) dispatchCommand(ctx context.Context, identity store.AgentIdentity, command protocol.Command) (store.CommandRecord, bool) {
+	if err := identity.AccessError(); err != nil {
+		_ = s.store.MarkCommandFailed(ctx, identity.AgentID, command.CommandID, err.Error())
+		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
+		return record, false
+	}
 	if !command.ExpiresAt.IsZero() && command.ExpiresAt.Before(time.Now().UTC()) {
 		_ = s.store.MarkCommandExpired(ctx, identity.AgentID, command.CommandID, "command expired")
 		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)

@@ -26,6 +26,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	identity, err := s.store.AgentBySecret(r.Context(), token)
 	if err != nil {
+		s.log.WarnContext(r.Context(), "agent websocket rejected", "error", err)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -53,7 +54,7 @@ func (s *Server) agentWriter(agent *AgentConn) {
 
 func (s *Server) agentReader(r *http.Request, agent *AgentConn) {
 	defer func() {
-		s.hub.RemoveAgent(r.Context(), agent.AgentID)
+		s.hub.RemoveAgentConn(r.Context(), agent)
 		_ = agent.Conn.Close()
 		close(agent.Send)
 		s.log.InfoContext(r.Context(), "agent disconnected", "agent_id", agent.AgentID, "user_id", agent.UserID, "device_id", agent.DeviceID)

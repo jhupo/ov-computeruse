@@ -42,6 +42,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/dash/login", s.handleDashLogin)
 	mux.HandleFunc("GET /api/dash/me", s.handleDashMe)
 	mux.HandleFunc("GET /api/dash/agents", s.handleDashAgents)
+	mux.HandleFunc("POST /api/dash/agents/{agent_id}/disable", s.handleDashAgentDisable)
+	mux.HandleFunc("POST /api/dash/agents/{agent_id}/enable", s.handleDashAgentEnable)
 	mux.HandleFunc("GET /api/dash/commands", s.handleDashCommands)
 	mux.HandleFunc("GET /api/dash/commands/{command_id}", s.handleDashCommandDetail)
 	mux.HandleFunc("GET /api/dash/commands/{command_id}/attempts", s.handleDashCommandAttempts)

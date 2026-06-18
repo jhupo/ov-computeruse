@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -13,35 +14,53 @@ import (
 )
 
 func (s *Store) AgentBySecret(ctx context.Context, secret string) (AgentIdentity, error) {
-	var identity AgentIdentity
-	var capabilities []byte
-	var credential []byte
-	err := s.pool.QueryRow(ctx, `SELECT id, workspace_id, user_id, device_id, agent_secret, server_key_id, COALESCE(capabilities, '{}'::jsonb), COALESCE(credential, '{}'::jsonb) FROM agents WHERE agent_secret=$1`, secret).Scan(&identity.AgentID, &identity.WorkspaceID, &identity.UserID, &identity.DeviceID, &identity.AgentSecret, &identity.ServerKeyID, &capabilities, &credential)
+	identity, err := s.agentIdentityBy(ctx, `a.agent_secret=$1`, secret)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AgentIdentity{}, errors.New("invalid agent token")
 	}
-	if len(capabilities) > 0 {
-		identity.Capabilities = append(identity.Capabilities, capabilities...)
+	if err != nil {
+		return AgentIdentity{}, err
 	}
-	if len(credential) > 0 {
-		identity.Credential = append(identity.Credential, credential...)
+	if err := identity.AccessError(); err != nil {
+		return AgentIdentity{}, err
+	}
+	return identity, nil
+}
+
+func (s *Store) AgentByID(ctx context.Context, agentID string) (AgentIdentity, error) {
+	identity, err := s.agentIdentityBy(ctx, `a.id=$1`, agentID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AgentIdentity{}, errors.New("agent not found")
 	}
 	return identity, err
 }
 
-func (s *Store) AgentByID(ctx context.Context, agentID string) (AgentIdentity, error) {
+func (s *Store) agentIdentityBy(ctx context.Context, predicate string, args ...any) (AgentIdentity, error) {
 	var identity AgentIdentity
 	var capabilities []byte
 	var credential []byte
-	err := s.pool.QueryRow(ctx, `SELECT id, workspace_id, user_id, device_id, agent_secret, server_key_id, COALESCE(capabilities, '{}'::jsonb), COALESCE(credential, '{}'::jsonb) FROM agents WHERE id=$1`, agentID).Scan(&identity.AgentID, &identity.WorkspaceID, &identity.UserID, &identity.DeviceID, &identity.AgentSecret, &identity.ServerKeyID, &capabilities, &credential)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return AgentIdentity{}, errors.New("agent not found")
-	}
+	var agentDisabledAt sql.NullTime
+	var deviceDisabledAt sql.NullTime
+	err := s.pool.QueryRow(ctx, `SELECT a.id, a.workspace_id, a.user_id, a.device_id, a.agent_secret, a.server_key_id,
+			COALESCE(a.capabilities, '{}'::jsonb), COALESCE(a.credential, '{}'::jsonb),
+			a.disabled_at, COALESCE(a.disabled_reason, ''), d.disabled_at, COALESCE(d.disabled_reason, '')
+		FROM agents a
+		JOIN devices d ON d.id = a.device_id
+		WHERE `+predicate, args...).Scan(
+		&identity.AgentID, &identity.WorkspaceID, &identity.UserID, &identity.DeviceID, &identity.AgentSecret, &identity.ServerKeyID,
+		&capabilities, &credential, &agentDisabledAt, &identity.DisabledReason, &deviceDisabledAt, &identity.DeviceDisabledReason,
+	)
 	if len(capabilities) > 0 {
 		identity.Capabilities = append(identity.Capabilities, capabilities...)
 	}
 	if len(credential) > 0 {
 		identity.Credential = append(identity.Credential, credential...)
+	}
+	if agentDisabledAt.Valid {
+		identity.DisabledAt = agentDisabledAt.Time
+	}
+	if deviceDisabledAt.Valid {
+		identity.DeviceDisabledAt = deviceDisabledAt.Time
 	}
 	return identity, err
 }

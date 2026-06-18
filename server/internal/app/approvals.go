@@ -105,6 +105,10 @@ func (s *Server) handleDashApprovalDecision(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusConflict, "command_not_supported", err.Error())
 		return
 	}
+	if err := identity.AccessError(); err != nil {
+		writeError(w, http.StatusConflict, "agent_disabled", err.Error())
+		return
+	}
 	saved, err := s.store.SaveCommand(r.Context(), identity.AgentID, command)
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "approval command save failed", "approval_id", approvalID, "agent_id", identity.AgentID, "error", err)

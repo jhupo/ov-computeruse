@@ -54,6 +54,12 @@ type DashBroadcastEnvelope struct {
 	Data   []byte `json:"data"`
 }
 
+type AgentDisconnectEnvelope struct {
+	Origin  string `json:"origin"`
+	AgentID string `json:"agent_id"`
+	Reason  string `json:"reason,omitempty"`
+}
+
 type Hub struct {
 	instanceID string
 	redis      *redis.Client
@@ -74,12 +80,17 @@ func NewHub(redisClient *redis.Client, commands EventRepository, logger *slog.Lo
 func (h *Hub) Run(ctx context.Context) {
 	go h.subscribeDash(ctx)
 	go h.subscribeCommands(ctx)
+	go h.subscribeAgentDisconnects(ctx)
 }
 
 func (h *Hub) AddAgent(ctx context.Context, conn *AgentConn) {
 	h.mu.Lock()
+	previous := h.agents[conn.AgentID]
 	h.agents[conn.AgentID] = conn
 	h.mu.Unlock()
+	if previous != nil && previous != conn && previous.Conn != nil {
+		_ = previous.Conn.Close()
+	}
 	_ = h.TouchAgent(ctx, conn)
 }
 
@@ -87,6 +98,50 @@ func (h *Hub) RemoveAgent(ctx context.Context, agentID string) {
 	h.mu.Lock()
 	delete(h.agents, agentID)
 	h.mu.Unlock()
+	h.removeAgentLease(ctx, agentID)
+}
+
+func (h *Hub) RemoveAgentConn(ctx context.Context, conn *AgentConn) {
+	if conn == nil {
+		return
+	}
+	removed := false
+	h.mu.Lock()
+	current := h.agents[conn.AgentID]
+	if current == conn {
+		delete(h.agents, conn.AgentID)
+		removed = true
+	}
+	h.mu.Unlock()
+	if removed {
+		h.removeAgentLease(ctx, conn.AgentID)
+	}
+}
+
+func (h *Hub) DisconnectAgent(ctx context.Context, agentID string) {
+	h.disconnectAgentLocal(ctx, agentID)
+	if h.redis == nil {
+		return
+	}
+	raw, err := json.Marshal(AgentDisconnectEnvelope{Origin: h.instanceID, AgentID: agentID, Reason: "access_changed"})
+	if err != nil {
+		return
+	}
+	_ = h.redis.Publish(ctx, "ov:agent:disconnects", raw).Err()
+}
+
+func (h *Hub) disconnectAgentLocal(ctx context.Context, agentID string) {
+	h.mu.Lock()
+	conn := h.agents[agentID]
+	delete(h.agents, agentID)
+	h.mu.Unlock()
+	h.removeAgentLease(ctx, agentID)
+	if conn != nil && conn.Conn != nil {
+		_ = conn.Conn.Close()
+	}
+}
+
+func (h *Hub) removeAgentLease(ctx context.Context, agentID string) {
 	if h.redis == nil {
 		return
 	}
@@ -282,6 +337,25 @@ func (h *Hub) subscribeCommands(ctx context.Context) {
 		if h.dispatchCommandLocal(env.AgentID, env.Data) {
 			h.markCommandDispatched(ctx, env.AgentID, env.CommandID)
 		}
+	}
+}
+
+func (h *Hub) subscribeAgentDisconnects(ctx context.Context) {
+	if h.redis == nil {
+		return
+	}
+	pubsub := h.redis.Subscribe(ctx, "ov:agent:disconnects")
+	defer pubsub.Close()
+	for msg := range pubsub.Channel() {
+		var env AgentDisconnectEnvelope
+		if err := json.Unmarshal([]byte(msg.Payload), &env); err != nil {
+			h.log.WarnContext(ctx, "invalid agent disconnect envelope", "error", err)
+			continue
+		}
+		if env.Origin == h.instanceID || env.AgentID == "" {
+			continue
+		}
+		h.disconnectAgentLocal(ctx, env.AgentID)
 	}
 }
 

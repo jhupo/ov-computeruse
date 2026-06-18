@@ -22,6 +22,15 @@ type bindPlaintext struct {
 	RequestedAt time.Time           `json:"requested_at"`
 }
 
+type bindResponse struct {
+	AgentID     string `json:"agent_id"`
+	WorkspaceID string `json:"workspace_id"`
+	DeviceID    string `json:"device_id"`
+	AgentSecret string `json:"agent_secret"`
+	ServerURL   string `json:"server_url"`
+	ServerKeyID string `json:"server_key_id"`
+}
+
 func (s *Server) handleBind(w http.ResponseWriter, r *http.Request) {
 	var req bindRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -49,5 +58,12 @@ func (s *Server) handleBind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.InfoContext(r.Context(), "agent bound", "agent_id", identity.AgentID, "device_id", identity.DeviceID, "workspace_id", identity.WorkspaceID)
-	writeJSON(w, http.StatusOK, identity)
+	writeJSON(w, http.StatusOK, bindResponse{
+		AgentID:     identity.AgentID,
+		WorkspaceID: identity.WorkspaceID,
+		DeviceID:    identity.DeviceID,
+		AgentSecret: identity.AgentSecret,
+		ServerURL:   identity.ServerURL,
+		ServerKeyID: identity.ServerKeyID,
+	})
 }

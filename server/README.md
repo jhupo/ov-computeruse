@@ -5,7 +5,7 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 ## Runtime services
 
 - Postgres stores users, user keys, devices, agents, Codex project/session indexes, commands, approvals, audit logs, and run events.
-- Redis stores dash sessions, short-lived online agent state, and cross-instance pub/sub for dash broadcasts and agent command routing.
+- Redis stores dash sessions, short-lived online agent state, and cross-instance pub/sub for dash broadcasts, agent command routing, and forced agent disconnects.
 - The Docker image is stateless. Private keys and database URLs are runtime secrets, not baked into the image.
 
 ## Required environment
@@ -28,6 +28,8 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 - `POST /api/dash/login`: username/password login, returns a short-lived dash session token.
 - `GET /api/dash/me`: return the current dash principal.
 - `GET /api/dash/agents`: list the current user's agents and device heartbeat snapshots.
+- `POST /api/dash/agents/{agent_id}/disable`: disable one agent or its device. JSON body accepts `scope` as `agent` or `device` and optional `reason`.
+- `POST /api/dash/agents/{agent_id}/enable`: enable one agent or its device. JSON body accepts `scope` as `agent` or `device`.
 - `GET /api/dash/commands?agent_id=...&status=...`: list persisted command lifecycle records.
 - `GET /api/dash/commands/{command_id}?agent_id=...`: load one command record with dispatch/ack/deadline metadata.
 - `POST /api/dash/commands/{command_id}/retry?agent_id=...`: retry a queued, dispatched, dispatch-failed, expired, or failed command.

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -105,6 +106,9 @@ func (s *Store) AuthenticateAndBind(ctx context.Context, username, password stri
 	_, _ = s.pool.Exec(ctx, `UPDATE user_keys SET base_url_fingerprint=$1 WHERE id=$2 AND (base_url_fingerprint IS NULL OR base_url_fingerprint='')`, security.FingerprintSecret(baseURL), keyID)
 	deviceID, err := s.upsertDevice(ctx, user.UserID, device)
 	if err != nil {
+		if errors.Is(err, ErrDeviceDisabled) {
+			_ = s.SaveAuditLog(ctx, user.UserID, "", "agent.bind.rejected", map[string]any{"username": username, "reason": "device_disabled", "install_id": device.InstallID, "machine_hash": device.MachineHash})
+		}
 		return AgentIdentity{}, err
 	}
 	agentID := "agt_" + randomHex(16)
@@ -144,7 +148,8 @@ func normalizeBaseURL(raw string) (string, error) {
 
 func (s *Store) upsertDevice(ctx context.Context, userID string, device DeviceProfile) (string, error) {
 	var deviceID string
-	err := s.pool.QueryRow(ctx, `SELECT id FROM devices WHERE user_id=$1 AND install_id=$2 AND machine_hash=$3`, userID, device.InstallID, device.MachineHash).Scan(&deviceID)
+	var disabledAt sql.NullTime
+	err := s.pool.QueryRow(ctx, `SELECT id, disabled_at FROM devices WHERE user_id=$1 AND install_id=$2 AND machine_hash=$3`, userID, device.InstallID, device.MachineHash).Scan(&deviceID, &disabledAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		deviceID = "dev_" + randomHex(16)
 		_, err = s.pool.Exec(ctx, `INSERT INTO devices (id, user_id, install_id, machine_hash, hostname, os, arch, username_hash, agent_version, last_seen_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now())`, deviceID, userID, device.InstallID, device.MachineHash, device.Hostname, device.OS, device.Arch, device.UsernameHash, device.AgentVersion)
@@ -152,6 +157,9 @@ func (s *Store) upsertDevice(ctx context.Context, userID string, device DevicePr
 	}
 	if err != nil {
 		return "", err
+	}
+	if disabledAt.Valid {
+		return "", ErrDeviceDisabled
 	}
 	_, err = s.pool.Exec(ctx, `UPDATE devices SET hostname=$1, os=$2, arch=$3, username_hash=$4, agent_version=$5, last_seen_at=now() WHERE id=$6`, device.Hostname, device.OS, device.Arch, device.UsernameHash, device.AgentVersion, deviceID)
 	return deviceID, err

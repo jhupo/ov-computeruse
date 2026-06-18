@@ -17,22 +17,29 @@ import (
 )
 
 type AgentSummary struct {
-	ID           string          `json:"id"`
-	WorkspaceID  string          `json:"workspace_id"`
-	UserID       string          `json:"user_id,omitempty"`
-	DeviceID     string          `json:"device_id"`
-	Hostname     string          `json:"hostname,omitempty"`
-	OS           string          `json:"os,omitempty"`
-	Arch         string          `json:"arch,omitempty"`
-	Version      string          `json:"version,omitempty"`
-	Status       string          `json:"status,omitempty"`
-	LastSeenAt   time.Time       `json:"last_seen_at,omitempty"`
-	Heartbeat    json.RawMessage `json:"heartbeat,omitempty"`
-	Capabilities json.RawMessage `json:"capabilities,omitempty"`
-	Credential   json.RawMessage `json:"credential,omitempty"`
-	InstallState json.RawMessage `json:"install_state,omitempty"`
-	RegisteredAt time.Time       `json:"registered_at,omitempty"`
-	Health       json.RawMessage `json:"health,omitempty"`
+	ID                   string          `json:"id"`
+	WorkspaceID          string          `json:"workspace_id"`
+	UserID               string          `json:"user_id,omitempty"`
+	DeviceID             string          `json:"device_id"`
+	Hostname             string          `json:"hostname,omitempty"`
+	OS                   string          `json:"os,omitempty"`
+	Arch                 string          `json:"arch,omitempty"`
+	Version              string          `json:"version,omitempty"`
+	Status               string          `json:"status,omitempty"`
+	LastSeenAt           time.Time       `json:"last_seen_at,omitempty"`
+	Heartbeat            json.RawMessage `json:"heartbeat,omitempty"`
+	Capabilities         json.RawMessage `json:"capabilities,omitempty"`
+	Credential           json.RawMessage `json:"credential,omitempty"`
+	InstallState         json.RawMessage `json:"install_state,omitempty"`
+	RegisteredAt         time.Time       `json:"registered_at,omitempty"`
+	Health               json.RawMessage `json:"health,omitempty"`
+	Disabled             bool            `json:"disabled"`
+	DisabledAt           time.Time       `json:"disabled_at,omitempty"`
+	DisabledReason       string          `json:"disabled_reason,omitempty"`
+	AgentDisabledAt      time.Time       `json:"agent_disabled_at,omitempty"`
+	AgentDisabledReason  string          `json:"agent_disabled_reason,omitempty"`
+	DeviceDisabledAt     time.Time       `json:"device_disabled_at,omitempty"`
+	DeviceDisabledReason string          `json:"device_disabled_reason,omitempty"`
 }
 
 type ProjectSummary struct {
@@ -155,7 +162,8 @@ type ApprovalSummary struct {
 }
 
 func (s *Store) ListAgents(ctx context.Context, userID string, admin bool) ([]AgentSummary, error) {
-	query := `SELECT a.id, a.workspace_id, a.user_id, a.device_id, COALESCE(d.hostname, ''), COALESCE(d.os, ''), COALESCE(d.arch, ''), COALESCE(d.agent_version, ''), COALESCE(h.status, ''), COALESCE(a.last_seen_at, d.last_seen_at), h.payload, a.capabilities, a.credential, d.install_state, a.registered_at
+	query := `SELECT a.id, a.workspace_id, a.user_id, a.device_id, COALESCE(d.hostname, ''), COALESCE(d.os, ''), COALESCE(d.arch, ''), COALESCE(d.agent_version, ''), COALESCE(h.status, ''), COALESCE(a.last_seen_at, d.last_seen_at), h.payload, a.capabilities, a.credential, d.install_state, a.registered_at,
+			a.disabled_at, COALESCE(a.disabled_reason, ''), d.disabled_at, COALESCE(d.disabled_reason, '')
 		FROM agents a
 		JOIN devices d ON d.id = a.device_id
 		LEFT JOIN heartbeats h ON h.agent_id = a.id`
@@ -175,11 +183,13 @@ func (s *Store) ListAgents(ctx context.Context, userID string, admin bool) ([]Ag
 		var item AgentSummary
 		var lastSeen sql.NullTime
 		var registeredAt sql.NullTime
+		var agentDisabledAt sql.NullTime
+		var deviceDisabledAt sql.NullTime
 		var heartbeat []byte
 		var capabilities []byte
 		var credential []byte
 		var installState []byte
-		if err := rows.Scan(&item.ID, &item.WorkspaceID, &item.UserID, &item.DeviceID, &item.Hostname, &item.OS, &item.Arch, &item.Version, &item.Status, &lastSeen, &heartbeat, &capabilities, &credential, &installState, &registeredAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.WorkspaceID, &item.UserID, &item.DeviceID, &item.Hostname, &item.OS, &item.Arch, &item.Version, &item.Status, &lastSeen, &heartbeat, &capabilities, &credential, &installState, &registeredAt, &agentDisabledAt, &item.AgentDisabledReason, &deviceDisabledAt, &item.DeviceDisabledReason); err != nil {
 			return nil, err
 		}
 		if lastSeen.Valid {
@@ -187,6 +197,21 @@ func (s *Store) ListAgents(ctx context.Context, userID string, admin bool) ([]Ag
 		}
 		if registeredAt.Valid {
 			item.RegisteredAt = registeredAt.Time
+		}
+		if agentDisabledAt.Valid {
+			item.AgentDisabledAt = agentDisabledAt.Time
+		}
+		if deviceDisabledAt.Valid {
+			item.DeviceDisabledAt = deviceDisabledAt.Time
+		}
+		item.Disabled = agentDisabledAt.Valid || deviceDisabledAt.Valid
+		switch {
+		case agentDisabledAt.Valid:
+			item.DisabledAt = agentDisabledAt.Time
+			item.DisabledReason = item.AgentDisabledReason
+		case deviceDisabledAt.Valid:
+			item.DisabledAt = deviceDisabledAt.Time
+			item.DisabledReason = item.DeviceDisabledReason
 		}
 		if len(heartbeat) > 0 {
 			item.Heartbeat = append(json.RawMessage(nil), heartbeat...)
@@ -680,12 +705,15 @@ func (s *Store) ApprovalByID(ctx context.Context, approvalID string) (ApprovalSu
 }
 
 func (s *Store) ApprovalAgent(ctx context.Context, approvalID string) (AgentIdentity, error) {
-	var identity AgentIdentity
-	err := s.pool.QueryRow(ctx, `SELECT a.id, a.workspace_id, a.user_id, a.device_id, a.agent_secret, a.server_key_id
+	var agentID string
+	err := s.pool.QueryRow(ctx, `SELECT a.id
 		FROM approval_requests ar
 		JOIN agents a ON a.id = ar.agent_id
-		WHERE ar.id=$1`, approvalID).Scan(&identity.AgentID, &identity.WorkspaceID, &identity.UserID, &identity.DeviceID, &identity.AgentSecret, &identity.ServerKeyID)
-	return identity, err
+		WHERE ar.id=$1`, approvalID).Scan(&agentID)
+	if err != nil {
+		return AgentIdentity{}, err
+	}
+	return s.AgentByID(ctx, agentID)
 }
 
 func (s *Store) DecideApproval(ctx context.Context, approvalID string, decision protocol.ApprovalDecision) error {
