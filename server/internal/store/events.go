@@ -492,7 +492,20 @@ func (s *Store) SaveCommand(ctx context.Context, agentID string, command protoco
 			return existing.ToProtocol(), nil
 		}
 	}
-	tag, err := s.pool.Exec(ctx, `INSERT INTO commands (id, agent_id, run_id, session_id, project_id, kind, mode, payload, status, deadline_at, expires_at, idempotency_key) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,$10,$11) ON CONFLICT (agent_id, id) DO NOTHING`, command.CommandID, agentID, command.RunID, command.SessionID, command.ProjectID, command.Kind, command.Mode, jsonRaw(command.Payload), nullTime(command.DeadlineAt), nullTime(command.ExpiresAt), nullString(command.IdempotencyKey))
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return protocol.Command{}, err
+	}
+	defer tx.Rollback(ctx)
+	if storeCommandCreatesRun(command.Kind) {
+		if err := s.lockCommandSession(ctx, tx, agentID, command.SessionID); err != nil {
+			return protocol.Command{}, err
+		}
+		if err := s.ensureSessionHasNoActiveRun(ctx, tx, agentID, command); err != nil {
+			return protocol.Command{}, err
+		}
+	}
+	tag, err := tx.Exec(ctx, `INSERT INTO commands (id, agent_id, run_id, session_id, project_id, kind, mode, payload, status, deadline_at, expires_at, idempotency_key) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,$10,$11) ON CONFLICT (agent_id, id) DO NOTHING`, command.CommandID, agentID, command.RunID, command.SessionID, command.ProjectID, command.Kind, command.Mode, jsonRaw(command.Payload), nullTime(command.DeadlineAt), nullTime(command.ExpiresAt), nullString(command.IdempotencyKey))
 	if err != nil {
 		return protocol.Command{}, err
 	}
@@ -506,14 +519,47 @@ func (s *Store) SaveCommand(ctx context.Context, agentID string, command protoco
 		}
 		return protocol.Command{}, nil
 	}
-	if err := s.SaveCommandAttempt(ctx, agentID, command.CommandID, "queued", "queued", "command queued", nil); err != nil {
+	if err := s.saveCommandAttemptTx(ctx, tx, agentID, command.CommandID, "queued", "queued", "command queued", nil); err != nil {
 		return protocol.Command{}, err
 	}
 	if !storeCommandCreatesRun(command.Kind) {
-		return command, nil
+		return command, tx.Commit(ctx)
 	}
-	_, err = s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, started_at) VALUES ($1,$2,$3,$4,$5,'queued','command_queued',now()) ON CONFLICT (agent_id, id) DO UPDATE SET command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id)`, command.RunID, agentID, command.CommandID, command.ProjectID, command.SessionID)
-	return command, err
+	if _, err = tx.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, started_at) VALUES ($1,$2,$3,$4,$5,'queued','command_queued',now()) ON CONFLICT (agent_id, id) DO UPDATE SET command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id)`, command.RunID, agentID, command.CommandID, command.ProjectID, command.SessionID); err != nil {
+		return protocol.Command{}, err
+	}
+	return command, tx.Commit(ctx)
+}
+
+func (s *Store) lockCommandSession(ctx context.Context, tx pgx.Tx, agentID, sessionID string) error {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0), hashtextextended($2, 0))`, agentID, sessionID)
+	return err
+}
+
+func (s *Store) ensureSessionHasNoActiveRun(ctx context.Context, tx pgx.Tx, agentID string, command protocol.Command) error {
+	if strings.TrimSpace(command.SessionID) == "" {
+		return nil
+	}
+	var activeRunID string
+	err := tx.QueryRow(ctx, `SELECT id
+		FROM runs
+		WHERE agent_id=$1
+			AND session_id=$2
+			AND id<>$3
+			AND status IN ('queued','accepted','running','awaiting_approval')
+		ORDER BY started_at DESC
+		LIMIT 1
+		FOR UPDATE`, agentID, command.SessionID, command.RunID).Scan(&activeRunID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return errors.Join(ErrSessionActive, errors.New(activeRunID))
 }
 
 func (s *Store) MarkCommandDispatched(ctx context.Context, agentID, commandID string) error {
@@ -527,6 +573,9 @@ func (s *Store) MarkCommandFailed(ctx context.Context, agentID, commandID, reaso
 	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status='dispatch_failed', status_reason=$3, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, reason); err != nil {
 		return err
 	}
+	if err := s.markRunForCommandTerminal(ctx, agentID, commandID, "failed", reason); err != nil {
+		return err
+	}
 	if err := s.releaseFailedApprovalDecisionCommand(ctx, agentID, commandID, reason); err != nil {
 		return err
 	}
@@ -537,6 +586,9 @@ func (s *Store) MarkCommandExpired(ctx context.Context, agentID, commandID, reas
 	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status='expired', status_reason=$3, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, reason); err != nil {
 		return err
 	}
+	if err := s.markRunForCommandTerminal(ctx, agentID, commandID, "expired", reason); err != nil {
+		return err
+	}
 	if err := s.releaseFailedApprovalDecisionCommand(ctx, agentID, commandID, reason); err != nil {
 		return err
 	}
@@ -544,10 +596,35 @@ func (s *Store) MarkCommandExpired(ctx context.Context, agentID, commandID, reas
 }
 
 func (s *Store) PrepareCommandRetry(ctx context.Context, agentID, commandID string, deadlineAt, expiresAt time.Time) error {
-	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status='queued', status_reason='retry requested', deadline_at=$3, expires_at=$4, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, deadlineAt.UTC(), expiresAt.UTC()); err != nil {
+	command, found, err := s.CommandByID(ctx, agentID, commandID)
+	if err != nil || !found {
 		return err
 	}
-	return s.SaveCommandAttempt(ctx, agentID, commandID, "retry", "queued", "retry requested", protocol.Raw(map[string]any{"deadline_at": deadlineAt.UTC(), "expires_at": expiresAt.UTC()}))
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if storeCommandCreatesRun(command.Kind) {
+		if err := s.lockCommandSession(ctx, tx, agentID, command.SessionID); err != nil {
+			return err
+		}
+		if err := s.ensureSessionHasNoActiveRun(ctx, tx, agentID, command.ToProtocol()); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE commands SET status='queued', status_reason='retry requested', deadline_at=$3, expires_at=$4, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, deadlineAt.UTC(), expiresAt.UTC()); err != nil {
+		return err
+	}
+	if storeCommandCreatesRun(command.Kind) {
+		if _, err := tx.Exec(ctx, `UPDATE runs SET status='queued', status_reason='retry_requested', finished_at=NULL WHERE agent_id=$1 AND command_id=$2 AND id=$3`, agentID, commandID, command.RunID); err != nil {
+			return err
+		}
+	}
+	if err := s.saveCommandAttemptTx(ctx, tx, agentID, commandID, "retry", "queued", "retry requested", protocol.Raw(map[string]any{"deadline_at": deadlineAt.UTC(), "expires_at": expiresAt.UTC()})); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) MarkCommandAck(ctx context.Context, agentID string, ack protocol.Ack) error {
@@ -576,6 +653,9 @@ func (s *Store) MarkCommandAck(ctx context.Context, agentID string, ack protocol
 		return err
 	}
 	if !accepted {
+		if err := s.markRunForCommandTerminal(ctx, agentID, ack.CommandID, status, ack.Message); err != nil {
+			return err
+		}
 		if err := s.releaseFailedApprovalDecisionCommand(ctx, agentID, ack.CommandID, ack.Message); err != nil {
 			return err
 		}
@@ -618,6 +698,9 @@ func (s *Store) ExpireCommands(ctx context.Context, agentID string) error {
 		return err
 	}
 	for _, commandID := range expired {
+		if err := s.markRunForCommandTerminal(ctx, agentID, commandID, "expired", "command expired before agent accepted it"); err != nil {
+			return err
+		}
 		if err := s.releaseFailedApprovalDecisionCommand(ctx, agentID, commandID, "command expired before agent accepted it"); err != nil {
 			return err
 		}
@@ -664,6 +747,25 @@ func (s *Store) ReconcileHeartbeatRuns(ctx context.Context, agentID string, hear
 		}
 	}
 	return s.ExpireCommands(ctx, agentID)
+}
+
+func (s *Store) markRunForCommandTerminal(ctx context.Context, agentID, commandID, status, reason string) error {
+	if strings.TrimSpace(commandID) == "" {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed", "expired", "rejected", "stopped":
+	default:
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE runs
+		SET status=$3,
+			status_reason=COALESCE(NULLIF($4, ''), status_reason),
+			finished_at=COALESCE(finished_at, now())
+		WHERE agent_id=$1
+			AND command_id=$2
+			AND status IN ('queued','accepted')`, agentID, commandID, strings.ToLower(strings.TrimSpace(status)), reason)
+	return err
 }
 
 func (s *Store) releaseFailedApprovalDecisionCommand(ctx context.Context, agentID, commandID, reason string) error {

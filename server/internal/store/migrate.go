@@ -114,6 +114,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(agent_id, run_id, seq, received_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_run_events_agent ON run_events(agent_id, received_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_run_event_gaps_run ON run_event_gaps(agent_id, run_id, status, detected_at)`,
+		`UPDATE runs older SET status='stale', status_reason='superseded_by_newer_active_session_run' FROM runs newer WHERE older.agent_id=newer.agent_id AND older.session_id=newer.session_id AND older.id<>newer.id AND older.session_id IS NOT NULL AND older.session_id<>'' AND older.status IN ('queued','accepted','running','awaiting_approval') AND newer.status IN ('queued','accepted','running','awaiting_approval') AND (older.started_at, older.id) < (newer.started_at, newer.id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_active_session ON runs(agent_id, session_id) WHERE session_id IS NOT NULL AND session_id <> '' AND status IN ('queued','accepted','running','awaiting_approval')`,
 		`CREATE INDEX IF NOT EXISTS idx_run_steps_run ON run_steps(agent_id, run_id, seq_start)`,
 		`CREATE INDEX IF NOT EXISTS idx_run_messages_run ON run_messages(agent_id, run_id, seq_start)`,
 		`CREATE INDEX IF NOT EXISTS idx_tool_calls_run ON tool_calls(agent_id, run_id, seq_start)`,

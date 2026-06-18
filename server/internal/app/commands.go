@@ -61,6 +61,10 @@ func (s *Server) handleDashCommand(w http.ResponseWriter, r *http.Request) {
 	}
 	command, err := s.store.SaveCommand(r.Context(), req.AgentID, req.Command)
 	if err != nil {
+		if errors.Is(err, store.ErrSessionActive) {
+			writeError(w, http.StatusConflict, "session_busy", err.Error())
+			return
+		}
 		s.log.ErrorContext(r.Context(), "save command failed", "agent_id", req.AgentID, "command_id", req.Command.CommandID, "error", err)
 		writeError(w, http.StatusInternalServerError, "store_failed", "unable to save command")
 		return
@@ -187,6 +191,10 @@ func (s *Server) handleDashCommandRetry(w http.ResponseWriter, r *http.Request) 
 	deadlineAt := time.Now().UTC().Add(10 * time.Minute)
 	expiresAt := deadlineAt.Add(50 * time.Minute)
 	if err := s.store.PrepareCommandRetry(r.Context(), agentID, commandID, deadlineAt, expiresAt); err != nil {
+		if errors.Is(err, store.ErrSessionActive) {
+			writeError(w, http.StatusConflict, "session_busy", err.Error())
+			return
+		}
 		s.log.ErrorContext(r.Context(), "command retry prepare failed", "agent_id", agentID, "command_id", commandID, "error", err)
 		writeError(w, http.StatusInternalServerError, "command_retry_failed", "unable to prepare command retry")
 		return

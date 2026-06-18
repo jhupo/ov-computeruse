@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"ov-computeruse/server/internal/protocol"
 )
@@ -576,13 +577,22 @@ func (s *Store) SaveCommandAttempt(ctx context.Context, agentID, commandID, phas
 	if agentID == "" || commandID == "" || phase == "" || status == "" {
 		return nil
 	}
+	return s.saveCommandAttemptTx(ctx, s.pool, agentID, commandID, phase, status, reason, payload)
+}
+
+func (s *Store) saveCommandAttemptTx(ctx context.Context, tx commandAttemptWriter, agentID, commandID, phase, status, reason string, payload json.RawMessage) error {
 	var attemptNo int
-	if err := s.pool.QueryRow(ctx, `SELECT COALESCE(MAX(attempt_no), 0) + 1 FROM command_attempts WHERE agent_id=$1 AND command_id=$2`, agentID, commandID).Scan(&attemptNo); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(attempt_no), 0) + 1 FROM command_attempts WHERE agent_id=$1 AND command_id=$2`, agentID, commandID).Scan(&attemptNo); err != nil {
 		return err
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO command_attempts (id, agent_id, command_id, attempt_no, phase, status, reason, payload, created_at)
+	_, err := tx.Exec(ctx, `INSERT INTO command_attempts (id, agent_id, command_id, attempt_no, phase, status, reason, payload, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now())`, protocol.NewID("cat"), agentID, commandID, attemptNo, phase, status, nullString(reason), jsonRaw(payload))
 	return err
+}
+
+type commandAttemptWriter interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
 func (s *Store) ListCommandAttempts(ctx context.Context, agentID, commandID string, limit int) ([]CommandAttempt, error) {
