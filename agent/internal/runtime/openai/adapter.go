@@ -286,13 +286,13 @@ func (a *Adapter) streamOnce(ctx context.Context, client openai.Client, params r
 		case responses.ResponseFailedEvent:
 			result.ResponseID = variant.Response.ID
 			result.Failed = errors.New(adapterFirstNonEmpty(variant.Response.Error.Message, "response failed"))
-			if err := emit(ctx, sink, command, "run.failed", map[string]string{"status": "response.failed", "response_id": variant.Response.ID, "error": result.Failed.Error()}); err != nil {
+			if err := emit(ctx, sink, command, "run.status", map[string]string{"status": "response.failed", "response_id": variant.Response.ID, "error": result.Failed.Error()}); err != nil {
 				return result, err
 			}
 		case responses.ResponseIncompleteEvent:
 			result.ResponseID = variant.Response.ID
 			result.Failed = errors.New("response incomplete")
-			if err := emit(ctx, sink, command, "run.failed", map[string]string{"status": "response.incomplete", "response_id": variant.Response.ID}); err != nil {
+			if err := emit(ctx, sink, command, "run.status", map[string]string{"status": "response.incomplete", "response_id": variant.Response.ID}); err != nil {
 				return result, err
 			}
 		case responses.ResponseErrorEvent:
