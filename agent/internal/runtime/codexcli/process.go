@@ -81,11 +81,15 @@ func (a *Adapter) exec(ctx context.Context, command protocol.Command, sink agent
 			waitErr = err
 		}
 	}
+	emitErr := emitProcessExited(context.Background(), sink, command, waitErr, runCtx.Err())
 	if runCtx.Err() != nil {
 		return runCtx.Err()
 	}
-	if err := emitProcessExited(context.Background(), sink, command, waitErr); err != nil && waitErr == nil {
-		return err
+	if emitErr != nil && waitErr == nil {
+		return emitErr
+	}
+	if waitErr == nil {
+		return nil
 	}
 	return waitErr
 }
@@ -128,9 +132,13 @@ func emitProcessStarted(ctx context.Context, sink agentruntime.Sink, command pro
 	})
 }
 
-func emitProcessExited(ctx context.Context, sink agentruntime.Sink, command protocol.Command, err error) error {
+func emitProcessExited(ctx context.Context, sink agentruntime.Sink, command protocol.Command, err error, ctxErr error) error {
 	payload := map[string]any{"status": "codex.process.exited"}
-	if err == nil {
+	if ctxErr != nil {
+		payload["canceled"] = true
+		payload["error"] = ctxErr.Error()
+		payload["exit_code"] = exitCode(err)
+	} else if err == nil {
 		payload["exit_code"] = 0
 	} else {
 		payload["exit_code"] = exitCode(err)

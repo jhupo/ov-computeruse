@@ -3,6 +3,7 @@ package codexcli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -175,6 +176,20 @@ func TestReadStdoutEmitsTerminalOutputDelta(t *testing.T) {
 	assertPayloadString(t, terminal[1].Payload, "text", " world")
 }
 
+func TestEmitProcessExitedMarksCanceled(t *testing.T) {
+	sink := &captureSink{}
+	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1"}
+	if err := emitProcessExited(context.Background(), sink, command, errors.New("killed"), context.Canceled); err != nil {
+		t.Fatalf("emit process exited: %v", err)
+	}
+	if len(sink.events) != 1 {
+		t.Fatalf("event count = %d, want 1", len(sink.events))
+	}
+	assertPayloadString(t, sink.events[0].Payload, "status", "codex.process.exited")
+	assertPayloadString(t, sink.events[0].Payload, "error", context.Canceled.Error())
+	assertPayloadBool(t, sink.events[0].Payload, "canceled", true)
+}
+
 func TestReadStdoutMapsCodexApprovalRequestsAsUnsupportedStatus(t *testing.T) {
 	adapter := New(Config{})
 	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1"}
@@ -213,7 +228,7 @@ func TestProcessStatusEvents(t *testing.T) {
 	if err := emitProcessStarted(context.Background(), sink, command, "codex.cmd", []string{"exec", "--json", "-"}, `C:\repo`); err != nil {
 		t.Fatalf("emit started: %v", err)
 	}
-	if err := emitProcessExited(context.Background(), sink, command, nil); err != nil {
+	if err := emitProcessExited(context.Background(), sink, command, nil, nil); err != nil {
 		t.Fatalf("emit exited: %v", err)
 	}
 	if len(sink.events) != 2 {
@@ -231,5 +246,16 @@ func assertPayloadString(t *testing.T, raw json.RawMessage, key, want string) {
 	}
 	if got, _ := payload[key].(string); got != want {
 		t.Fatalf("payload[%s] = %q, want %q; payload=%s", key, got, want, raw)
+	}
+}
+
+func assertPayloadBool(t *testing.T, raw json.RawMessage, key string, want bool) {
+	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if got, _ := payload[key].(bool); got != want {
+		t.Fatalf("payload[%s] = %v, want %v; payload=%s", key, got, want, raw)
 	}
 }
