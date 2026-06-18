@@ -1,6 +1,9 @@
 package store
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 func (s *Store) migrate(ctx context.Context) error {
 	stmts := []string{
@@ -42,7 +45,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS history_messages (agent_id TEXT NOT NULL REFERENCES agents(id), session_id TEXT NOT NULL, message_index INTEGER NOT NULL, role TEXT NOT NULL, text TEXT NOT NULL, message_at TIMESTAMPTZ, received_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(agent_id, session_id, message_index))`,
 		`CREATE TABLE IF NOT EXISTS history_items (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), session_id TEXT NOT NULL, item_index INTEGER NOT NULL, role TEXT, kind TEXT NOT NULL, text TEXT, payload JSONB, source TEXT, source_event_id TEXT, item_at TIMESTAMPTZ, received_at TIMESTAMPTZ NOT NULL DEFAULT now(), UNIQUE(agent_id, session_id, item_index, kind))`,
 		`CREATE TABLE IF NOT EXISTS sync_cursors (agent_id TEXT NOT NULL REFERENCES agents(id), stream TEXT NOT NULL, subject_id TEXT NOT NULL, cursor TEXT NOT NULL, cursor_at TIMESTAMPTZ, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(agent_id, stream, subject_id))`,
-		`CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), command_id TEXT, project_id TEXT, session_id TEXT, status TEXT NOT NULL, status_reason TEXT, last_event_seq BIGINT NOT NULL DEFAULT 0, last_event_at TIMESTAMPTZ, started_at TIMESTAMPTZ NOT NULL DEFAULT now(), finished_at TIMESTAMPTZ)`,
+		`CREATE TABLE IF NOT EXISTS runs (id TEXT NOT NULL, agent_id TEXT NOT NULL REFERENCES agents(id), command_id TEXT, project_id TEXT, session_id TEXT, status TEXT NOT NULL, status_reason TEXT, last_event_seq BIGINT NOT NULL DEFAULT 0, last_event_at TIMESTAMPTZ, started_at TIMESTAMPTZ NOT NULL DEFAULT now(), finished_at TIMESTAMPTZ, PRIMARY KEY(agent_id, id))`,
 		`ALTER TABLE runs ADD COLUMN IF NOT EXISTS command_id TEXT`,
 		`ALTER TABLE runs ADD COLUMN IF NOT EXISTS status_reason TEXT`,
 		`ALTER TABLE runs ADD COLUMN IF NOT EXISTS last_event_seq BIGINT NOT NULL DEFAULT 0`,
@@ -77,6 +80,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
 			return err
 		}
+	}
+	if err := s.ensureRunsAgentScopedPrimaryKey(ctx); err != nil {
+		return err
 	}
 	indexes := []string{
 		`CREATE INDEX IF NOT EXISTS idx_agents_user ON agents(user_id)`,
@@ -117,4 +123,64 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Store) ensureRunsAgentScopedPrimaryKey(ctx context.Context) error {
+	if ok, err := s.runsPrimaryKeyIsAgentScoped(ctx); err != nil || ok {
+		return err
+	}
+	var duplicateIDs int
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM (SELECT id FROM runs GROUP BY id HAVING COUNT(DISTINCT agent_id) > 1) duplicated`).Scan(&duplicateIDs); err != nil {
+		return err
+	}
+	if duplicateIDs > 0 {
+		return errors.New("cannot migrate runs primary key: duplicate run ids exist across agents")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `ALTER TABLE runs RENAME TO runs_legacy_id_pk`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `CREATE TABLE runs (id TEXT NOT NULL, agent_id TEXT NOT NULL REFERENCES agents(id), command_id TEXT, project_id TEXT, session_id TEXT, status TEXT NOT NULL, status_reason TEXT, last_event_seq BIGINT NOT NULL DEFAULT 0, last_event_at TIMESTAMPTZ, started_at TIMESTAMPTZ NOT NULL DEFAULT now(), finished_at TIMESTAMPTZ, PRIMARY KEY(agent_id, id))`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at, finished_at)
+		SELECT id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at, finished_at FROM runs_legacy_id_pk`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DROP TABLE runs_legacy_id_pk`); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) runsPrimaryKeyIsAgentScoped(ctx context.Context) (bool, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT a.attname
+		FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indrelid
+		JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) ON true
+		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+		WHERE c.relname = 'runs' AND i.indisprimary
+		ORDER BY k.ord
+	`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	columns := []string{}
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			return false, err
+		}
+		columns = append(columns, column)
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return len(columns) == 2 && columns[0] == "agent_id" && columns[1] == "id", nil
 }

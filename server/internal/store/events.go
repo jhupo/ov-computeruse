@@ -34,6 +34,9 @@ func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, even
 	if event.At.IsZero() {
 		event.At = time.Now().UTC()
 	}
+	if err := s.validateRunEventOwnership(ctx, agentID, event); err != nil {
+		return err
+	}
 	tag, err := s.pool.Exec(ctx, `INSERT INTO run_events (id, agent_id, device_id, run_id, command_id, session_id, project_id, seq, kind, payload, event_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		ON CONFLICT DO NOTHING`, event.EventID, agentID, deviceID, event.RunID, event.CommandID, event.SessionID, event.ProjectID, event.Seq, event.Kind, jsonRaw(event.Payload), event.At)
@@ -62,6 +65,58 @@ func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, even
 		return err
 	}
 	return s.projectCommandStateFromRunEvent(ctx, agentID, event, true)
+}
+
+func (s *Store) validateRunEventOwnership(ctx context.Context, agentID string, event protocol.RunEvent) error {
+	if strings.TrimSpace(event.CommandID) != "" {
+		command, found, err := s.CommandByID(ctx, agentID, event.CommandID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return errors.New("run event command does not belong to agent")
+		}
+		if event.RunID != "" && command.RunID != "" && command.RunID != event.RunID {
+			return errors.New("run event command/run mismatch")
+		}
+		if event.SessionID != "" && command.SessionID != "" && command.SessionID != event.SessionID {
+			return errors.New("run event command/session mismatch")
+		}
+		if event.ProjectID != "" && command.ProjectID != "" && command.ProjectID != event.ProjectID {
+			return errors.New("run event command/project mismatch")
+		}
+	}
+	if strings.TrimSpace(event.RunID) != "" {
+		exists, err := s.RunExists(ctx, agentID, event.RunID)
+		if err != nil {
+			return err
+		}
+		if !exists && strings.TrimSpace(event.CommandID) == "" {
+			return nil
+		}
+		if !exists {
+			return errors.New("run event run does not belong to agent")
+		}
+	}
+	if strings.TrimSpace(event.SessionID) != "" {
+		exists, err := s.SessionExists(ctx, agentID, event.SessionID)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return errors.New("run event session does not belong to agent")
+		}
+	}
+	if strings.TrimSpace(event.ProjectID) != "" {
+		exists, err := s.ProjectExists(ctx, agentID, event.ProjectID)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return errors.New("run event project does not belong to agent")
+		}
+	}
+	return nil
 }
 
 func skipRunEvent(event protocol.RunEvent) bool {
@@ -198,7 +253,7 @@ func (s *Store) advanceRunEventCursor(ctx context.Context, agentID string, event
 	}
 	_, err := s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at)
 		VALUES ($1,$2,$3,$4,$5,'running','event_received',$6,$7,$7)
-		ON CONFLICT (id) DO UPDATE SET
+		ON CONFLICT (agent_id, id) DO UPDATE SET
 			command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id),
 			project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id),
 			session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id),
@@ -297,10 +352,10 @@ func (s *Store) projectRunState(ctx context.Context, agentID string, event proto
 		startedAt = time.Now().UTC()
 	}
 	if finished {
-		_, err := s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at, finished_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10) ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, status_reason=COALESCE(NULLIF(EXCLUDED.status_reason, ''), runs.status_reason), command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id), last_event_seq=GREATEST(runs.last_event_seq, EXCLUDED.last_event_seq), last_event_at=EXCLUDED.last_event_at, finished_at=EXCLUDED.finished_at`, event.RunID, agentID, event.CommandID, event.ProjectID, event.SessionID, status, statusReason, event.Seq, startedAt, startedAt)
+		_, err := s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at, finished_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10) ON CONFLICT (agent_id, id) DO UPDATE SET status=EXCLUDED.status, status_reason=COALESCE(NULLIF(EXCLUDED.status_reason, ''), runs.status_reason), command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id), last_event_seq=GREATEST(runs.last_event_seq, EXCLUDED.last_event_seq), last_event_at=EXCLUDED.last_event_at, finished_at=EXCLUDED.finished_at`, event.RunID, agentID, event.CommandID, event.ProjectID, event.SessionID, status, statusReason, event.Seq, startedAt, startedAt)
 		return err
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, status_reason=COALESCE(NULLIF(EXCLUDED.status_reason, ''), runs.status_reason), command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id), last_event_seq=GREATEST(runs.last_event_seq, EXCLUDED.last_event_seq), last_event_at=EXCLUDED.last_event_at`, event.RunID, agentID, event.CommandID, event.ProjectID, event.SessionID, status, statusReason, event.Seq, startedAt, startedAt)
+	_, err := s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (agent_id, id) DO UPDATE SET status=EXCLUDED.status, status_reason=COALESCE(NULLIF(EXCLUDED.status_reason, ''), runs.status_reason), command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id), last_event_seq=GREATEST(runs.last_event_seq, EXCLUDED.last_event_seq), last_event_at=EXCLUDED.last_event_at`, event.RunID, agentID, event.CommandID, event.ProjectID, event.SessionID, status, statusReason, event.Seq, startedAt, startedAt)
 	return err
 }
 
@@ -457,7 +512,7 @@ func (s *Store) SaveCommand(ctx context.Context, agentID string, command protoco
 	if !storeCommandCreatesRun(command.Kind) {
 		return command, nil
 	}
-	_, err = s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, started_at) VALUES ($1,$2,$3,$4,$5,'queued','command_queued',now()) ON CONFLICT (id) DO UPDATE SET command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id)`, command.RunID, agentID, command.CommandID, command.ProjectID, command.SessionID)
+	_, err = s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, started_at) VALUES ($1,$2,$3,$4,$5,'queued','command_queued',now()) ON CONFLICT (agent_id, id) DO UPDATE SET command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id)`, command.RunID, agentID, command.CommandID, command.ProjectID, command.SessionID)
 	return command, err
 }
 
