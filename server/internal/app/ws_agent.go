@@ -173,6 +173,9 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 		if err == nil {
 			if err := s.store.SaveHistoryChunk(ctx, agent.AgentID, chunk); err == nil {
 				s.sendAgent(agent, "history.chunk.ack", protocol.HistoryChunkAck{SessionID: chunk.SessionID, Index: chunk.Index, SHA256: chunk.SHA256, Status: "acked"})
+			} else {
+				s.log.WarnContext(ctx, "history chunk rejected", "agent_id", agent.AgentID, "session_id", chunk.SessionID, "index", chunk.Index, "error", err)
+				s.sendAgent(agent, "history.chunk.ack", protocol.HistoryChunkAck{SessionID: chunk.SessionID, Index: chunk.Index, SHA256: chunk.SHA256, Status: "failed", Message: err.Error(), At: time.Now().UTC()})
 			}
 		}
 	case "history.messages":

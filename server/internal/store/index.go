@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"errors"
 
 	"ov-computeruse/server/internal/protocol"
 )
@@ -86,8 +89,33 @@ func (s *Store) MarkIndexDeleted(ctx context.Context, agentID string, deleted pr
 }
 
 func (s *Store) SaveHistoryChunk(ctx context.Context, agentID string, chunk protocol.HistoryChunk) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO history_chunks (agent_id, session_id, chunk_index, sha256, size_bytes, data, received_at) VALUES ($1,$2,$3,$4,$5,$6,now()) ON CONFLICT DO NOTHING`, agentID, chunk.SessionID, chunk.Index, chunk.SHA256, len(chunk.Data), chunk.Data)
+	if chunk.SessionID == "" {
+		return errors.New("history chunk session_id is required")
+	}
+	if chunk.Index < 0 {
+		return errors.New("history chunk index is invalid")
+	}
+	if len(chunk.Data) == 0 {
+		return errors.New("history chunk data is required")
+	}
+	exists, err := s.SessionExists(ctx, agentID, chunk.SessionID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return errors.New("history chunk session does not belong to agent")
+	}
+	computed := historyChunkSHA256(chunk.Data)
+	if chunk.SHA256 == "" || chunk.SHA256 != computed {
+		return errors.New("history chunk sha256 mismatch")
+	}
+	_, err = s.pool.Exec(ctx, `INSERT INTO history_chunks (agent_id, session_id, chunk_index, sha256, size_bytes, data, received_at) VALUES ($1,$2,$3,$4,$5,$6,now()) ON CONFLICT DO NOTHING`, agentID, chunk.SessionID, chunk.Index, computed, len(chunk.Data), chunk.Data)
 	return err
+}
+
+func historyChunkSHA256(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 func (s *Store) SaveHistoryMessages(ctx context.Context, agentID string, batch protocol.HistoryMessages) error {
