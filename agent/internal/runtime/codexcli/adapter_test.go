@@ -72,7 +72,7 @@ func TestReadStdoutMapsCodexExecEvents(t *testing.T) {
 	for _, event := range sink.events {
 		kinds = append(kinds, event.Kind)
 	}
-	wantKinds := []string{"session.updated", "run.status", "assistant.message.delta", "assistant.message.done", "run.status"}
+	wantKinds := []string{"session.updated", "run.status", "assistant.message.done", "run.status"}
 	if strings.Join(kinds, "\x00") != strings.Join(wantKinds, "\x00") {
 		t.Fatalf("event kinds = %#v, want %#v", kinds, wantKinds)
 	}
@@ -83,5 +83,63 @@ func TestReadStdoutMapsCodexExecEvents(t *testing.T) {
 	}
 	if runtimeSession.Runtime != protocol.RuntimeCodexCLI || runtimeSession.NativeSessionID == "" {
 		t.Fatalf("runtime session = %+v", runtimeSession)
+	}
+}
+
+func TestReadStdoutMapsCodexToolItems(t *testing.T) {
+	adapter := New(Config{})
+	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1"}
+	input := strings.Join([]string{
+		`{"type":"item.started","item":{"id":"cmd","type":"command_execution","command":"git status","status":"running"}}`,
+		`{"type":"item.completed","item":{"id":"cmd","type":"command_execution","command":"git status","aggregated_output":"clean","exit_code":0,"status":"succeeded"}}`,
+		`{"type":"item.completed","item":{"id":"mcp","type":"mcp_tool_call","server":"fs","tool":"read","arguments":{"path":"README.md"},"result":{"content":"ok"},"status":"succeeded"}}`,
+		`{"type":"item.completed","item":{"id":"file","type":"file_change","changes":[{"path":"a.go","kind":"modified"}],"status":"succeeded"}}`,
+		`{"type":"item.updated","item":{"id":"todo","type":"todo_list","items":[{"text":"ship","completed":false}]}}`,
+		`{"type":"turn.failed","error":{"message":"boom"}}`,
+	}, "\n")
+	sink := &captureSink{}
+	if err := adapter.readStdout(context.Background(), strings.NewReader(input), command, localstate.CommandContext{}, sink); err != nil && err != io.EOF {
+		t.Fatalf("read stdout: %v", err)
+	}
+
+	kinds := make([]string, 0, len(sink.events))
+	for _, event := range sink.events {
+		kinds = append(kinds, event.Kind)
+	}
+	wantKinds := []string{
+		"tool.call.started",
+		"tool.call.done",
+		"tool.output",
+		"tool.call.done",
+		"tool.output",
+		"tool.call.done",
+		"tool.output",
+		"run.status",
+		"run.status",
+	}
+	if strings.Join(kinds, "\x00") != strings.Join(wantKinds, "\x00") {
+		t.Fatalf("event kinds = %#v, want %#v", kinds, wantKinds)
+	}
+	assertPayloadString(t, sink.events[2].Payload, "output", "clean")
+	assertPayloadString(t, sink.events[4].Payload, "tool", "read")
+	assertPayloadString(t, sink.events[8].Payload, "message", "boom")
+}
+
+func TestBinCandidatesPreferWindowsLaunchers(t *testing.T) {
+	got := binCandidates("windows")
+	want := []string{"codex.cmd", "codex.exe", "codex"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("windows candidates = %#v, want %#v", got, want)
+	}
+}
+
+func assertPayloadString(t *testing.T, raw json.RawMessage, key, want string) {
+	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if got, _ := payload[key].(string); got != want {
+		t.Fatalf("payload[%s] = %q, want %q; payload=%s", key, got, want, raw)
 	}
 }
