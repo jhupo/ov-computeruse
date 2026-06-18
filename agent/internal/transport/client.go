@@ -19,6 +19,7 @@ import (
 	"ov-computeruse/agent/internal/runs"
 	"ov-computeruse/agent/internal/securestore"
 	"ov-computeruse/agent/internal/security"
+	"ov-computeruse/agent/internal/workspace"
 )
 
 type Client struct {
@@ -35,6 +36,7 @@ type Client struct {
 	lastScanErr   string
 	logger        *slog.Logger
 	dialer        Dialer
+	workspace     workspace.Handler
 
 	mu   sync.Mutex
 	conn Conn
@@ -76,6 +78,7 @@ func newClient(identity securestore.Identity, manager *runs.Manager, scanner sca
 		startedAt:         time.Now().UTC(),
 		logger:            logger,
 		dialer:            WebSocketDialer{},
+		workspace:         workspace.New(state),
 		pendingHistoryAck: map[string]chan protocol.HistoryItemsAck{},
 		historySyncer:     historySyncer,
 	}
@@ -232,7 +235,7 @@ func (c *Client) flushRunEventOutbox(ctx context.Context) error {
 
 func (c *Client) register(ctx context.Context) error {
 	cred, credErr := c.scanner.Credential()
-	features := []string{"codex.scan", "history.items", "index.runtime_sessions", "run.events", "runtime.session", "command.refresh_index"}
+	features := []string{"codex.scan", "history.items", "index.runtime_sessions", "run.events", "runtime.session", "command.refresh_index", workspace.FeatureName()}
 	supportsRuntime := credErr == nil && strings.TrimSpace(cred.Fingerprint) != ""
 	if supportsRuntime {
 		features = append(features, "approval.decision", "command.new_session", "command.resume", "command.send", "command.stop")
@@ -817,6 +820,13 @@ func (c *Client) readLoop(ctx context.Context, conn Conn) error {
 			ack := c.manager.DecideApproval(ctx, decision)
 			ack.MessageID = env.MessageID
 			_ = c.send(ctx, "ack", ack)
+		case "workspace.request":
+			request, err := protocol.Decode[protocol.WorkspaceRequest](env.Data)
+			if err != nil {
+				_ = c.send(ctx, "workspace.response", protocol.WorkspaceResponse{RequestID: "", Status: "rejected", Message: err.Error(), At: time.Now().UTC()})
+				continue
+			}
+			_ = c.send(ctx, "workspace.response", c.workspace.Handle(ctx, request))
 		case "history.chunk.ack":
 			if c.state == nil {
 				continue

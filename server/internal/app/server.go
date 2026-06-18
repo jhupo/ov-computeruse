@@ -6,12 +6,14 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
 	"ov-computeruse/server/internal/config"
 	"ov-computeruse/server/internal/platform/httpx"
+	"ov-computeruse/server/internal/protocol"
 	"ov-computeruse/server/internal/store"
 )
 
@@ -24,17 +26,21 @@ type Server struct {
 	log      *slog.Logger
 	bind     BindService
 	sessions SessionService
+
+	workspaceMu      sync.Mutex
+	workspacePending map[string]chan protocol.WorkspaceResponse
 }
 
 func New(cfg config.Config, st Repository, postgresPool *pgxpool.Pool, redisClient *redis.Client, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{cfg: cfg, store: st, postgres: postgresPool, redis: redisClient, hub: NewHub(redisClient, st, logger), log: logger, bind: NewBindService(st, cfg.PublicURL, cfg.ServerKeyID), sessions: NewSessionService(redisClient, st, logger)}
+	return &Server{cfg: cfg, store: st, postgres: postgresPool, redis: redisClient, hub: NewHub(redisClient, st, logger), log: logger, bind: NewBindService(st, cfg.PublicURL, cfg.ServerKeyID), sessions: NewSessionService(redisClient, st, logger), workspacePending: map[string]chan protocol.WorkspaceResponse{}}
 }
 
 func (s *Server) Run(ctx context.Context) {
 	s.hub.Run(ctx)
+	go s.subscribeWorkspaceResponses(ctx)
 	go s.runCommandDispatcher(ctx)
 }
 
@@ -70,6 +76,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/dash/runtime-sessions", s.handleDashRuntimeSessions)
 	mux.HandleFunc("GET /api/dash/history/items", s.handleDashHistoryItems)
 	mux.HandleFunc("GET /api/dash/conversation/items", s.handleDashConversationItems)
+	mux.HandleFunc("GET /api/dash/workspace/tree", s.handleDashWorkspaceTree)
+	mux.HandleFunc("GET /api/dash/workspace/file", s.handleDashWorkspaceFile)
 	mux.HandleFunc("GET /api/dash/approvals", s.handleDashApprovals)
 	mux.HandleFunc("POST /api/dash/approvals/{approval_id}/decision", s.handleDashApprovalDecision)
 	mux.HandleFunc("GET /ws/agent", s.handleAgentWS)

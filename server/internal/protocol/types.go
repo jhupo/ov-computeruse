@@ -149,6 +149,50 @@ type RuntimeSessionIndex struct {
 	RuntimeSessions []RuntimeSession `json:"runtime_sessions"`
 }
 
+type WorkspaceRequest struct {
+	RequestID     string `json:"request_id"`
+	Operation     string `json:"operation"`
+	ProjectID     string `json:"project_id"`
+	Path          string `json:"path,omitempty"`
+	Depth         int    `json:"depth,omitempty"`
+	Limit         int    `json:"limit,omitempty"`
+	MaxBytes      int64  `json:"max_bytes,omitempty"`
+	IncludeHidden bool   `json:"include_hidden,omitempty"`
+}
+
+type WorkspaceResponse struct {
+	RequestID string           `json:"request_id"`
+	Operation string           `json:"operation"`
+	ProjectID string           `json:"project_id,omitempty"`
+	Path      string           `json:"path,omitempty"`
+	Status    string           `json:"status"`
+	Message   string           `json:"message,omitempty"`
+	Entries   []WorkspaceEntry `json:"entries,omitempty"`
+	File      *WorkspaceFile   `json:"file,omitempty"`
+	At        time.Time        `json:"at,omitempty"`
+}
+
+type WorkspaceEntry struct {
+	Name      string    `json:"name"`
+	Path      string    `json:"path"`
+	Kind      string    `json:"kind"`
+	Size      int64     `json:"size,omitempty"`
+	ModTime   time.Time `json:"mod_time,omitempty"`
+	Sensitive bool      `json:"sensitive,omitempty"`
+}
+
+type WorkspaceFile struct {
+	Path      string    `json:"path"`
+	Size      int64     `json:"size"`
+	ModTime   time.Time `json:"mod_time,omitempty"`
+	SHA256    string    `json:"sha256,omitempty"`
+	Encoding  string    `json:"encoding"`
+	Content   string    `json:"content,omitempty"`
+	Truncated bool      `json:"truncated,omitempty"`
+	Binary    bool      `json:"binary,omitempty"`
+	Sensitive bool      `json:"sensitive,omitempty"`
+}
+
 type HistoryChunk struct {
 	SessionID string `json:"session_id"`
 	Index     int    `json:"index"`

@@ -206,6 +206,11 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 		if err == nil {
 			_ = s.store.SaveSyncCursor(ctx, agent.AgentID, cursor)
 		}
+	case "workspace.response":
+		response, err := protocol.Decode[protocol.WorkspaceResponse](env.Data)
+		if err == nil {
+			s.resolveWorkspaceResponse(response)
+		}
 	case "run.event":
 		event, err := protocol.Decode[protocol.RunEvent](env.Data)
 		if err == nil {

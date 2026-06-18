@@ -68,6 +68,11 @@ type DashBroadcastEnvelope struct {
 	Data   []byte `json:"data"`
 }
 
+type WorkspaceResponseEnvelope struct {
+	Origin   string                     `json:"origin"`
+	Response protocol.WorkspaceResponse `json:"response"`
+}
+
 type AgentDisconnectEnvelope struct {
 	Origin   string `json:"origin"`
 	AgentID  string `json:"agent_id"`
@@ -303,6 +308,18 @@ func (h *Hub) BroadcastDash(userID string, data []byte) {
 }
 
 func (h *Hub) DispatchCommand(ctx context.Context, agentID, userID, commandID string, data []byte) CommandDispatchStatus {
+	status := h.dispatchEnvelope(ctx, agentID, userID, commandID, data)
+	if status == CommandDispatchDelivered {
+		h.markCommandDispatched(ctx, agentID, commandID)
+	}
+	return status
+}
+
+func (h *Hub) DispatchEnvelope(ctx context.Context, agentID, userID string, data []byte) CommandDispatchStatus {
+	return h.dispatchEnvelope(ctx, agentID, userID, "", data)
+}
+
+func (h *Hub) dispatchEnvelope(ctx context.Context, agentID, userID, commandID string, data []byte) CommandDispatchStatus {
 	h.mu.RLock()
 	agent := h.agents[agentID]
 	h.mu.RUnlock()
@@ -312,9 +329,6 @@ func (h *Hub) DispatchCommand(ctx context.Context, agentID, userID, commandID st
 		}
 		if h.connOwnsLease(ctx, agent) {
 			status := h.dispatchCommandLocal(agentID, userID, agent.ConnectionID, agent.Epoch, data)
-			if status == CommandDispatchDelivered {
-				h.markCommandDispatched(ctx, agentID, commandID)
-			}
 			return status
 		}
 	}
@@ -326,11 +340,7 @@ func (h *Hub) DispatchCommand(ctx context.Context, agentID, userID, commandID st
 		return CommandDispatchUnavailable
 	}
 	if lease.InstanceID == h.instanceID {
-		status := h.dispatchCommandLocal(agentID, userID, lease.ConnectionID, lease.Epoch, data)
-		if status == CommandDispatchDelivered {
-			h.markCommandDispatched(ctx, agentID, commandID)
-		}
-		return status
+		return h.dispatchCommandLocal(agentID, userID, lease.ConnectionID, lease.Epoch, data)
 	}
 	raw, err := json.Marshal(AgentCommandEnvelope{Origin: h.instanceID, AgentID: agentID, UserID: userID, CommandID: commandID, ConnectionID: lease.ConnectionID, Epoch: lease.Epoch, Data: data})
 	if err != nil {
