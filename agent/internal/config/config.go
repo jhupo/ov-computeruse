@@ -34,6 +34,7 @@ type Config struct {
 	DisableScan     bool
 	UploadHistory   bool
 	AllowSensitive  bool
+	AllowLocalShell bool
 }
 
 type Options struct {
@@ -103,6 +104,7 @@ func Load(opts Options) (Config, error) {
 	fs.BoolVar(&cfg.DisableScan, "disable-scan", cfg.DisableScan, "disable local Codex scan")
 	fs.BoolVar(&cfg.UploadHistory, "upload-history", cfg.UploadHistory, "upload raw Codex history chunks to server")
 	fs.BoolVar(&cfg.AllowSensitive, "allow-sensitive", cfg.AllowSensitive, "include paths that match sensitive-file filters")
+	fs.BoolVar(&cfg.AllowLocalShell, "allow-local-shell", cfg.AllowLocalShell, "allow approved local shell tool execution")
 
 	if len(opts.Args) > 0 {
 		if err := fs.Parse(opts.Args); err != nil {
@@ -309,6 +311,8 @@ func applyConfigValue(cfg *Config, key, value string) {
 		cfg.UploadHistory = parseBool(value)
 	case "allow_sensitive":
 		cfg.AllowSensitive = parseBool(value)
+	case "allow_local_shell":
+		cfg.AllowLocalShell = parseBool(value)
 	}
 }
 
@@ -448,6 +452,9 @@ func applyEnv(cfg *Config, lookup func(string) (string, bool), explicit map[stri
 	}
 	if value, ok := lookup(envKey("ALLOW_SENSITIVE")); ok {
 		cfg.AllowSensitive = parseBool(value)
+	}
+	if value, ok := lookup(envKey("ALLOW_LOCAL_SHELL")); ok {
+		cfg.AllowLocalShell = parseBool(value)
 	}
 }
 

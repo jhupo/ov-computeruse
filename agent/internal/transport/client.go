@@ -184,6 +184,9 @@ func (c *Client) register(ctx context.Context) error {
 	if supportsSDK {
 		features = append(features, "approval.decision", "command.new_session", "command.resume", "command.send", "command.stop")
 	}
+	if c.cfg.AllowLocalShell {
+		features = append(features, "tool.local_shell", "terminal.output")
+	}
 	register := protocol.AgentRegister{
 		AgentID:     c.identity.AgentID,
 		WorkspaceID: c.identity.WorkspaceID,
@@ -208,7 +211,7 @@ func (c *Client) register(ctx context.Context) error {
 		Capabilities: protocol.Capabilities{
 			SupportsSDK:       supportsSDK,
 			SupportsHistory:   true,
-			SupportsTerminal:  false,
+			SupportsTerminal:  c.cfg.AllowLocalShell,
 			SupportsGit:       false,
 			Features:          features,
 			MaxConcurrentRuns: 1,

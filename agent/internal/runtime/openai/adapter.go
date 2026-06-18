@@ -23,11 +23,13 @@ import (
 const runtimeName = "openai.responses"
 
 type Config struct {
-	BaseURL string
-	APIKey  string
-	Model   string
-	Scanner codexscan.Scanner
-	State   *localstate.Store
+	BaseURL               string
+	APIKey                string
+	Model                 string
+	Scanner               codexscan.Scanner
+	State                 *localstate.Store
+	AllowLocalShell       bool
+	WorkspaceRootProvider func(context.Context) ([]string, error)
 }
 
 type Adapter struct {
@@ -56,7 +58,7 @@ type activeRuns struct {
 }
 
 func New(cfg Config) *Adapter {
-	return &Adapter{cfg: cfg, executor: agenttools.NewExecutor()}
+	return &Adapter{cfg: cfg, executor: agenttools.NewExecutor(agenttools.Config{AllowLocalShell: cfg.AllowLocalShell, WorkspaceRootProvider: cfg.WorkspaceRootProvider})}
 }
 
 func (a *Adapter) NewSession(ctx context.Context, command protocol.Command, sink runtime.Sink) error {
@@ -152,6 +154,10 @@ func (a *Adapter) send(ctx context.Context, command protocol.Command, sink runti
 			Model: openai.ResponsesModel(model),
 			Input: nextInput,
 			Store: openai.Bool(true),
+		}
+		if a.cfg.AllowLocalShell {
+			localShellTool := responses.NewToolLocalShellParam()
+			params.Tools = []responses.ToolUnionParam{{OfLocalShell: &localShellTool}}
 		}
 		if previousResponseID != "" {
 			params.PreviousResponseID = openai.String(previousResponseID)

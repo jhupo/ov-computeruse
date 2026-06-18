@@ -213,11 +213,13 @@ func runAgent(args []string) {
 	rt := runtime.Runtime(runtime.NewNoop())
 	if credential, err := scanner.Credential(); err == nil {
 		rt = openairuntime.New(openairuntime.Config{
-			BaseURL: credential.BaseURL,
-			APIKey:  credential.APIKey,
-			Model:   credential.Model,
-			Scanner: scanner,
-			State:   state,
+			BaseURL:               credential.BaseURL,
+			APIKey:                credential.APIKey,
+			Model:                 credential.Model,
+			Scanner:               scanner,
+			State:                 state,
+			AllowLocalShell:       cfg.AllowLocalShell,
+			WorkspaceRootProvider: localShellRootProvider(scanner),
 		})
 	} else {
 		logger.Warn("codex credential not found; runtime is noop", "error", err)
@@ -226,6 +228,22 @@ func runAgent(args []string) {
 	manager.SetAckStore(state)
 	client := transport.NewClient(identity, manager, scanner, deviceProfile, cfg, state, cfg.DisableScan, cfg.UploadHistory, logger)
 	fatalIf(logger, client.Run(ctx))
+}
+
+func localShellRootProvider(scanner codexscan.Scanner) func(context.Context) ([]string, error) {
+	return func(ctx context.Context) ([]string, error) {
+		result, err := scanner.Scan(ctx)
+		if err != nil {
+			return nil, err
+		}
+		roots := make([]string, 0, len(result.Projects))
+		for _, project := range result.Projects {
+			if strings.TrimSpace(project.Path) != "" {
+				roots = append(roots, project.Path)
+			}
+		}
+		return roots, nil
+	}
 }
 
 func prompt(reader *bufio.Reader, label string) string {
