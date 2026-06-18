@@ -776,7 +776,8 @@ func (s *Store) SaveCommand(ctx context.Context, agentID string, command protoco
 	}
 	if !storeCommandCreatesRun(command.Kind) {
 		if storeCommandStopsRun(command.Kind) {
-			if err := s.markStopRequestedTx(ctx, tx, agentID, command); err != nil {
+			command, err = s.markStopRequestedTx(ctx, tx, agentID, command)
+			if err != nil {
 				return protocol.Command{}, err
 			}
 		}
@@ -819,7 +820,7 @@ func (s *Store) ensureSessionHasNoActiveRun(ctx context.Context, tx pgx.Tx, agen
 	return errors.Join(ErrSessionActive, errors.New(activeRunID))
 }
 
-func (s *Store) markStopRequestedTx(ctx context.Context, tx pgx.Tx, agentID string, command protocol.Command) error {
+func (s *Store) markStopRequestedTx(ctx context.Context, tx pgx.Tx, agentID string, command protocol.Command) (protocol.Command, error) {
 	runID := strings.TrimSpace(command.RunID)
 	if runID == "" && strings.TrimSpace(command.SessionID) != "" {
 		err := tx.QueryRow(ctx, `SELECT id
@@ -831,18 +832,18 @@ func (s *Store) markStopRequestedTx(ctx context.Context, tx pgx.Tx, agentID stri
 			LIMIT 1
 			FOR UPDATE`, agentID, command.SessionID).Scan(&runID)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
+			return command, nil
 		}
 		if err != nil {
-			return err
+			return protocol.Command{}, err
 		}
 		command.RunID = runID
 		if _, err := tx.Exec(ctx, `UPDATE commands SET run_id=$3 WHERE agent_id=$1 AND id=$2`, agentID, command.CommandID, runID); err != nil {
-			return err
+			return protocol.Command{}, err
 		}
 	}
 	if runID == "" {
-		return nil
+		return command, nil
 	}
 	tag, err := tx.Exec(ctx, `UPDATE runs
 		SET status='stopping',
@@ -852,12 +853,12 @@ func (s *Store) markStopRequestedTx(ctx context.Context, tx pgx.Tx, agentID stri
 			AND id=$2
 			AND status IN ('queued','accepted','running','awaiting_approval','stale','stopping')`, agentID, runID)
 	if err != nil {
-		return err
+		return protocol.Command{}, err
 	}
 	if tag.RowsAffected() == 0 {
-		return nil
+		return command, nil
 	}
-	return s.saveCommandAttemptTx(ctx, tx, agentID, command.CommandID, "stop", "stopping", "stop requested", protocol.Raw(map[string]any{"run_id": runID, "session_id": command.SessionID}))
+	return command, s.saveCommandAttemptTx(ctx, tx, agentID, command.CommandID, "stop", "stopping", "stop requested", protocol.Raw(map[string]any{"run_id": runID, "session_id": command.SessionID}))
 }
 
 func (s *Store) MarkCommandDispatched(ctx context.Context, agentID, commandID string) error {
