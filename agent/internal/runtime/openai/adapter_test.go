@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"ov-computeruse/agent/internal/localstate"
@@ -40,5 +41,17 @@ func TestResumeInputPrefersPreviousResponseID(t *testing.T) {
 	}
 	if resume.Input != "continue this" {
 		t.Fatalf("input = %q, want original prompt", resume.Input)
+	}
+}
+
+func TestPromptWithProjectContext(t *testing.T) {
+	prompt := promptWithProjectContext("inspect the repo", localstate.CommandContext{
+		Project: localstate.ProjectRecord{ID: "project_1", Name: "repo", Path: `/tmp/repo`, GitBranch: "main"},
+		Session: localstate.SessionRecord{ID: "session_1", CWD: `/tmp/repo`},
+	})
+	for _, want := range []string{"project_id: project_1", "project_path: /tmp/repo", "session_id: session_1", "USER PROMPT:\ninspect the repo"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
 	}
 }

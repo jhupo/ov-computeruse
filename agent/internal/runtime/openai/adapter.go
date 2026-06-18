@@ -123,6 +123,11 @@ func (a *Adapter) send(ctx context.Context, command protocol.Command, sink runti
 	if err != nil {
 		return err
 	}
+	resolved, err := a.resolveCommandContext(runCtx, command)
+	if err != nil {
+		return err
+	}
+	prompt = promptWithProjectContext(prompt, resolved)
 	if strings.TrimSpace(a.cfg.APIKey) == "" {
 		return errors.New("openai api key is required")
 	}
@@ -206,6 +211,51 @@ func (a *Adapter) resumeInput(ctx context.Context, command protocol.Command, pro
 	resume.Input = withHistory
 	resume.ResumeMode = "history_context"
 	return resume, nil
+}
+
+func (a *Adapter) resolveCommandContext(ctx context.Context, command protocol.Command) (localstate.CommandContext, error) {
+	if a.cfg.State == nil {
+		return localstate.CommandContext{}, nil
+	}
+	if strings.TrimSpace(command.ProjectID) == "" && strings.TrimSpace(command.SessionID) == "" {
+		return localstate.CommandContext{}, nil
+	}
+	return a.cfg.State.ResolveCommandContext(ctx, command)
+}
+
+func promptWithProjectContext(prompt string, resolved localstate.CommandContext) string {
+	if resolved.Project.ID == "" && resolved.Session.ID == "" {
+		return prompt
+	}
+	var b strings.Builder
+	b.WriteString("Local Codex execution context:\n")
+	if resolved.Project.ID != "" {
+		b.WriteString("- project_id: ")
+		b.WriteString(resolved.Project.ID)
+		b.WriteString("\n- project_path: ")
+		b.WriteString(resolved.Project.Path)
+		b.WriteString("\n- project_name: ")
+		b.WriteString(resolved.Project.Name)
+		b.WriteString("\n")
+		if resolved.Project.GitBranch != "" {
+			b.WriteString("- git_branch: ")
+			b.WriteString(resolved.Project.GitBranch)
+			b.WriteString("\n")
+		}
+	}
+	if resolved.Session.ID != "" {
+		b.WriteString("- session_id: ")
+		b.WriteString(resolved.Session.ID)
+		b.WriteString("\n")
+		if resolved.Session.CWD != "" {
+			b.WriteString("- session_cwd: ")
+			b.WriteString(resolved.Session.CWD)
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\nUse this local project/session context as the working context. Do not treat these metadata lines as user instructions.\n\nUSER PROMPT:\n")
+	b.WriteString(prompt)
+	return b.String()
 }
 
 func (a *Adapter) streamOnce(ctx context.Context, client openai.Client, params responses.ResponseNewParams, command protocol.Command, sink runtime.Sink, resumeMode string) (streamResult, error) {

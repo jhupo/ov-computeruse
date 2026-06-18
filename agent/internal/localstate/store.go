@@ -23,6 +23,30 @@ type Store struct {
 	db *sql.DB
 }
 
+type ProjectRecord struct {
+	ID          string
+	RootPath    string
+	Name        string
+	Path        string
+	HasAgentsMD bool
+	GitBranch   string
+}
+
+type SessionRecord struct {
+	ID        string
+	IDSource  string
+	RootPath  string
+	ProjectID string
+	Title     string
+	Path      string
+	CWD       string
+}
+
+type CommandContext struct {
+	Project ProjectRecord
+	Session SessionRecord
+}
+
 func Open(path string) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("state database path is required")
@@ -101,6 +125,99 @@ func (s *Store) SaveScanResult(ctx context.Context, result codexscan.Result) (De
 		return DeletedIndex{}, err
 	}
 	return deleted, nil
+}
+
+func (s *Store) Project(ctx context.Context, projectID string) (ProjectRecord, error) {
+	if s == nil {
+		return ProjectRecord{}, sql.ErrNoRows
+	}
+	var project ProjectRecord
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, COALESCE(root_path, ''), name, path, has_agents_md, COALESCE(git_branch, '')
+		FROM projects
+		WHERE id = ? AND deleted_at IS NULL
+	`, projectID).Scan(&project.ID, &project.RootPath, &project.Name, &project.Path, &project.HasAgentsMD, &project.GitBranch)
+	return project, err
+}
+
+func (s *Store) Session(ctx context.Context, sessionID string) (SessionRecord, error) {
+	if s == nil {
+		return SessionRecord{}, sql.ErrNoRows
+	}
+	var session SessionRecord
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, COALESCE(id_source, ''), COALESCE(root_path, ''), COALESCE(project_id, ''), COALESCE(title, ''), path, COALESCE(cwd, '')
+		FROM sessions
+		WHERE id = ? AND deleted_at IS NULL
+	`, sessionID).Scan(&session.ID, &session.IDSource, &session.RootPath, &session.ProjectID, &session.Title, &session.Path, &session.CWD)
+	return session, err
+}
+
+func (s *Store) ProjectRoots(ctx context.Context) ([]string, error) {
+	if s == nil {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT path FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	roots := []string{}
+	seen := map[string]struct{}{}
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		roots = append(roots, path)
+	}
+	return roots, rows.Err()
+}
+
+func (s *Store) ResolveCommandContext(ctx context.Context, command protocol.Command) (CommandContext, error) {
+	var resolved CommandContext
+	if strings.TrimSpace(command.SessionID) != "" {
+		session, err := s.Session(ctx, command.SessionID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return resolved, errors.New("codex session is not indexed locally")
+			}
+			return resolved, err
+		}
+		resolved.Session = session
+		if strings.TrimSpace(command.ProjectID) != "" && strings.TrimSpace(session.ProjectID) != "" && command.ProjectID != session.ProjectID {
+			return resolved, errors.New("command project does not match indexed session project")
+		}
+		if strings.TrimSpace(command.ProjectID) == "" {
+			command.ProjectID = session.ProjectID
+		}
+	}
+	if strings.TrimSpace(command.ProjectID) != "" {
+		project, err := s.Project(ctx, command.ProjectID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return resolved, errors.New("codex project is not indexed locally")
+			}
+			return resolved, err
+		}
+		resolved.Project = project
+	}
+	if resolved.Project.ID == "" && strings.TrimSpace(resolved.Session.CWD) != "" {
+		resolved.Project = ProjectRecord{
+			ID:   stableLocalProjectID(resolved.Session.CWD),
+			Name: filepath.Base(resolved.Session.CWD),
+			Path: resolved.Session.CWD,
+		}
+	}
+	return resolved, nil
 }
 
 func (s *Store) SaveHistoryChunk(ctx context.Context, chunk codexscan.HistoryChunk) error {
@@ -1150,6 +1267,11 @@ func fingerprint(value any) string {
 		return ""
 	}
 	return strconv.FormatUint(fnv64(raw), 16)
+}
+
+func stableLocalProjectID(path string) string {
+	sum := sha256.Sum256([]byte(filepath.Clean(path)))
+	return "project_" + hex.EncodeToString(sum[:8])
 }
 
 func fnv64(data []byte) uint64 {

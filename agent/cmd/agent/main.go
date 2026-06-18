@@ -219,7 +219,7 @@ func runAgent(args []string) {
 			Scanner:               scanner,
 			State:                 state,
 			AllowLocalShell:       cfg.AllowLocalShell,
-			WorkspaceRootProvider: localShellRootProvider(scanner),
+			WorkspaceRootProvider: localShellRootProvider(state, scanner),
 		})
 	} else {
 		logger.Warn("codex credential not found; runtime is noop", "error", err)
@@ -231,8 +231,17 @@ func runAgent(args []string) {
 	fatalIf(logger, client.Run(ctx))
 }
 
-func localShellRootProvider(scanner codexscan.Scanner) func(context.Context) ([]string, error) {
+func localShellRootProvider(state *localstate.Store, scanner codexscan.Scanner) func(context.Context) ([]string, error) {
 	return func(ctx context.Context) ([]string, error) {
+		if state != nil {
+			roots, err := state.ProjectRoots(ctx)
+			if err == nil && len(roots) > 0 {
+				return roots, nil
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
 		result, err := scanner.Scan(ctx)
 		if err != nil {
 			return nil, err
