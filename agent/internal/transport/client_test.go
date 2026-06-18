@@ -127,6 +127,24 @@ func TestCapabilityFeaturesAdvertiseLocalShellWithoutApprovalDecision(t *testing
 	}
 }
 
+func TestFindHistorySessionMatchesNativeRuntimeSession(t *testing.T) {
+	result := codexscan.Result{
+		Sessions: []codexscan.Session{
+			{ID: "indexed_session", Path: "session.jsonl"},
+		},
+		RuntimeSessions: []codexscan.RuntimeSession{
+			{Runtime: protocol.RuntimeCodexCLI, SessionID: "indexed_session", NativeSessionID: "native_thread"},
+		},
+	}
+	session, ok := findHistorySession(result, protocol.RuntimeSession{Runtime: protocol.RuntimeCodexCLI, NativeSessionID: "native_thread"})
+	if !ok {
+		t.Fatal("expected native runtime session to resolve to indexed history session")
+	}
+	if session.ID != "indexed_session" {
+		t.Fatalf("session id = %q, want indexed_session", session.ID)
+	}
+}
+
 func TestServeStartsReadLoopBeforeIndexUploadCompletes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

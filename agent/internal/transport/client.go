@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"net/url"
@@ -153,6 +154,7 @@ func (c *Client) refreshIndexAfterRun(trigger protocol.RunEvent) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	startedAt := time.Now().UTC()
+	c.syncRunHistory(ctx, trigger)
 	c.emitIndexRefreshStatus(ctx, trigger, "index.refresh.started", map[string]any{"trigger_kind": trigger.Kind})
 	if err := c.uploadIndex(ctx); err != nil {
 		c.logger.WarnContext(ctx, "post-run index refresh failed", "run_id", trigger.RunID, "error", err)
@@ -167,6 +169,131 @@ func (c *Client) refreshIndexAfterRun(trigger protocol.RunEvent) {
 		"trigger_kind":    trigger.Kind,
 		"duration_millis": time.Since(startedAt).Milliseconds(),
 	})
+}
+
+func (c *Client) syncRunHistory(ctx context.Context, trigger protocol.RunEvent) {
+	if c.noScan {
+		return
+	}
+	target, err := c.runHistoryTarget(ctx, trigger)
+	if err != nil {
+		c.logger.WarnContext(ctx, "run history target unavailable", "run_id", trigger.RunID, "session_id", trigger.SessionID, "error", err)
+		return
+	}
+	c.emitIndexRefreshStatus(ctx, trigger, "history.sync.started", map[string]any{
+		"session_id":        target.SessionID,
+		"native_session_id": target.NativeSessionID,
+	})
+	result, err := c.scanner.Scan(ctx)
+	if err != nil {
+		c.emitIndexRefreshStatus(context.Background(), trigger, "history.sync.failed", map[string]any{"error": err.Error()})
+		return
+	}
+	if c.state != nil {
+		if _, err := c.state.SaveScanResult(ctx, result); err != nil {
+			c.emitIndexRefreshStatus(context.Background(), trigger, "history.sync.failed", map[string]any{"error": err.Error()})
+			return
+		}
+	}
+	session, ok := findHistorySession(result, target)
+	if !ok {
+		c.emitIndexRefreshStatus(context.Background(), trigger, "history.sync.failed", map[string]any{
+			"session_id":        target.SessionID,
+			"native_session_id": target.NativeSessionID,
+			"error":             "codex session file not found",
+		})
+		return
+	}
+	if err := c.uploadHistoryItems(ctx, session); err != nil {
+		c.emitIndexRefreshStatus(context.Background(), trigger, "history.sync.failed", map[string]any{
+			"session_id": session.ID,
+			"error":      err.Error(),
+		})
+		return
+	}
+	c.emitIndexRefreshStatus(context.Background(), trigger, "history.sync.done", map[string]any{
+		"session_id":        session.ID,
+		"native_session_id": target.NativeSessionID,
+		"cursor":            historyCursor(session),
+	})
+}
+
+func (c *Client) runHistoryTarget(ctx context.Context, trigger protocol.RunEvent) (protocol.RuntimeSession, error) {
+	if c.state != nil && strings.TrimSpace(trigger.RunID) != "" {
+		session, err := c.state.RuntimeSessionByRun(ctx, trigger.RunID, protocol.RuntimeCodexCLI)
+		if err == nil {
+			return protocol.RuntimeSession{
+				Runtime:         session.Runtime,
+				ProjectID:       firstNonEmpty(session.ProjectID, trigger.ProjectID),
+				SessionID:       firstNonEmpty(session.SessionID, trigger.SessionID),
+				NativeSessionID: session.NativeSessionID,
+				ResumeMode:      session.ResumeMode,
+				LastRunID:       session.LastRunID,
+				UpdatedAt:       session.UpdatedAt,
+			}, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return protocol.RuntimeSession{}, err
+		}
+	}
+	sessionID := strings.TrimSpace(trigger.SessionID)
+	if sessionID == "" {
+		return protocol.RuntimeSession{}, errors.New("run session_id is not known")
+	}
+	if c.state != nil {
+		session, err := c.state.RuntimeSession(ctx, sessionID, protocol.RuntimeCodexCLI)
+		if err == nil {
+			return protocol.RuntimeSession{
+				Runtime:         session.Runtime,
+				ProjectID:       firstNonEmpty(session.ProjectID, trigger.ProjectID),
+				SessionID:       firstNonEmpty(session.SessionID, trigger.SessionID),
+				NativeSessionID: session.NativeSessionID,
+				ResumeMode:      session.ResumeMode,
+				LastRunID:       session.LastRunID,
+				UpdatedAt:       session.UpdatedAt,
+			}, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return protocol.RuntimeSession{}, err
+		}
+	}
+	return protocol.RuntimeSession{Runtime: protocol.RuntimeCodexCLI, ProjectID: trigger.ProjectID, SessionID: sessionID, NativeSessionID: sessionID, LastRunID: trigger.RunID}, nil
+}
+
+func findHistorySession(result codexscan.Result, target protocol.RuntimeSession) (codexscan.Session, bool) {
+	ids := map[string]struct{}{}
+	for _, id := range []string{target.SessionID, target.NativeSessionID} {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			ids[id] = struct{}{}
+		}
+	}
+	if len(ids) == 0 {
+		return codexscan.Session{}, false
+	}
+	runtimeSessionID := ""
+	for _, runtimeSession := range result.RuntimeSessions {
+		if runtimeSession.Runtime != protocol.RuntimeCodexCLI {
+			continue
+		}
+		if _, ok := ids[strings.TrimSpace(runtimeSession.SessionID)]; ok {
+			runtimeSessionID = runtimeSession.SessionID
+			break
+		}
+		if _, ok := ids[strings.TrimSpace(runtimeSession.NativeSessionID)]; ok {
+			runtimeSessionID = runtimeSession.SessionID
+			break
+		}
+	}
+	for _, session := range result.Sessions {
+		if _, ok := ids[strings.TrimSpace(session.ID)]; ok {
+			return session, true
+		}
+		if runtimeSessionID != "" && session.ID == runtimeSessionID {
+			return session, true
+		}
+	}
+	return codexscan.Session{}, false
 }
 
 func (c *Client) emitIndexRefreshStatus(ctx context.Context, trigger protocol.RunEvent, status string, extra map[string]any) {

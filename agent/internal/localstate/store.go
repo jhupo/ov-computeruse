@@ -466,6 +466,30 @@ func (s *Store) RuntimeSession(ctx context.Context, sessionID, runtime string) (
 	return session, err
 }
 
+func (s *Store) RuntimeSessionByRun(ctx context.Context, runID, runtime string) (RuntimeSession, error) {
+	if s == nil {
+		return RuntimeSession{}, sql.ErrNoRows
+	}
+	runID = strings.TrimSpace(runID)
+	runtime = strings.TrimSpace(runtime)
+	if runID == "" || runtime == "" {
+		return RuntimeSession{}, sql.ErrNoRows
+	}
+	var session RuntimeSession
+	var updatedAt string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT session_id, runtime, COALESCE(project_id, ''), COALESCE(native_session_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''), updated_at
+		FROM runtime_sessions
+		WHERE runtime = ? AND last_run_id = ?
+		ORDER BY updated_at DESC
+		LIMIT 1
+	`, runtime, runID).Scan(&session.SessionID, &session.Runtime, &session.ProjectID, &session.NativeSessionID, &session.ResumeMode, &session.LastRunID, &updatedAt)
+	if parsed, parseErr := time.Parse(time.RFC3339Nano, updatedAt); parseErr == nil {
+		session.UpdatedAt = parsed.UTC()
+	}
+	return session, err
+}
+
 func (s *Store) RuntimeSessions(ctx context.Context) ([]RuntimeSession, error) {
 	if s == nil {
 		return nil, nil

@@ -83,6 +83,7 @@ func TestResolveCommandContextAcceptsRuntimeSession(t *testing.T) {
 		ProjectID:       "project_1",
 		NativeSessionID: "codex_native",
 		ResumeMode:      "codex_cli_exec",
+		LastRunID:       "run_1",
 		UpdatedAt:       updatedAt,
 	})
 	if err != nil {
@@ -111,6 +112,13 @@ func TestResolveCommandContextAcceptsRuntimeSession(t *testing.T) {
 	if byNative.SessionID != "codex_session" || byNative.NativeSessionID != "codex_native" {
 		t.Fatalf("runtime session by native id = %+v", byNative)
 	}
+	byRun, err := state.RuntimeSessionByRun(context.Background(), "run_1", protocol.RuntimeCodexCLI)
+	if err != nil {
+		t.Fatalf("runtime session by run id: %v", err)
+	}
+	if byRun.SessionID != "codex_session" || byRun.NativeSessionID != "codex_native" {
+		t.Fatalf("runtime session by run id = %+v", byRun)
+	}
 
 	runtimeSessions, err := state.RuntimeSessions(context.Background())
 	if err != nil {
@@ -119,7 +127,7 @@ func TestResolveCommandContextAcceptsRuntimeSession(t *testing.T) {
 	if len(runtimeSessions) != 1 {
 		t.Fatalf("runtime session count = %d, want 1", len(runtimeSessions))
 	}
-	if runtimeSessions[0].ProjectID != "project_1" || runtimeSessions[0].LastRunID != "" || runtimeSessions[0].UpdatedAt.IsZero() {
+	if runtimeSessions[0].ProjectID != "project_1" || runtimeSessions[0].LastRunID != "run_1" || runtimeSessions[0].UpdatedAt.IsZero() {
 		t.Fatalf("runtime session not fully preserved: %+v", runtimeSessions[0])
 	}
 }
