@@ -98,6 +98,9 @@ func (c *Client) Run(ctx context.Context) error {
 }
 
 func (c *Client) Emit(ctx context.Context, event protocol.RunEvent) error {
+	if skipRunEvent(event) {
+		return nil
+	}
 	if c.state != nil {
 		if err := c.state.SaveRunEvent(ctx, event); err != nil {
 			return err
@@ -114,6 +117,10 @@ func (c *Client) Emit(ctx context.Context, event protocol.RunEvent) error {
 		_ = c.state.MarkRunEventSent(ctx, event)
 	}
 	return nil
+}
+
+func skipRunEvent(event protocol.RunEvent) bool {
+	return strings.TrimSpace(event.Kind) == "usage"
 }
 
 func (c *Client) serve(ctx context.Context, conn Conn) error {

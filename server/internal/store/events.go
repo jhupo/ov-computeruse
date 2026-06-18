@@ -25,6 +25,9 @@ type ProjectionRebuildResult struct {
 }
 
 func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, event protocol.RunEvent) error {
+	if skipRunEvent(event) {
+		return nil
+	}
 	if event.EventID == "" {
 		event.EventID = protocol.NewID("evt")
 	}
@@ -59,6 +62,10 @@ func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, even
 		return err
 	}
 	return s.projectCommandStateFromRunEvent(ctx, agentID, event, true)
+}
+
+func skipRunEvent(event protocol.RunEvent) bool {
+	return strings.TrimSpace(event.Kind) == "usage"
 }
 
 func (s *Store) RebuildRunProjections(ctx context.Context, agentID, runID string) (ProjectionRebuildResult, error) {

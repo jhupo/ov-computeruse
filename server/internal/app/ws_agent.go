@@ -196,6 +196,9 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 	case "run.event":
 		event, err := protocol.Decode[protocol.RunEvent](env.Data)
 		if err == nil {
+			if skipAgentRunEvent(event) {
+				return
+			}
 			if err := s.store.SaveRunEvent(ctx, agent.AgentID, agent.DeviceID, event); err == nil {
 				if event.RunID != "" && event.Seq > 0 {
 					s.sendAgent(agent, "run.event.ack", protocol.Ack{RunID: event.RunID, Status: "acked", AckSeq: event.Seq, At: time.Now().UTC()})
@@ -203,9 +206,7 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 				if runtimeSession, ok := runtimeSessionFromRunEvent(event); ok {
 					s.hub.BroadcastDash(agent.UserID, dashEvent("runtime.session.updated", agent, runtimeSession))
 				}
-				if exposeRunEventToDash(event) {
-					s.hub.BroadcastDash(agent.UserID, dashEvent("run.event", agent, event))
-				}
+				s.hub.BroadcastDash(agent.UserID, dashEvent("run.event", agent, event))
 			}
 		}
 	case "ack":
@@ -218,8 +219,8 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 	}
 }
 
-func exposeRunEventToDash(event protocol.RunEvent) bool {
-	return strings.TrimSpace(event.Kind) != "usage"
+func skipAgentRunEvent(event protocol.RunEvent) bool {
+	return strings.TrimSpace(event.Kind) == "usage"
 }
 
 func runtimeSessionFromRunEvent(event protocol.RunEvent) (protocol.RuntimeSession, bool) {
