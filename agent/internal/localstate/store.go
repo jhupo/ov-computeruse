@@ -348,6 +348,15 @@ func (s *Store) SaveRuntimeSession(ctx context.Context, session RuntimeSession) 
 	if s == nil {
 		return nil
 	}
+	if strings.TrimSpace(session.Runtime) == "" {
+		return errors.New("runtime session runtime is required")
+	}
+	if strings.TrimSpace(session.SessionID) == "" {
+		session.SessionID = firstNonEmpty(session.NativeSessionID, session.LastResponseID, session.LastRunID)
+	}
+	if strings.TrimSpace(session.SessionID) == "" {
+		return errors.New("runtime session identity is required")
+	}
 	updatedAt := session.UpdatedAt
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()
@@ -370,13 +379,21 @@ func (s *Store) RuntimeSession(ctx context.Context, sessionID, runtime string) (
 	if s == nil {
 		return RuntimeSession{}, sql.ErrNoRows
 	}
+	sessionID = strings.TrimSpace(sessionID)
+	runtime = strings.TrimSpace(runtime)
+	if sessionID == "" || runtime == "" {
+		return RuntimeSession{}, sql.ErrNoRows
+	}
 	var session RuntimeSession
 	var updatedAt string
 	err := s.db.QueryRowContext(ctx, `
 		SELECT session_id, runtime, COALESCE(project_id, ''), COALESCE(native_session_id, ''), COALESCE(last_response_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''), updated_at
 		FROM runtime_sessions
-		WHERE session_id = ? AND runtime = ?
-	`, sessionID, runtime).Scan(&session.SessionID, &session.Runtime, &session.ProjectID, &session.NativeSessionID, &session.LastResponseID, &session.ResumeMode, &session.LastRunID, &updatedAt)
+		WHERE runtime = ?
+			AND (session_id = ? OR native_session_id = ? OR last_response_id = ?)
+		ORDER BY updated_at DESC
+		LIMIT 1
+	`, runtime, sessionID, sessionID, sessionID).Scan(&session.SessionID, &session.Runtime, &session.ProjectID, &session.NativeSessionID, &session.LastResponseID, &session.ResumeMode, &session.LastRunID, &updatedAt)
 	if parsed, parseErr := time.Parse(time.RFC3339Nano, updatedAt); parseErr == nil {
 		session.UpdatedAt = parsed.UTC()
 	}
@@ -1066,6 +1083,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			PRIMARY KEY(session_id, runtime)
 		)`,
 		`ALTER TABLE runtime_sessions ADD COLUMN project_id TEXT`,
+		`CREATE INDEX IF NOT EXISTS idx_runtime_sessions_native ON runtime_sessions(runtime, native_session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_runtime_sessions_response ON runtime_sessions(runtime, last_response_id)`,
 		`CREATE TABLE IF NOT EXISTS command_acks (
 			command_id TEXT PRIMARY KEY,
 			run_id TEXT,
@@ -1238,7 +1257,13 @@ func upsertSessions(ctx context.Context, tx txLike, sessions []codexscan.Session
 
 func upsertRuntimeSessions(ctx context.Context, tx txLike, sessions []codexscan.RuntimeSession) error {
 	for _, session := range sessions {
-		if session.SessionID == "" || session.Runtime == "" {
+		if session.Runtime == "" {
+			continue
+		}
+		if strings.TrimSpace(session.SessionID) == "" {
+			session.SessionID = firstNonEmpty(session.NativeSessionID, session.LastResponseID)
+		}
+		if strings.TrimSpace(session.SessionID) == "" {
 			continue
 		}
 		updatedAt := session.UpdatedAt

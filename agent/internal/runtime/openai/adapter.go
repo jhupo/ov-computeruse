@@ -117,6 +117,9 @@ func (a *Adapter) untrackRun(command protocol.Command) {
 
 func (a *Adapter) send(ctx context.Context, command protocol.Command, sink runtime.Sink, includeHistory bool) error {
 	runCtx, cancel := context.WithCancel(ctx)
+	if strings.TrimSpace(command.SessionID) == "" {
+		command.SessionID = protocol.NewID("session")
+	}
 	a.trackRun(command, cancel)
 	defer func() {
 		cancel()

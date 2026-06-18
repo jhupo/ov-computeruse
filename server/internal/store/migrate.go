@@ -123,6 +123,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_runtime_sessions_agent ON runtime_sessions(agent_id, updated_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_runtime_sessions_session ON runtime_sessions(agent_id, session_id) WHERE session_id IS NOT NULL AND session_id <> ''`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_sessions_native ON runtime_sessions(agent_id, runtime, native_session_id) WHERE native_session_id IS NOT NULL AND native_session_id <> ''`,
+		`CREATE INDEX IF NOT EXISTS idx_runtime_sessions_response ON runtime_sessions(agent_id, runtime, last_response_id) WHERE last_response_id IS NOT NULL AND last_response_id <> ''`,
 		`DELETE FROM history_items WHERE lower(trim(kind)) IN ('usage','response.usage','token_usage','billing','cost')`,
 		`DELETE FROM run_steps WHERE lower(trim(kind)) IN ('usage','response.usage','token_usage','billing','cost')`,
 		`DELETE FROM run_events WHERE lower(trim(kind)) IN ('usage','response.usage','token_usage','billing','cost')`,

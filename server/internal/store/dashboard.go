@@ -684,22 +684,43 @@ func (s *Store) UpsertRuntimeSession(ctx context.Context, agentID string, runtim
 	if runtime.Runtime == "" {
 		runtime.Runtime = "codex"
 	}
-	if runtime.ID == "" {
-		runtime.ID = runtimeSessionID(agentID, runtime.Runtime, dashboardFirstNonEmpty(runtime.NativeSessionID, runtime.SessionID, runtime.LastResponseID, runtime.LastRunID))
+	if runtime.SessionID == "" {
+		runtime.SessionID = dashboardFirstNonEmpty(runtime.NativeSessionID, runtime.LastResponseID, runtime.LastRunID)
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO runtime_sessions (id, agent_id, runtime, native_session_id, project_id, session_id, last_response_id, resume_mode, last_run_id, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now())
-		ON CONFLICT (id) DO UPDATE SET
-			runtime=EXCLUDED.runtime,
-			native_session_id=COALESCE(NULLIF(EXCLUDED.native_session_id, ''), runtime_sessions.native_session_id),
-			project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runtime_sessions.project_id),
-			session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runtime_sessions.session_id),
-			last_response_id=COALESCE(NULLIF(EXCLUDED.last_response_id, ''), runtime_sessions.last_response_id),
-			resume_mode=COALESCE(NULLIF(EXCLUDED.resume_mode, ''), runtime_sessions.resume_mode),
-			last_run_id=COALESCE(NULLIF(EXCLUDED.last_run_id, ''), runtime_sessions.last_run_id),
-			updated_at=now()`,
+	if runtime.ID == "" {
+		runtime.ID = runtimeSessionID(agentID, runtime.Runtime, dashboardFirstNonEmpty(runtime.SessionID, runtime.NativeSessionID, runtime.LastResponseID, runtime.LastRunID))
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if runtime.NativeSessionID != "" {
+		var existingID string
+		err = tx.QueryRow(ctx, `SELECT id FROM runtime_sessions WHERE agent_id=$1 AND runtime=$2 AND native_session_id=$3 FOR UPDATE`, agentID, runtime.Runtime, runtime.NativeSessionID).Scan(&existingID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if existingID != "" {
+			runtime.ID = existingID
+		}
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO runtime_sessions (id, agent_id, runtime, native_session_id, project_id, session_id, last_response_id, resume_mode, last_run_id, updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now())
+			ON CONFLICT (id) DO UPDATE SET
+				runtime=EXCLUDED.runtime,
+				native_session_id=COALESCE(NULLIF(EXCLUDED.native_session_id, ''), runtime_sessions.native_session_id),
+				project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runtime_sessions.project_id),
+				session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runtime_sessions.session_id),
+				last_response_id=COALESCE(NULLIF(EXCLUDED.last_response_id, ''), runtime_sessions.last_response_id),
+				resume_mode=COALESCE(NULLIF(EXCLUDED.resume_mode, ''), runtime_sessions.resume_mode),
+				last_run_id=COALESCE(NULLIF(EXCLUDED.last_run_id, ''), runtime_sessions.last_run_id),
+				updated_at=now()`,
 		runtime.ID, agentID, runtime.Runtime, runtime.NativeSessionID, runtime.ProjectID, runtime.SessionID, runtime.LastResponseID, runtime.ResumeMode, runtime.LastRunID)
 	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	return s.linkRuntimeSessionToRun(ctx, agentID, runtime)
@@ -726,7 +747,7 @@ func (s *Store) ListRuntimeSessions(ctx context.Context, agentID, sessionID stri
 	query := `SELECT id, runtime, COALESCE(project_id, ''), COALESCE(session_id, ''), COALESCE(native_session_id, ''), COALESCE(last_response_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''), updated_at FROM runtime_sessions WHERE agent_id=$1`
 	args := []any{agentID}
 	if sessionID != "" {
-		query += ` AND session_id=$2`
+		query += ` AND (session_id=$2 OR native_session_id=$2 OR last_response_id=$2)`
 		args = append(args, sessionID)
 	}
 	query += ` ORDER BY updated_at DESC`

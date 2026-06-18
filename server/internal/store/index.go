@@ -56,7 +56,7 @@ func (s *Store) SessionExists(ctx context.Context, agentID, sessionID string) (b
 	var exists bool
 	err := s.pool.QueryRow(ctx, `SELECT
 		EXISTS(SELECT 1 FROM codex_sessions WHERE agent_id=$1 AND id=$2 AND deleted_at IS NULL)
-		OR EXISTS(SELECT 1 FROM runtime_sessions WHERE agent_id=$1 AND session_id=$2)`, agentID, sessionID).Scan(&exists)
+		OR EXISTS(SELECT 1 FROM runtime_sessions WHERE agent_id=$1 AND (session_id=$2 OR native_session_id=$2 OR last_response_id=$2))`, agentID, sessionID).Scan(&exists)
 	return exists, err
 }
 

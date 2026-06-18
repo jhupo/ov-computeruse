@@ -74,7 +74,13 @@ func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, even
 	if event.At.IsZero() {
 		event.At = time.Now().UTC()
 	}
-	if err := s.validateRunEventOwnership(ctx, agentID, event); err != nil {
+	if err := s.validateRunEventOwnership(ctx, agentID, event, false); err != nil {
+		return RunEventSaveResult{}, err
+	}
+	if err := s.projectRuntimeSession(ctx, agentID, event); err != nil {
+		return RunEventSaveResult{}, err
+	}
+	if err := s.validateRunEventOwnership(ctx, agentID, event, true); err != nil {
 		return RunEventSaveResult{}, err
 	}
 	_, err := s.pool.Exec(ctx, `INSERT INTO run_events (id, agent_id, device_id, run_id, command_id, session_id, project_id, seq, kind, payload, event_at)
@@ -93,9 +99,6 @@ func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, even
 		return RunEventSaveResult{}, err
 	}
 	if err := s.projectApproval(ctx, agentID, event); err != nil {
-		return RunEventSaveResult{}, err
-	}
-	if err := s.projectRuntimeSession(ctx, agentID, event); err != nil {
 		return RunEventSaveResult{}, err
 	}
 	if err := s.projectRunEvent(ctx, agentID, event); err != nil {
@@ -255,7 +258,7 @@ func isUniqueViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
-func (s *Store) validateRunEventOwnership(ctx context.Context, agentID string, event protocol.RunEvent) error {
+func (s *Store) validateRunEventOwnership(ctx context.Context, agentID string, event protocol.RunEvent, validateSession bool) error {
 	if strings.TrimSpace(event.CommandID) != "" {
 		command, found, err := s.CommandByID(ctx, agentID, event.CommandID)
 		if err != nil {
@@ -286,7 +289,7 @@ func (s *Store) validateRunEventOwnership(ctx context.Context, agentID string, e
 			return errors.New("run event run does not belong to agent")
 		}
 	}
-	if strings.TrimSpace(event.SessionID) != "" {
+	if validateSession && strings.TrimSpace(event.SessionID) != "" {
 		exists, err := s.SessionExists(ctx, agentID, event.SessionID)
 		if err != nil {
 			return err

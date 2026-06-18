@@ -88,6 +88,13 @@ func TestEmitRuntimeSessionSeparatesNativeResponseIdentity(t *testing.T) {
 	if local.NativeSessionID != "responses:resp_1" || local.LastResponseID != "resp_1" {
 		t.Fatalf("local runtime session = %+v", local)
 	}
+	byResponse, err := state.RuntimeSession(context.Background(), "resp_1", runtimeName)
+	if err != nil {
+		t.Fatalf("local runtime session by response id: %v", err)
+	}
+	if byResponse.SessionID != "session_1" {
+		t.Fatalf("runtime session by response id = %+v", byResponse)
+	}
 }
 
 func TestPromptWithProjectContext(t *testing.T) {
