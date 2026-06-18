@@ -276,25 +276,13 @@ func (c *Client) flushRunEventOutbox(ctx context.Context) error {
 
 func (c *Client) register(ctx context.Context) error {
 	cred, _ := c.scanner.Credential()
-	features := []string{"codex.scan", "history.items", "index.runtime_sessions", "run.events", "runtime.session", "command.refresh_index", workspace.FeatureName()}
 	runtimeName := ""
 	if c.manager != nil {
 		runtimeName = strings.TrimSpace(c.manager.RuntimeName())
 	}
-	supportsRuntime := runtimeName != "" && runtimeName != "noop"
-	if supportsRuntime {
-		features = append(features, "approval.decision", "command.new_session", "command.resume", "command.send", "command.stop")
-	}
+	features := c.capabilityFeatures(runtimeName)
+	supportsRuntime := supportsRuntimeName(runtimeName)
 	supportsGit := workspace.GitAvailable()
-	if supportsGit {
-		features = append(features, "git.status", "git.diff")
-	}
-	if supportsRuntime {
-		features = append(features, "runtime."+runtimeName)
-	}
-	if c.cfg.AllowLocalShell {
-		features = append(features, "tool.local_shell", "terminal.output")
-	}
 	register := protocol.AgentRegister{
 		AgentID:     c.identity.AgentID,
 		WorkspaceID: c.identity.WorkspaceID,
@@ -329,6 +317,25 @@ func (c *Client) register(ctx context.Context) error {
 		register.Capabilities.Features = append(register.Capabilities.Features, "history.upload")
 	}
 	return c.send(ctx, "agent.register", register)
+}
+
+func (c *Client) capabilityFeatures(runtimeName string) []string {
+	features := []string{"codex.scan", "history.items", "index.runtime_sessions", "run.events", "runtime.session", "command.refresh_index", workspace.FeatureName()}
+	if supportsRuntimeName(runtimeName) {
+		features = append(features, "command.new_session", "command.resume", "command.send", "command.stop", "runtime."+runtimeName)
+	}
+	if workspace.GitAvailable() {
+		features = append(features, "git.status", "git.diff")
+	}
+	if c.cfg.AllowLocalShell {
+		features = append(features, "tool.local_shell", "terminal.output")
+	}
+	return features
+}
+
+func supportsRuntimeName(runtimeName string) bool {
+	runtimeName = strings.TrimSpace(runtimeName)
+	return runtimeName != "" && runtimeName != "noop"
 }
 
 func (c *Client) maxConcurrentRuns() int {

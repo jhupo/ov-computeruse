@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -101,6 +102,28 @@ func TestEmitSendsRunEventImmediately(t *testing.T) {
 	}
 	if string(sent.Payload) != string(event.Payload) {
 		t.Fatalf("payload = %s, want %s", sent.Payload, event.Payload)
+	}
+}
+
+func TestCapabilityFeaturesDoNotAdvertiseApprovalDecision(t *testing.T) {
+	client := &Client{}
+	features := client.capabilityFeatures(protocol.RuntimeCodexCLI)
+	if !hasFeature(features, "command.new_session") || !hasFeature(features, "runtime."+protocol.RuntimeCodexCLI) {
+		t.Fatalf("runtime features missing: %#v", features)
+	}
+	if hasFeature(features, "approval.decision") {
+		t.Fatalf("approval.decision must not be advertised until codex cli approval protocol is wired: %#v", features)
+	}
+}
+
+func TestCapabilityFeaturesAdvertiseLocalShellWithoutApprovalDecision(t *testing.T) {
+	client := &Client{cfg: config.Config{AllowLocalShell: true}}
+	features := client.capabilityFeatures(protocol.RuntimeCodexCLI)
+	if !hasFeature(features, "tool.local_shell") || !hasFeature(features, "terminal.output") {
+		t.Fatalf("local shell features missing: %#v", features)
+	}
+	if hasFeature(features, "approval.decision") {
+		t.Fatalf("approval.decision must not be inferred from local shell policy: %#v", features)
 	}
 }
 
@@ -245,4 +268,13 @@ func protocolDevice() device.Info {
 
 func defaultConfig() config.Config {
 	return config.Config{}
+}
+
+func hasFeature(features []string, want string) bool {
+	for _, feature := range features {
+		if strings.EqualFold(strings.TrimSpace(feature), want) {
+			return true
+		}
+	}
+	return false
 }
