@@ -151,6 +151,30 @@ func TestReadStdoutMapsCodexToolItems(t *testing.T) {
 	assertPayloadString(t, sink.events[10].Payload, "message", "boom")
 }
 
+func TestReadStdoutMapsCodexApprovalRequestsAsUnsupportedStatus(t *testing.T) {
+	adapter := New(Config{})
+	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1"}
+	input := strings.Join([]string{
+		`{"type":"codex/event/exec_approval_request","id":"approval_1","command":"git status","cwd":"C:\\repo"}`,
+		`{"type":"item.completed","item":{"id":"approval_2","type":"mcp_approval_request","server":"fs","tool":"write","arguments":{"path":"a.txt"}}}`,
+	}, "\n")
+	sink := &captureSink{}
+	if err := adapter.readStdout(context.Background(), strings.NewReader(input), command, localstate.CommandContext{}, sink, &completionSignal{}); err != nil && err != io.EOF {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if len(sink.events) != 2 {
+		t.Fatalf("event count = %d, want 2", len(sink.events))
+	}
+	for _, event := range sink.events {
+		if event.Kind != "run.status" {
+			t.Fatalf("event kind = %q, want run.status", event.Kind)
+		}
+		assertPayloadString(t, event.Payload, "status", "codex.approval.unsupported")
+	}
+	assertPayloadString(t, sink.events[0].Payload, "command", "git status")
+	assertPayloadString(t, sink.events[1].Payload, "server", "fs")
+}
+
 func TestBinCandidatesPreferWindowsLaunchers(t *testing.T) {
 	got := binCandidates("windows")
 	want := []string{"codex.exe", "codex.cmd", "codex"}

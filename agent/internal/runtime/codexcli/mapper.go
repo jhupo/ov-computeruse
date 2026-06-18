@@ -22,6 +22,8 @@ func (a *Adapter) emitEvent(ctx context.Context, command protocol.Command, resol
 		return emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.turn.failed", "message": firstNonEmpty(event.Message, event.Error.Message), "raw": event.Raw})
 	case "error":
 		return fmt.Errorf("codex CLI error: %s", firstNonEmpty(event.Message, event.Error.Message, string(event.Raw)))
+	case "codex/event/exec_approval_request", "codex/event/apply_patch_approval_request", "codex/event/elicitation_request", "exec_approval_request", "apply_patch_approval_request", "elicitation_request":
+		return emitUnsupportedApproval(ctx, command, event.Type, event.Raw, sink)
 	case "item.started", "item.updated", "item.completed":
 		return emitItem(ctx, command, event.Type, decodeItem(event.Item), sink)
 	default:
@@ -43,6 +45,8 @@ func emitItem(ctx context.Context, command protocol.Command, phase string, item 
 		return emitTool(ctx, command, phase, item, "file_change", fileChangePayload(item), sink)
 	case "todo_list":
 		return emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.todo_list", "phase": phase, "items": rawJSON(item.Items), "item": rawJSON(item.Raw)})
+	case "mcp_approval_request", "exec_approval_request", "apply_patch_approval_request", "elicitation_request":
+		return emitUnsupportedApproval(ctx, command, item.Type, item.Raw, sink)
 	case "error":
 		return emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.item.error", "phase": phase, "error": rawJSON(item.Error), "item": rawJSON(item.Raw)})
 	case "web_search", "collab_tool_call":
@@ -50,6 +54,41 @@ func emitItem(ctx context.Context, command protocol.Command, phase string, item 
 	default:
 		return emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.item", "phase": phase, "item_type": item.Type, "item": rawJSON(item.Raw)})
 	}
+}
+
+func emitUnsupportedApproval(ctx context.Context, command protocol.Command, sourceType string, raw json.RawMessage, sink agentruntime.Sink) error {
+	payload := map[string]any{
+		"status":      "codex.approval.unsupported",
+		"source_type": sourceType,
+		"message":     "Codex CLI exec emitted an approval request, but this runtime has no verified stdin protocol for remote approval decisions.",
+		"raw":         rawJSON(raw),
+	}
+	if fields := approvalFields(raw); len(fields) > 0 {
+		for key, value := range fields {
+			payload[key] = value
+		}
+	}
+	return emit(ctx, sink, command, "run.status", payload)
+}
+
+func approvalFields(raw json.RawMessage) map[string]any {
+	var value map[string]any
+	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil {
+		return nil
+	}
+	out := map[string]any{}
+	for _, key := range []string{"id", "approval_id", "call_id", "server", "tool", "name", "command", "cwd", "reason"} {
+		if text, ok := value[key].(string); ok && text != "" {
+			out[key] = text
+		}
+	}
+	if arguments, ok := value["arguments"]; ok {
+		out["arguments"] = arguments
+	}
+	if action, ok := value["action"]; ok {
+		out["action"] = action
+	}
+	return out
 }
 
 func emitCommandExecution(ctx context.Context, command protocol.Command, phase string, item execItem, sink agentruntime.Sink) error {
