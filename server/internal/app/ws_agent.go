@@ -200,6 +200,9 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 				if event.RunID != "" && event.Seq > 0 {
 					s.sendAgent(agent, "run.event.ack", protocol.Ack{RunID: event.RunID, Status: "acked", AckSeq: event.Seq, At: time.Now().UTC()})
 				}
+				if runtimeSession, ok := runtimeSessionFromRunEvent(event); ok {
+					s.hub.BroadcastDash(agent.UserID, dashEvent("runtime.session.updated", agent, runtimeSession))
+				}
 				if exposeRunEventToDash(event) {
 					s.hub.BroadcastDash(agent.UserID, dashEvent("run.event", agent, event))
 				}
@@ -217,6 +220,22 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 
 func exposeRunEventToDash(event protocol.RunEvent) bool {
 	return strings.TrimSpace(event.Kind) != "usage"
+}
+
+func runtimeSessionFromRunEvent(event protocol.RunEvent) (protocol.RuntimeSession, bool) {
+	switch event.Kind {
+	case "session.created", "session.resumed", "session.updated", "run.status", "run.completed", "run.done":
+	default:
+		return protocol.RuntimeSession{}, false
+	}
+	runtimeSession, err := protocol.Decode[protocol.RuntimeSession](event.Payload)
+	if err != nil {
+		return protocol.RuntimeSession{}, false
+	}
+	if runtimeSession.SessionID == "" && runtimeSession.NativeSessionID == "" && runtimeSession.LastResponseID == "" {
+		return protocol.RuntimeSession{}, false
+	}
+	return runtimeSession, true
 }
 
 func dashEvent(eventType string, agent *AgentConn, payload any) []byte {

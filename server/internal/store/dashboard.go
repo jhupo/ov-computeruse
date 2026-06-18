@@ -551,6 +551,26 @@ func (s *Store) UpsertRuntimeSession(ctx context.Context, agentID string, runtim
 			last_run_id=COALESCE(NULLIF(EXCLUDED.last_run_id, ''), runtime_sessions.last_run_id),
 			updated_at=now()`,
 		runtime.ID, agentID, runtime.Runtime, runtime.NativeSessionID, runtime.ProjectID, runtime.SessionID, runtime.LastResponseID, runtime.ResumeMode, runtime.LastRunID)
+	if err != nil {
+		return err
+	}
+	return s.linkRuntimeSessionToRun(ctx, agentID, runtime)
+}
+
+func (s *Store) linkRuntimeSessionToRun(ctx context.Context, agentID string, runtime protocol.RuntimeSession) error {
+	if runtime.LastRunID == "" || runtime.SessionID == "" {
+		return nil
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE runs
+		SET session_id=$3, project_id=COALESCE(NULLIF(project_id, ''), NULLIF($4, ''))
+		WHERE agent_id=$1 AND id=$2 AND (session_id IS NULL OR session_id='')`,
+		agentID, runtime.LastRunID, runtime.SessionID, runtime.ProjectID); err != nil {
+		return err
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE commands
+		SET session_id=$3, project_id=COALESCE(NULLIF(project_id, ''), NULLIF($4, ''))
+		WHERE agent_id=$1 AND run_id=$2 AND (session_id IS NULL OR session_id='')`,
+		agentID, runtime.LastRunID, runtime.SessionID, runtime.ProjectID)
 	return err
 }
 
