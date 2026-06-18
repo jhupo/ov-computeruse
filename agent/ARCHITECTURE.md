@@ -72,6 +72,8 @@ server 下发：
 
 运行时通过 OpenAI Go SDK 调用 Responses API，使用本地 Codex credential 的 `base_url` 和 `api_key`。agent 将 SDK stream 转成稳定事件：`assistant.message.delta`、`assistant.message.done`、`tool.call`、`tool.output`、`terminal.output`、`diff.created`、`approval.requested`、`run.status`、`run.completed`、`run.failed`。dash 消费这些事件并按 Codex 桌面版体验渲染。
 
+agent 可以按 `max_concurrent_runs` 同时执行多个不同项目或不同会话的 run；同一个 `session_id` 始终串行，避免多个远程 prompt 同时续写同一条 Codex 历史上下文。
+
 ## 发布注入
 
 CI 只注入公开或可给客户端的绑定信息：

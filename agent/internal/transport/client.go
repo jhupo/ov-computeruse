@@ -221,13 +221,25 @@ func (c *Client) register(ctx context.Context) error {
 			SupportsTerminal:  c.cfg.AllowLocalShell,
 			SupportsGit:       false,
 			Features:          features,
-			MaxConcurrentRuns: 1,
+			MaxConcurrentRuns: c.maxConcurrentRuns(),
 		},
 	}
 	if c.uploadHistory {
 		register.Capabilities.Features = append(register.Capabilities.Features, "history.upload")
 	}
 	return c.send(ctx, "agent.register", register)
+}
+
+func (c *Client) maxConcurrentRuns() int {
+	if c.manager != nil {
+		if maxActive := c.manager.MaxActive(); maxActive > 0 {
+			return maxActive
+		}
+	}
+	if c.cfg.MaxConcurrentRuns > 0 {
+		return c.cfg.MaxConcurrentRuns
+	}
+	return 1
 }
 
 func (c *Client) uploadIndex(ctx context.Context) error {

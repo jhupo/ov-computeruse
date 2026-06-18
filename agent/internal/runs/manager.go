@@ -12,10 +12,11 @@ import (
 )
 
 var (
-	ErrRunAlreadyActive = errors.New("run already active")
-	ErrRunNotFound      = errors.New("run not found")
-	ErrRunIDRequired    = errors.New("run id required")
-	ErrApprovalNotFound = errors.New("approval request not found")
+	ErrRunAlreadyActive     = errors.New("run already active")
+	ErrSessionAlreadyActive = errors.New("session already has an active run")
+	ErrRunNotFound          = errors.New("run not found")
+	ErrRunIDRequired        = errors.New("run id required")
+	ErrApprovalNotFound     = errors.New("approval request not found")
 )
 
 type State string
@@ -73,6 +74,21 @@ func NewManager(rt runtime.Runtime, sink EventSink, logger *slog.Logger) *Manage
 		commands:  make(map[string]protocol.Ack),
 		maxActive: 1,
 	}
+}
+
+func (m *Manager) SetMaxActive(maxActive int) {
+	if maxActive < 1 {
+		maxActive = 1
+	}
+	m.mu.Lock()
+	m.maxActive = maxActive
+	m.mu.Unlock()
+}
+
+func (m *Manager) MaxActive() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.maxActive
 }
 
 func (m *Manager) SetSink(sink EventSink) {
@@ -193,6 +209,15 @@ func (m *Manager) start(ctx context.Context, command protocol.Command) protocol.
 		m.mu.Unlock()
 		cancel()
 		return m.remember(protocol.Ack{CommandID: command.CommandID, RunID: command.RunID, Status: "duplicate", Message: "run already active", At: time.Now().UTC()})
+	}
+	if command.SessionID != "" {
+		for _, run := range m.active {
+			if run.command.SessionID == command.SessionID {
+				m.mu.Unlock()
+				cancel()
+				return m.remember(protocol.Ack{CommandID: command.CommandID, RunID: command.RunID, Status: "rejected", Message: ErrSessionAlreadyActive.Error(), At: time.Now().UTC()})
+			}
+		}
 	}
 	m.active[command.RunID] = &activeRun{command: command, cancel: cancel, state: StateStarting, approvals: map[string]chan protocol.ApprovalDecision{}}
 	m.mu.Unlock()

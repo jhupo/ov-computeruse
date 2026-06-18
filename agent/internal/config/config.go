@@ -15,26 +15,27 @@ import (
 const EnvPrefix = "OV_AGENT"
 
 type Config struct {
-	ServerURL       string
-	ServerKeyID     string
-	ServerPublicKey string
-	ConfigDir       string
-	DataDir         string
-	StatePath       string
-	StateDBPath     string
-	AgentConfigPath string
-	LogDir          string
-	CacheDir        string
-	CodexHome       string
-	LogLevel        string
-	ScanRoots       []string
-	ScanMaxBytes    int64
-	ScanTimeout     time.Duration
-	DeviceSalt      string
-	DisableScan     bool
-	UploadHistory   bool
-	AllowSensitive  bool
-	AllowLocalShell bool
+	ServerURL         string
+	ServerKeyID       string
+	ServerPublicKey   string
+	ConfigDir         string
+	DataDir           string
+	StatePath         string
+	StateDBPath       string
+	AgentConfigPath   string
+	LogDir            string
+	CacheDir          string
+	CodexHome         string
+	LogLevel          string
+	ScanRoots         []string
+	ScanMaxBytes      int64
+	ScanTimeout       time.Duration
+	DeviceSalt        string
+	DisableScan       bool
+	UploadHistory     bool
+	AllowSensitive    bool
+	AllowLocalShell   bool
+	MaxConcurrentRuns int
 }
 
 type Options struct {
@@ -105,6 +106,7 @@ func Load(opts Options) (Config, error) {
 	fs.BoolVar(&cfg.UploadHistory, "upload-history", cfg.UploadHistory, "upload raw Codex history chunks to server")
 	fs.BoolVar(&cfg.AllowSensitive, "allow-sensitive", cfg.AllowSensitive, "include paths that match sensitive-file filters")
 	fs.BoolVar(&cfg.AllowLocalShell, "allow-local-shell", cfg.AllowLocalShell, "allow approved local shell tool execution")
+	fs.IntVar(&cfg.MaxConcurrentRuns, "max-concurrent-runs", cfg.MaxConcurrentRuns, "maximum concurrent runtime runs")
 
 	if len(opts.Args) > 0 {
 		if err := fs.Parse(opts.Args); err != nil {
@@ -127,6 +129,9 @@ func Load(opts Options) (Config, error) {
 	cfg.ScanRoots = cleanPaths(cfg.ScanRoots)
 	if cfg.DeviceSalt == "" {
 		cfg.DeviceSalt = cfg.ConfigDir
+	}
+	if cfg.MaxConcurrentRuns < 1 {
+		cfg.MaxConcurrentRuns = 1
 	}
 	return cfg, nil
 }
@@ -313,6 +318,10 @@ func applyConfigValue(cfg *Config, key, value string) {
 		cfg.AllowSensitive = parseBool(value)
 	case "allow_local_shell":
 		cfg.AllowLocalShell = parseBool(value)
+	case "max_concurrent_runs":
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.MaxConcurrentRuns = parsed
+		}
 	}
 }
 
@@ -351,17 +360,18 @@ func ApplyDerivedPaths(cfg *Config, explicit map[string]bool) {
 func Defaults() Config {
 	configDir, dataDir := defaultDirs()
 	return Config{
-		ConfigDir:       configDir,
-		DataDir:         dataDir,
-		StatePath:       filepath.Join(configDir, "identity.json"),
-		StateDBPath:     filepath.Join(dataDir, "state.db"),
-		AgentConfigPath: filepath.Join(configDir, "agent.toml"),
-		LogDir:          filepath.Join(dataDir, "logs"),
-		CacheDir:        filepath.Join(dataDir, "cache"),
-		CodexHome:       os.Getenv("CODEX_HOME"),
-		LogLevel:        "info",
-		ScanMaxBytes:    4 << 20,
-		ScanTimeout:     30 * time.Second,
+		ConfigDir:         configDir,
+		DataDir:           dataDir,
+		StatePath:         filepath.Join(configDir, "identity.json"),
+		StateDBPath:       filepath.Join(dataDir, "state.db"),
+		AgentConfigPath:   filepath.Join(configDir, "agent.toml"),
+		LogDir:            filepath.Join(dataDir, "logs"),
+		CacheDir:          filepath.Join(dataDir, "cache"),
+		CodexHome:         os.Getenv("CODEX_HOME"),
+		LogLevel:          "info",
+		ScanMaxBytes:      4 << 20,
+		ScanTimeout:       30 * time.Second,
+		MaxConcurrentRuns: 4,
 	}
 }
 
@@ -455,6 +465,11 @@ func applyEnv(cfg *Config, lookup func(string) (string, bool), explicit map[stri
 	}
 	if value, ok := lookup(envKey("ALLOW_LOCAL_SHELL")); ok {
 		cfg.AllowLocalShell = parseBool(value)
+	}
+	if value, ok := lookup(envKey("MAX_CONCURRENT_RUNS")); ok {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.MaxConcurrentRuns = parsed
+		}
 	}
 }
 

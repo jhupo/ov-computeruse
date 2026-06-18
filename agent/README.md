@@ -57,6 +57,7 @@ scan_roots = ["C:/Users/me/.codex", "D:/work"]
 upload_history = false
 allow_sensitive = false
 allow_local_shell = false
+max_concurrent_runs = 4
 ```
 
 ## Run
@@ -74,6 +75,7 @@ Runtime behavior:
 - upload displayable user/assistant history messages for dash history views; raw history chunks require explicit `--upload-history`.
 - receive server commands for new session, resume, send, stop, and index refresh.
 - stream structured events for dash to render like Codex desktop.
+- run multiple projects or independent sessions concurrently up to `max_concurrent_runs`; commands targeting the same session stay serialized.
 - execute Responses `local_shell` tool calls only when `allow_local_shell` is enabled, the command is approved, and the working directory is inside an indexed project.
 
 ## Build
