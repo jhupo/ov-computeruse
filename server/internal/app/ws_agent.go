@@ -160,7 +160,7 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 		if err == nil {
 			saved := 0
 			for _, runtimeSession := range index.RuntimeSessions {
-				if err := s.store.UpsertRuntimeSession(ctx, agent.AgentID, runtimeSession); err == nil {
+				if ok, err := s.store.UpsertRuntimeSession(ctx, agent.AgentID, runtimeSession); err == nil && ok {
 					saved++
 				}
 			}

@@ -675,17 +675,26 @@ func runEventReason(event protocol.RunEvent) string {
 }
 
 func (s *Store) projectRuntimeSession(ctx context.Context, agentID string, event protocol.RunEvent) error {
+	runtime, ok := runtimeSessionFromEvent(event)
+	if !ok {
+		return nil
+	}
+	_, err := s.UpsertRuntimeSession(ctx, agentID, runtime)
+	return err
+}
+
+func runtimeSessionFromEvent(event protocol.RunEvent) (protocol.RuntimeSession, bool) {
 	switch event.Kind {
 	case "session.created", "session.resumed", "session.updated":
 	default:
-		return nil
+		return protocol.RuntimeSession{}, false
 	}
 	var runtime protocol.RuntimeSession
 	if len(event.Payload) > 0 {
 		_ = json.Unmarshal(event.Payload, &runtime)
 	}
 	if runtime.Runtime != protocol.RuntimeCodexCLI {
-		return nil
+		return protocol.RuntimeSession{}, false
 	}
 	if runtime.ProjectID == "" {
 		runtime.ProjectID = event.ProjectID
@@ -700,9 +709,9 @@ func (s *Store) projectRuntimeSession(ctx context.Context, agentID string, event
 		runtime.NativeSessionID = event.SessionID
 	}
 	if runtime.SessionID == "" && runtime.NativeSessionID == "" {
-		return nil
+		return protocol.RuntimeSession{}, false
 	}
-	return s.UpsertRuntimeSession(ctx, agentID, runtime)
+	return runtime, true
 }
 
 func storeFirstNonEmpty(values ...string) string {

@@ -427,16 +427,15 @@ func (s *Store) SaveRuntimeSession(ctx context.Context, session RuntimeSession) 
 		updatedAt = time.Now().UTC()
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO runtime_sessions(session_id, runtime, project_id, native_session_id, last_response_id, resume_mode, last_run_id, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO runtime_sessions(session_id, runtime, project_id, native_session_id, resume_mode, last_run_id, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(session_id, runtime) DO UPDATE SET
 			project_id = COALESCE(NULLIF(excluded.project_id, ''), runtime_sessions.project_id),
 			native_session_id = COALESCE(NULLIF(excluded.native_session_id, ''), runtime_sessions.native_session_id),
-			last_response_id = COALESCE(NULLIF(excluded.last_response_id, ''), runtime_sessions.last_response_id),
 			resume_mode = COALESCE(NULLIF(excluded.resume_mode, ''), runtime_sessions.resume_mode),
 			last_run_id = COALESCE(NULLIF(excluded.last_run_id, ''), runtime_sessions.last_run_id),
 			updated_at = excluded.updated_at
-	`, session.SessionID, session.Runtime, session.ProjectID, session.NativeSessionID, "", session.ResumeMode, session.LastRunID, updatedAt.UTC().Format(time.RFC3339Nano))
+	`, session.SessionID, session.Runtime, session.ProjectID, session.NativeSessionID, session.ResumeMode, session.LastRunID, updatedAt.UTC().Format(time.RFC3339Nano))
 	return err
 }
 
@@ -1166,7 +1165,6 @@ func (s *Store) migrate(ctx context.Context) error {
 			runtime TEXT NOT NULL,
 			project_id TEXT,
 			native_session_id TEXT,
-			last_response_id TEXT,
 			resume_mode TEXT,
 			last_run_id TEXT,
 			updated_at TEXT NOT NULL,
@@ -1174,7 +1172,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		)`,
 		`ALTER TABLE runtime_sessions ADD COLUMN project_id TEXT`,
 		`CREATE INDEX IF NOT EXISTS idx_runtime_sessions_native ON runtime_sessions(runtime, native_session_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_runtime_sessions_response ON runtime_sessions(runtime, last_response_id)`,
+		`DROP INDEX IF EXISTS idx_runtime_sessions_response`,
 		`CREATE TABLE IF NOT EXISTS command_acks (
 			command_id TEXT PRIMARY KEY,
 			run_id TEXT,
@@ -1366,15 +1364,14 @@ func upsertRuntimeSessions(ctx context.Context, tx txLike, sessions []codexscan.
 			updatedAt = time.Now().UTC()
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO runtime_sessions(session_id, runtime, project_id, native_session_id, last_response_id, resume_mode, last_run_id, updated_at)
-			VALUES(?, ?, ?, ?, ?, ?, '', ?)
+			INSERT INTO runtime_sessions(session_id, runtime, project_id, native_session_id, resume_mode, last_run_id, updated_at)
+			VALUES(?, ?, ?, ?, ?, '', ?)
 			ON CONFLICT(session_id, runtime) DO UPDATE SET
 				project_id = COALESCE(NULLIF(excluded.project_id, ''), runtime_sessions.project_id),
 				native_session_id = COALESCE(NULLIF(excluded.native_session_id, ''), runtime_sessions.native_session_id),
-				last_response_id = COALESCE(NULLIF(excluded.last_response_id, ''), runtime_sessions.last_response_id),
 				resume_mode = COALESCE(NULLIF(excluded.resume_mode, ''), runtime_sessions.resume_mode),
 				updated_at = excluded.updated_at
-		`, session.SessionID, session.Runtime, session.ProjectID, session.NativeSessionID, "", session.ResumeMode, updatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+		`, session.SessionID, session.Runtime, session.ProjectID, session.NativeSessionID, session.ResumeMode, updatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
 	}

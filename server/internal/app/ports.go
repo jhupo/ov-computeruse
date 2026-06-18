@@ -51,7 +51,7 @@ type IndexRepository interface {
 	SaveHistoryItems(context.Context, string, protocol.HistoryItems) error
 	SaveSyncCursor(context.Context, string, protocol.SyncCursor) error
 	HistoryMessages(context.Context, string, string) ([]protocol.HistoryMessage, error)
-	UpsertRuntimeSession(context.Context, string, protocol.RuntimeSession) error
+	UpsertRuntimeSession(context.Context, string, protocol.RuntimeSession) (bool, error)
 }
 
 type EventRepository interface {
