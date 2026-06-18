@@ -17,6 +17,7 @@ import (
 type Server struct {
 	cfg      config.Config
 	store    Repository
+	redis    *redis.Client
 	hub      *Hub
 	log      *slog.Logger
 	bind     BindService
@@ -27,7 +28,7 @@ func New(cfg config.Config, st Repository, redisClient *redis.Client, logger *sl
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{cfg: cfg, store: st, hub: NewHub(redisClient, st, logger), log: logger, bind: NewBindService(st, cfg.PublicURL, cfg.ServerKeyID), sessions: NewSessionService(redisClient, st, logger)}
+	return &Server{cfg: cfg, store: st, redis: redisClient, hub: NewHub(redisClient, st, logger), log: logger, bind: NewBindService(st, cfg.PublicURL, cfg.ServerKeyID), sessions: NewSessionService(redisClient, st, logger)}
 }
 
 func (s *Server) Run(ctx context.Context) {

@@ -64,6 +64,8 @@ Redis 是低延迟协调层：
 
 安装绑定 payload 使用 `RSA-OAEP-SHA256 + AES-256-GCM` 混合加密，server 私钥只在运行时通过 `OV_SERVER_PRIVATE_KEY_PEM` 或 `OV_SERVER_PRIVATE_KEY_FILE` 注入。agent 包内只包含 server URL、公钥、key id 和公钥 fingerprint。
 
+绑定明文包含 `requested_at` 和随机 `nonce`。server 只接受 5 分钟窗口内的请求，并使用 Redis `SETNX + TTL` 记录 nonce，防止加密 payload 被重放。
+
 agent websocket 使用 per-agent `agent_secret`：
 
 - bearer token 认证连接。

@@ -3,6 +3,8 @@ package installer
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -44,6 +46,7 @@ type BindPlaintext struct {
 	Device      DeviceProfile `json:"device"`
 	Credential  Credential    `json:"credential"`
 	RequestedAt time.Time     `json:"requested_at"`
+	Nonce       string        `json:"nonce"`
 }
 
 type BindResponse struct {
@@ -86,6 +89,11 @@ func (b Binder) Bind(ctx context.Context, username, password string, device Devi
 		Credential:  credential,
 		RequestedAt: time.Now().UTC(),
 	}
+	nonce, err := bindNonce()
+	if err != nil {
+		return securestore.Identity{}, err
+	}
+	plaintext.Nonce = nonce
 	raw, err := json.Marshal(plaintext)
 	if err != nil {
 		return securestore.Identity{}, err
@@ -138,6 +146,14 @@ func (b Binder) Bind(ctx context.Context, username, password string, device Devi
 		ServerURL:   serverURL,
 		ServerKeyID: firstNonEmpty(bindResp.ServerKeyID, b.ServerKeyID),
 	}, nil
+}
+
+func bindNonce() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
 
 func validateBindResponse(response BindResponse, serverURL, fallbackKeyID string) error {
