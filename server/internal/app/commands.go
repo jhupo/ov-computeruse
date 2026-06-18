@@ -37,6 +37,10 @@ func (s *Server) handleDashCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_command", err.Error())
 		return
 	}
+	if err := validateCommandCapabilities(identity, req.Command); err != nil {
+		writeError(w, http.StatusConflict, "command_not_supported", err.Error())
+		return
+	}
 	if err := s.validateCommandTargets(r.Context(), req.AgentID, req.Command); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_command_target", err.Error())
 		return
@@ -124,6 +128,15 @@ func (s *Server) handleDashCommandRetry(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid_command_target", err.Error())
 		return
 	}
+	identity, err := s.store.AgentByID(r.Context(), agentID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "agent_not_found", "agent not found")
+		return
+	}
+	if err := validateCommandCapabilities(identity, record.ToProtocol()); err != nil {
+		writeError(w, http.StatusConflict, "command_not_supported", err.Error())
+		return
+	}
 	deadlineAt := time.Now().UTC().Add(10 * time.Minute)
 	expiresAt := deadlineAt.Add(50 * time.Minute)
 	if err := s.store.PrepareCommandRetry(r.Context(), agentID, commandID, deadlineAt, expiresAt); err != nil {
@@ -137,11 +150,6 @@ func (s *Server) handleDashCommandRetry(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "command_reload_failed", "unable to reload command")
 		return
 	}
-	identity, err := s.store.AgentByID(r.Context(), agentID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "agent_not_found", "agent not found")
-		return
-	}
 	refreshed, _ := s.dispatchStoredCommand(r, identity, record.ToProtocol())
 	writeJSON(w, http.StatusAccepted, map[string]any{"agent_id": agentID, "command": refreshed})
 }
@@ -153,6 +161,11 @@ func (s *Server) dispatchStoredCommand(r *http.Request, identity store.AgentIden
 func (s *Server) dispatchCommand(ctx context.Context, identity store.AgentIdentity, command protocol.Command) (store.CommandRecord, bool) {
 	if !command.ExpiresAt.IsZero() && command.ExpiresAt.Before(time.Now().UTC()) {
 		_ = s.store.MarkCommandExpired(ctx, identity.AgentID, command.CommandID, "command expired")
+		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
+		return record, false
+	}
+	if err := validateCommandCapabilities(identity, command); err != nil {
+		_ = s.store.MarkCommandFailed(ctx, identity.AgentID, command.CommandID, err.Error())
 		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
 		return record, false
 	}
@@ -194,6 +207,41 @@ func validateCommand(command protocol.Command) error {
 		return errors.New("unsupported command kind")
 	}
 	return nil
+}
+
+func validateCommandCapabilities(identity store.AgentIdentity, command protocol.Command) error {
+	var caps protocol.Capabilities
+	if len(identity.Capabilities) == 0 {
+		return errors.New("agent has not registered capabilities")
+	}
+	if err := json.Unmarshal(identity.Capabilities, &caps); err != nil {
+		return errors.New("agent capabilities are invalid")
+	}
+	kind := strings.TrimPrefix(command.Kind, "command.")
+	feature := "command." + kind
+	if !capabilityHasFeature(caps, feature) {
+		return errors.New("agent does not support " + feature)
+	}
+	switch kind {
+	case "new_session", "resume", "send":
+		if !caps.SupportsSDK {
+			return errors.New("agent does not support sdk execution")
+		}
+	case "refresh_index":
+		if !capabilityHasFeature(caps, "codex.scan") {
+			return errors.New("agent does not support codex scanning")
+		}
+	}
+	return nil
+}
+
+func capabilityHasFeature(caps protocol.Capabilities, feature string) bool {
+	for _, item := range caps.Features {
+		if strings.EqualFold(strings.TrimSpace(item), feature) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) validateCommandTargets(ctx context.Context, agentID string, command protocol.Command) error {

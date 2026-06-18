@@ -13,13 +13,14 @@ type Store struct {
 }
 
 type AgentIdentity struct {
-	AgentID     string `json:"agent_id"`
-	WorkspaceID string `json:"workspace_id"`
-	UserID      string `json:"-"`
-	DeviceID    string `json:"device_id"`
-	AgentSecret string `json:"agent_secret"`
-	ServerURL   string `json:"server_url"`
-	ServerKeyID string `json:"server_key_id"`
+	AgentID      string          `json:"agent_id"`
+	WorkspaceID  string          `json:"workspace_id"`
+	UserID       string          `json:"-"`
+	DeviceID     string          `json:"device_id"`
+	AgentSecret  string          `json:"agent_secret"`
+	ServerURL    string          `json:"server_url"`
+	ServerKeyID  string          `json:"server_key_id"`
+	Capabilities json.RawMessage `json:"capabilities,omitempty"`
 }
 
 type UserIdentity struct {
