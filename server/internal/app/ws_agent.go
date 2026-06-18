@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -303,9 +304,13 @@ func (s *Server) replayPendingCommands(r *http.Request, identity store.AgentIden
 		return
 	}
 	for _, command := range commands {
-		record, dispatched := s.dispatchStoredCommand(r, identity, command.ToProtocol())
+		record, dispatched := s.dispatchClaimedCommand(r.Context(), identity, command)
 		s.log.InfoContext(r.Context(), "pending command replayed", "agent_id", identity.AgentID, "command_id", command.ID, "status", record.Status, "dispatched", dispatched)
 	}
+}
+
+func (s *Server) dispatchClaimedCommand(ctx context.Context, identity store.AgentIdentity, command store.CommandRecord) (store.CommandRecord, bool) {
+	return s.dispatchCommand(ctx, identity, command.ToProtocol())
 }
 
 func (s *Server) sendAgent(agent *AgentConn, messageType string, data any) {
