@@ -510,7 +510,7 @@ func (s *Store) ListRunEvents(ctx context.Context, agentID, runID string, afterS
 	}
 	rows, err := s.pool.Query(ctx, `SELECT id, agent_id, device_id, COALESCE(run_id, ''), COALESCE(command_id, ''), COALESCE(session_id, ''), COALESCE(project_id, ''), seq, kind, payload, event_at, received_at
 		FROM run_events
-		WHERE agent_id=$1 AND run_id=$2 AND seq>$3
+		WHERE agent_id=$1 AND run_id=$2 AND seq>$3 AND kind <> 'usage'
 		ORDER BY seq ASC, received_at ASC
 		LIMIT $4`, agentID, runID, afterSeq, limit)
 	if err != nil {

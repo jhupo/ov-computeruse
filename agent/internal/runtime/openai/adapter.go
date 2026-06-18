@@ -17,6 +17,7 @@ import (
 	"ov-computeruse/agent/internal/localstate"
 	"ov-computeruse/agent/internal/protocol"
 	"ov-computeruse/agent/internal/runtime"
+	agenttools "ov-computeruse/agent/internal/tools"
 )
 
 const runtimeName = "openai.responses"
@@ -30,8 +31,9 @@ type Config struct {
 }
 
 type Adapter struct {
-	cfg    Config
-	active activeRuns
+	cfg      Config
+	active   activeRuns
+	executor agenttools.Executor
 }
 
 type promptPayload struct {
@@ -43,6 +45,7 @@ type streamResult struct {
 	ResponseID string
 	ResumeMode string
 	Approval   *protocol.ApprovalRequest
+	ToolInput  responses.ResponseInputParam
 	Failed     error
 }
 
@@ -53,7 +56,7 @@ type activeRuns struct {
 }
 
 func New(cfg Config) *Adapter {
-	return &Adapter{cfg: cfg}
+	return &Adapter{cfg: cfg, executor: agenttools.NewExecutor()}
 }
 
 func (a *Adapter) NewSession(ctx context.Context, command protocol.Command, sink runtime.Sink) error {
@@ -160,6 +163,11 @@ func (a *Adapter) send(ctx context.Context, command protocol.Command, sink runti
 		if result.ResponseID != "" {
 			previousResponseID = result.ResponseID
 		}
+		if len(result.ToolInput) > 0 {
+			nextInput = responses.ResponseNewParamsInputUnion{OfInputItemList: result.ToolInput}
+			resumeMode = "tool_output"
+			continue
+		}
 		if result.Approval == nil {
 			return result.Failed
 		}
@@ -228,6 +236,10 @@ func (a *Adapter) streamOnce(ctx context.Context, client openai.Client, params r
 			}
 			if approval != nil {
 				result.Approval = approval
+			} else if toolInput, err := a.executeOutputItem(ctx, sink, command, variant.Item); err != nil {
+				return result, err
+			} else if toolInput != nil {
+				result.ToolInput = append(result.ToolInput, *toolInput)
 			}
 		case responses.ResponseFunctionCallArgumentsDeltaEvent:
 			if err := emit(ctx, sink, command, "tool.call.delta", map[string]any{"tool_call_id": variant.ItemID, "output_index": variant.OutputIndex, "delta": variant.Delta}); err != nil {
@@ -288,6 +300,41 @@ func (a *Adapter) streamOnce(ctx context.Context, client openai.Client, params r
 		}
 	}
 	return result, stream.Err()
+}
+
+func (a *Adapter) executeOutputItem(ctx context.Context, sink runtime.Sink, command protocol.Command, item responses.ResponseOutputItemUnion) (*responses.ResponseInputItemUnionParam, error) {
+	switch variant := item.AsAny().(type) {
+	case responses.ResponseFunctionToolCall:
+		call := agenttools.Call{
+			Kind:      agenttools.CallKindFunction,
+			ID:        variant.ID,
+			CallID:    variant.CallID,
+			Name:      variant.Name,
+			Arguments: json.RawMessage(variant.Arguments),
+		}
+		result, err := a.executor.Execute(ctx, sink, command, call)
+		if err != nil {
+			return nil, err
+		}
+		output := responses.ResponseInputItemParamOfFunctionCallOutput(result.CallID, result.Output)
+		return &output, nil
+	case responses.ResponseOutputItemLocalShellCall:
+		call := agenttools.Call{
+			Kind:      agenttools.CallKindLocalShell,
+			ID:        variant.ID,
+			CallID:    variant.CallID,
+			Name:      "local_shell",
+			Arguments: protocol.Raw(variant.Action),
+		}
+		result, err := a.executor.Execute(ctx, sink, command, call)
+		if err != nil {
+			return nil, err
+		}
+		output := responses.ResponseInputItemParamOfLocalShellCallOutput(call.ID, result.Output)
+		return &output, nil
+	default:
+		return nil, nil
+	}
 }
 
 func (a *Adapter) previousResponseID(ctx context.Context, command protocol.Command) (string, bool) {

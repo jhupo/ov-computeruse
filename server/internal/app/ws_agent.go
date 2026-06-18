@@ -200,7 +200,9 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 				if event.RunID != "" && event.Seq > 0 {
 					s.sendAgent(agent, "run.event.ack", protocol.Ack{RunID: event.RunID, Status: "acked", AckSeq: event.Seq, At: time.Now().UTC()})
 				}
-				s.hub.BroadcastDash(agent.UserID, dashEvent("run.event", agent, event))
+				if exposeRunEventToDash(event) {
+					s.hub.BroadcastDash(agent.UserID, dashEvent("run.event", agent, event))
+				}
 			}
 		}
 	case "ack":
@@ -211,6 +213,10 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 			}
 		}
 	}
+}
+
+func exposeRunEventToDash(event protocol.RunEvent) bool {
+	return strings.TrimSpace(event.Kind) != "usage"
 }
 
 func dashEvent(eventType string, agent *AgentConn, payload any) []byte {
