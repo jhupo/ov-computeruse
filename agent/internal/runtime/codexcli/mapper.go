@@ -4,16 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"ov-computeruse/agent/internal/localstate"
 	"ov-computeruse/agent/internal/protocol"
 	agentruntime "ov-computeruse/agent/internal/runtime"
 )
 
-func (a *Adapter) emitEvent(ctx context.Context, command protocol.Command, resolved localstate.CommandContext, event execEvent, sink agentruntime.Sink) error {
+type eventMapper struct {
+	adapter          *Adapter
+	terminalByItemID map[string]string
+}
+
+func newEventMapper(adapter *Adapter) *eventMapper {
+	return &eventMapper{adapter: adapter, terminalByItemID: map[string]string{}}
+}
+
+func (m *eventMapper) emitEvent(ctx context.Context, command protocol.Command, resolved localstate.CommandContext, event execEvent, sink agentruntime.Sink) error {
 	switch event.Type {
 	case "thread.started":
-		return a.emitRuntimeSession(ctx, command, resolved, event.ThreadID, sink)
+		return m.adapter.emitRuntimeSession(ctx, command, resolved, event.ThreadID, sink)
 	case "turn.started":
 		return emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.turn.started", "raw": event.Raw})
 	case "turn.completed":
@@ -25,20 +35,20 @@ func (a *Adapter) emitEvent(ctx context.Context, command protocol.Command, resol
 	case "codex/event/exec_approval_request", "codex/event/apply_patch_approval_request", "codex/event/elicitation_request", "exec_approval_request", "apply_patch_approval_request", "elicitation_request":
 		return emitUnsupportedApproval(ctx, command, event.Type, event.Raw, sink)
 	case "item.started", "item.updated", "item.completed":
-		return emitItem(ctx, command, event.Type, decodeItem(event.Item), sink)
+		return m.emitItem(ctx, command, event.Type, decodeItem(event.Item), sink)
 	default:
 		return emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.event", "type": event.Type, "raw": event.Raw})
 	}
 }
 
-func emitItem(ctx context.Context, command protocol.Command, phase string, item execItem, sink agentruntime.Sink) error {
+func (m *eventMapper) emitItem(ctx context.Context, command protocol.Command, phase string, item execItem, sink agentruntime.Sink) error {
 	switch item.Type {
 	case "agent_message":
 		return emitAgentMessage(ctx, command, phase, item, sink)
 	case "reasoning":
 		return emitReasoning(ctx, command, phase, item, sink)
 	case "command_execution":
-		return emitCommandExecution(ctx, command, phase, item, sink)
+		return m.emitCommandExecution(ctx, command, phase, item, sink)
 	case "mcp_tool_call":
 		return emitTool(ctx, command, phase, item, firstNonEmpty(item.Tool, item.Name, "mcp"), mcpToolPayload(item), sink)
 	case "file_change":
@@ -91,7 +101,7 @@ func approvalFields(raw json.RawMessage) map[string]any {
 	return out
 }
 
-func emitCommandExecution(ctx context.Context, command protocol.Command, phase string, item execItem, sink agentruntime.Sink) error {
+func (m *eventMapper) emitCommandExecution(ctx context.Context, command protocol.Command, phase string, item execItem, sink agentruntime.Sink) error {
 	payload := commandExecutionPayload(item)
 	if err := emitTool(ctx, command, phase, item, "terminal", payload, sink); err != nil {
 		return err
@@ -103,12 +113,32 @@ func emitCommandExecution(ctx context.Context, command protocol.Command, phase s
 	if output == "" {
 		return nil
 	}
+	delta := m.terminalOutputDelta(item.ID, output)
+	if delta == "" {
+		return nil
+	}
 	return emit(ctx, sink, command, "terminal.output", map[string]any{
 		"stream":       "stdout",
-		"text":         output,
+		"text":         delta,
 		"tool_call_id": item.ID,
 		"tool_name":    "terminal",
 	})
+}
+
+func (m *eventMapper) terminalOutputDelta(itemID string, output string) string {
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return output
+	}
+	previous := m.terminalByItemID[itemID]
+	m.terminalByItemID[itemID] = output
+	if previous == "" {
+		return output
+	}
+	if strings.HasPrefix(output, previous) {
+		return strings.TrimPrefix(output, previous)
+	}
+	return output
 }
 
 func emitAgentMessage(ctx context.Context, command protocol.Command, phase string, item execItem, sink agentruntime.Sink) error {

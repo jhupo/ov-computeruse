@@ -151,6 +151,30 @@ func TestReadStdoutMapsCodexToolItems(t *testing.T) {
 	assertPayloadString(t, sink.events[10].Payload, "message", "boom")
 }
 
+func TestReadStdoutEmitsTerminalOutputDelta(t *testing.T) {
+	adapter := New(Config{})
+	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1"}
+	input := strings.Join([]string{
+		`{"type":"item.updated","item":{"id":"cmd","type":"command_execution","command":"printf","aggregated_output":"hello","status":"running"}}`,
+		`{"type":"item.updated","item":{"id":"cmd","type":"command_execution","command":"printf","aggregated_output":"hello world","status":"running"}}`,
+	}, "\n")
+	sink := &captureSink{}
+	if err := adapter.readStdout(context.Background(), strings.NewReader(input), command, localstate.CommandContext{}, sink, &completionSignal{}); err != nil && err != io.EOF {
+		t.Fatalf("read stdout: %v", err)
+	}
+	var terminal []protocol.RunEvent
+	for _, event := range sink.events {
+		if event.Kind == "terminal.output" {
+			terminal = append(terminal, event)
+		}
+	}
+	if len(terminal) != 2 {
+		t.Fatalf("terminal output count = %d, want 2; events=%+v", len(terminal), sink.events)
+	}
+	assertPayloadString(t, terminal[0].Payload, "text", "hello")
+	assertPayloadString(t, terminal[1].Payload, "text", " world")
+}
+
 func TestReadStdoutMapsCodexApprovalRequestsAsUnsupportedStatus(t *testing.T) {
 	adapter := New(Config{})
 	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1"}

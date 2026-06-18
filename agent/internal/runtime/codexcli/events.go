@@ -65,6 +65,7 @@ func (s *completionSignal) Done() bool {
 func (a *Adapter) readStdout(ctx context.Context, stdout io.Reader, command protocol.Command, resolved localstate.CommandContext, sink agentruntime.Sink, completion *completionSignal) error {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 64<<10), 8<<20)
+	mapper := newEventMapper(a)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -80,7 +81,7 @@ func (a *Adapter) readStdout(ctx context.Context, stdout io.Reader, command prot
 		if isTerminalExecEvent(event.Type) {
 			completion.MarkDone()
 		}
-		if err := a.emitEvent(ctx, command, resolved, event, sink); err != nil {
+		if err := mapper.emitEvent(ctx, command, resolved, event, sink); err != nil {
 			return err
 		}
 	}
