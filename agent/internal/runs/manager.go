@@ -36,6 +36,7 @@ type AckStore interface {
 	CommandAck(context.Context, string) (protocol.Ack, bool, error)
 	SaveCommandAck(context.Context, protocol.Ack) error
 	LastRunEventSeq(context.Context) (uint64, error)
+	ReconcileInterruptedRuns(context.Context) ([]protocol.RunEvent, error)
 }
 
 type Manager struct {
@@ -83,6 +84,16 @@ func (m *Manager) SetSink(sink EventSink) {
 func (m *Manager) SetAckStore(store AckStore) {
 	m.mu.Lock()
 	m.acks = store
+	m.mu.Unlock()
+	if store == nil {
+		return
+	}
+	if events, err := store.ReconcileInterruptedRuns(context.Background()); err == nil && len(events) > 0 {
+		m.logger.Warn("interrupted runs reconciled", "count", len(events))
+	} else if err != nil {
+		m.logger.Warn("interrupted run reconciliation failed", "error", err)
+	}
+	m.mu.Lock()
 	if store != nil {
 		if seq, err := store.LastRunEventSeq(context.Background()); err == nil && seq > m.eventSeq {
 			m.eventSeq = seq

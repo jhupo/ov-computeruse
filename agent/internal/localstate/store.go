@@ -323,7 +323,10 @@ func (s *Store) SaveRunEvent(ctx context.Context, event protocol.RunEvent) error
 		SET run_id = ?, command_id = ?, project_id = ?, session_id = ?, seq = ?, kind = ?, payload = ?, event_at = ?, updated_at = ?
 		WHERE event_id = ?
 	`, event.RunID, event.CommandID, event.ProjectID, event.SessionID, event.Seq, event.Kind, jsonRaw(event.Payload), event.At.UTC().Format(time.RFC3339Nano), now(), event.EventID)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.projectRunEvent(ctx, event)
 }
 
 func (s *Store) PendingRunEvents(ctx context.Context, limit int) ([]protocol.RunEvent, error) {
@@ -410,6 +413,138 @@ func (s *Store) LastRunEventSeq(ctx context.Context) (uint64, error) {
 	var seq uint64
 	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM run_events`).Scan(&seq)
 	return seq, err
+}
+
+func (s *Store) ReconcileInterruptedRuns(ctx context.Context) ([]protocol.RunEvent, error) {
+	if s == nil {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, COALESCE(command_id, ''), COALESCE(project_id, ''), COALESCE(session_id, '')
+		FROM runs
+		WHERE status IN ('queued','starting','running','awaiting_approval','stopping')
+		ORDER BY updated_at ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type interruptedRun struct {
+		RunID     string
+		CommandID string
+		ProjectID string
+		SessionID string
+	}
+	runs := []interruptedRun{}
+	for rows.Next() {
+		var run interruptedRun
+		if err := rows.Scan(&run.RunID, &run.CommandID, &run.ProjectID, &run.SessionID); err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(runs) == 0 {
+		return nil, nil
+	}
+	seq, err := s.LastRunEventSeq(ctx)
+	if err != nil {
+		return nil, err
+	}
+	events := make([]protocol.RunEvent, 0, len(runs))
+	for _, run := range runs {
+		seq++
+		event := protocol.RunEvent{
+			EventID:   protocol.NewID("evt"),
+			RunID:     run.RunID,
+			CommandID: run.CommandID,
+			ProjectID: run.ProjectID,
+			SessionID: run.SessionID,
+			Seq:       seq,
+			Kind:      "run.error",
+			Payload:   protocol.Raw(map[string]string{"error": "agent restarted before run completed", "status": "interrupted"}),
+			At:        time.Now().UTC(),
+		}
+		if err := s.SaveRunEvent(ctx, event); err != nil {
+			return events, err
+		}
+		events = append(events, event)
+	}
+	return events, nil
+}
+
+func (s *Store) projectRunEvent(ctx context.Context, event protocol.RunEvent) error {
+	if strings.TrimSpace(event.RunID) == "" {
+		return nil
+	}
+	status, finished := runStatusFromEvent(event)
+	if status == "" {
+		return nil
+	}
+	statusReason := runEventReason(event)
+	startedAt := event.At
+	if startedAt.IsZero() {
+		startedAt = time.Now().UTC()
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO runs(id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at, finished_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			command_id = COALESCE(NULLIF(excluded.command_id, ''), runs.command_id),
+			project_id = COALESCE(NULLIF(excluded.project_id, ''), runs.project_id),
+			session_id = COALESCE(NULLIF(excluded.session_id, ''), runs.session_id),
+			status = CASE
+				WHEN runs.status IN ('done','error','interrupted','stopped') AND excluded.status NOT IN ('done','error','interrupted','stopped') THEN runs.status
+				ELSE excluded.status
+			END,
+			status_reason = COALESCE(NULLIF(excluded.status_reason, ''), runs.status_reason),
+			last_event_seq = MAX(runs.last_event_seq, excluded.last_event_seq),
+			last_event_at = excluded.last_event_at,
+			started_at = COALESCE(runs.started_at, excluded.started_at),
+			finished_at = COALESCE(excluded.finished_at, runs.finished_at),
+			updated_at = excluded.updated_at
+	`, event.RunID, event.CommandID, event.ProjectID, event.SessionID, status, statusReason, event.Seq, timeString(startedAt), timeString(startedAt), nullableTimeString(event.At, finished), now()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func runStatusFromEvent(event protocol.RunEvent) (string, bool) {
+	switch event.Kind {
+	case "run.started":
+		return "running", false
+	case "run.awaiting_approval":
+		return "awaiting_approval", false
+	case "run.done", "run.completed":
+		return "done", true
+	case "run.error", "run.failed":
+		if strings.Contains(runEventReason(event), "interrupted") {
+			return "interrupted", true
+		}
+		return "error", true
+	case "run.stopped":
+		return "stopped", true
+	default:
+		return "", false
+	}
+}
+
+func runEventReason(event protocol.RunEvent) string {
+	if len(event.Payload) == 0 {
+		return ""
+	}
+	var payload map[string]any
+	if json.Unmarshal(event.Payload, &payload) != nil {
+		return ""
+	}
+	for _, key := range []string{"error", "reason", "message", "status"} {
+		if value, ok := payload[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func jsonRaw(value any) []byte {
@@ -570,6 +705,21 @@ func (s *Store) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_run_events_pending ON run_events(acked_at, event_at, seq)`,
 		`CREATE INDEX IF NOT EXISTS idx_run_events_run_seq ON run_events(run_id, seq)`,
+		`CREATE TABLE IF NOT EXISTS runs (
+			id TEXT PRIMARY KEY,
+			command_id TEXT,
+			project_id TEXT,
+			session_id TEXT,
+			status TEXT NOT NULL,
+			status_reason TEXT,
+			last_event_seq INTEGER NOT NULL DEFAULT 0,
+			last_event_at TEXT,
+			started_at TEXT,
+			finished_at TEXT,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status, updated_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id, updated_at)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -801,6 +951,13 @@ func timeString(value time.Time) sql.NullString {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: value.UTC().Format(time.RFC3339Nano), Valid: true}
+}
+
+func nullableTimeString(value time.Time, valid bool) sql.NullString {
+	if !valid {
+		return sql.NullString{}
+	}
+	return timeString(value)
 }
 
 func now() string {
