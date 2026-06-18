@@ -902,7 +902,7 @@ func (s *Store) QueueApprovalDecisionCommand(ctx context.Context, agentID, appro
 	if !requeued {
 		tag, err := tx.Exec(ctx, `INSERT INTO commands (id, agent_id, run_id, session_id, project_id, kind, mode, payload, status, deadline_at, expires_at, idempotency_key)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,$10,$11)
-			ON CONFLICT (id) DO NOTHING`,
+			ON CONFLICT (agent_id, id) DO NOTHING`,
 			normalized.CommandID, agentID, normalized.RunID, normalized.SessionID, normalized.ProjectID, normalized.Kind, normalized.Mode, jsonRaw(normalized.Payload), nullTime(normalized.DeadlineAt), nullTime(normalized.ExpiresAt), nullString(normalized.IdempotencyKey))
 		if err != nil {
 			return protocol.Command{}, err

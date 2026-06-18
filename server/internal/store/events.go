@@ -492,7 +492,7 @@ func (s *Store) SaveCommand(ctx context.Context, agentID string, command protoco
 			return existing.ToProtocol(), nil
 		}
 	}
-	tag, err := s.pool.Exec(ctx, `INSERT INTO commands (id, agent_id, run_id, session_id, project_id, kind, mode, payload, status, deadline_at, expires_at, idempotency_key) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,$10,$11) ON CONFLICT (id) DO NOTHING`, command.CommandID, agentID, command.RunID, command.SessionID, command.ProjectID, command.Kind, command.Mode, jsonRaw(command.Payload), nullTime(command.DeadlineAt), nullTime(command.ExpiresAt), nullString(command.IdempotencyKey))
+	tag, err := s.pool.Exec(ctx, `INSERT INTO commands (id, agent_id, run_id, session_id, project_id, kind, mode, payload, status, deadline_at, expires_at, idempotency_key) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,$10,$11) ON CONFLICT (agent_id, id) DO NOTHING`, command.CommandID, agentID, command.RunID, command.SessionID, command.ProjectID, command.Kind, command.Mode, jsonRaw(command.Payload), nullTime(command.DeadlineAt), nullTime(command.ExpiresAt), nullString(command.IdempotencyKey))
 	if err != nil {
 		return protocol.Command{}, err
 	}

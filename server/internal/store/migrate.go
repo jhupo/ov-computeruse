@@ -58,7 +58,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS run_steps (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), run_id TEXT NOT NULL, seq_start BIGINT NOT NULL, seq_end BIGINT, kind TEXT NOT NULL, title TEXT, status TEXT NOT NULL, payload JSONB, started_at TIMESTAMPTZ NOT NULL, finished_at TIMESTAMPTZ, UNIQUE(agent_id, run_id, seq_start, kind))`,
 		`CREATE TABLE IF NOT EXISTS run_messages (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), run_id TEXT NOT NULL, seq_start BIGINT NOT NULL, seq_end BIGINT, role TEXT NOT NULL, content TEXT, payload JSONB, status TEXT NOT NULL, started_at TIMESTAMPTZ NOT NULL, finished_at TIMESTAMPTZ, UNIQUE(agent_id, run_id, seq_start, role))`,
 		`CREATE TABLE IF NOT EXISTS tool_calls (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), run_id TEXT NOT NULL, seq_start BIGINT NOT NULL, seq_end BIGINT, tool_call_id TEXT, tool_name TEXT, arguments JSONB, output JSONB, status TEXT NOT NULL, approval_request_id TEXT, started_at TIMESTAMPTZ NOT NULL, finished_at TIMESTAMPTZ, UNIQUE(agent_id, run_id, tool_call_id))`,
-		`CREATE TABLE IF NOT EXISTS commands (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), run_id TEXT, session_id TEXT, project_id TEXT, kind TEXT NOT NULL, mode TEXT, payload JSONB, status TEXT NOT NULL, status_reason TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), dispatched_at TIMESTAMPTZ, acked_at TIMESTAMPTZ, deadline_at TIMESTAMPTZ, expires_at TIMESTAMPTZ, retry_count INTEGER NOT NULL DEFAULT 0, idempotency_key TEXT)`,
+		`CREATE TABLE IF NOT EXISTS commands (id TEXT NOT NULL, agent_id TEXT NOT NULL REFERENCES agents(id), run_id TEXT, session_id TEXT, project_id TEXT, kind TEXT NOT NULL, mode TEXT, payload JSONB, status TEXT NOT NULL, status_reason TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), dispatched_at TIMESTAMPTZ, acked_at TIMESTAMPTZ, deadline_at TIMESTAMPTZ, expires_at TIMESTAMPTZ, retry_count INTEGER NOT NULL DEFAULT 0, idempotency_key TEXT, PRIMARY KEY(agent_id, id))`,
 		`ALTER TABLE commands ADD COLUMN IF NOT EXISTS mode TEXT`,
 		`ALTER TABLE commands ADD COLUMN IF NOT EXISTS status_reason TEXT`,
 		`ALTER TABLE commands ADD COLUMN IF NOT EXISTS dispatched_at TIMESTAMPTZ`,
@@ -85,6 +85,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 	if err := s.ensureRunsAgentScopedPrimaryKey(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureCommandsAgentScopedPrimaryKey(ctx); err != nil {
 		return err
 	}
 	indexes := []string{
@@ -162,15 +165,55 @@ func (s *Store) ensureRunsAgentScopedPrimaryKey(ctx context.Context) error {
 }
 
 func (s *Store) runsPrimaryKeyIsAgentScoped(ctx context.Context) (bool, error) {
+	return s.primaryKeyIs(ctx, "runs", "agent_id", "id")
+}
+
+func (s *Store) ensureCommandsAgentScopedPrimaryKey(ctx context.Context) error {
+	if ok, err := s.commandsPrimaryKeyIsAgentScoped(ctx); err != nil || ok {
+		return err
+	}
+	var duplicatePairs int
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM (SELECT agent_id, id FROM commands GROUP BY agent_id, id HAVING COUNT(*) > 1) duplicated`).Scan(&duplicatePairs); err != nil {
+		return err
+	}
+	if duplicatePairs > 0 {
+		return errors.New("cannot migrate commands primary key: duplicate command ids exist within an agent")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `ALTER TABLE commands RENAME TO commands_legacy_id_pk`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `CREATE TABLE commands (id TEXT NOT NULL, agent_id TEXT NOT NULL REFERENCES agents(id), run_id TEXT, session_id TEXT, project_id TEXT, kind TEXT NOT NULL, mode TEXT, payload JSONB, status TEXT NOT NULL, status_reason TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), dispatched_at TIMESTAMPTZ, acked_at TIMESTAMPTZ, deadline_at TIMESTAMPTZ, expires_at TIMESTAMPTZ, retry_count INTEGER NOT NULL DEFAULT 0, idempotency_key TEXT, dispatch_claimed_by TEXT, dispatch_claimed_at TIMESTAMPTZ, dispatch_claimed_until TIMESTAMPTZ, PRIMARY KEY(agent_id, id))`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO commands (id, agent_id, run_id, session_id, project_id, kind, mode, payload, status, status_reason, created_at, dispatched_at, acked_at, deadline_at, expires_at, retry_count, idempotency_key, dispatch_claimed_by, dispatch_claimed_at, dispatch_claimed_until)
+		SELECT id, agent_id, run_id, session_id, project_id, kind, mode, payload, status, status_reason, created_at, dispatched_at, acked_at, deadline_at, expires_at, retry_count, idempotency_key, dispatch_claimed_by, dispatch_claimed_at, dispatch_claimed_until FROM commands_legacy_id_pk`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DROP TABLE commands_legacy_id_pk`); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) commandsPrimaryKeyIsAgentScoped(ctx context.Context) (bool, error) {
+	return s.primaryKeyIs(ctx, "commands", "agent_id", "id")
+}
+
+func (s *Store) primaryKeyIs(ctx context.Context, table string, expected ...string) (bool, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT a.attname
 		FROM pg_index i
 		JOIN pg_class c ON c.oid = i.indrelid
 		JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) ON true
 		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
-		WHERE c.relname = 'runs' AND i.indisprimary
+		WHERE c.relname = $1 AND i.indisprimary
 		ORDER BY k.ord
-	`)
+	`, table)
 	if err != nil {
 		return false, err
 	}
@@ -186,5 +229,13 @@ func (s *Store) runsPrimaryKeyIsAgentScoped(ctx context.Context) (bool, error) {
 	if err := rows.Err(); err != nil {
 		return false, err
 	}
-	return len(columns) == 2 && columns[0] == "agent_id" && columns[1] == "id", nil
+	if len(columns) != len(expected) {
+		return false, nil
+	}
+	for i := range expected {
+		if columns[i] != expected[i] {
+			return false, nil
+		}
+	}
+	return true, nil
 }
