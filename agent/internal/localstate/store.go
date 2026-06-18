@@ -795,7 +795,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			path TEXT PRIMARY KEY,
 			kind TEXT NOT NULL,
 			source TEXT NOT NULL,
-			exists INTEGER NOT NULL,
+			is_present INTEGER NOT NULL,
 			first_seen_at TEXT NOT NULL,
 			last_seen_at TEXT NOT NULL,
 			last_scanned_at TEXT
@@ -971,12 +971,12 @@ func upsertRoots(ctx context.Context, tx txLike, roots []codexscan.Root, scanned
 			lastScannedAt = sql.NullString{String: now(), Valid: true}
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO codex_roots(path, kind, source, exists, first_seen_at, last_seen_at, last_scanned_at)
+			INSERT INTO codex_roots(path, kind, source, is_present, first_seen_at, last_seen_at, last_scanned_at)
 			VALUES(?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(path) DO UPDATE SET
 				kind = excluded.kind,
 				source = excluded.source,
-				exists = excluded.exists,
+				is_present = excluded.is_present,
 				last_seen_at = excluded.last_seen_at,
 				last_scanned_at = COALESCE(excluded.last_scanned_at, codex_roots.last_scanned_at)
 		`, root.Path, root.Kind, source, boolInt(root.Exists), now(), now(), lastScannedAt); err != nil {

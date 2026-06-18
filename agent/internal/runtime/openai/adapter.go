@@ -51,6 +51,12 @@ type streamResult struct {
 	Failed     error
 }
 
+type resumeInput struct {
+	Input              string
+	ResumeMode         string
+	PreviousResponseID string
+}
+
 type activeRuns struct {
 	mu     sync.Mutex
 	byRun  map[string]context.CancelFunc
@@ -130,25 +136,13 @@ func (a *Adapter) send(ctx context.Context, command protocol.Command, sink runti
 		opts = append(opts, option.WithBaseURL(a.cfg.BaseURL))
 	}
 	client := openai.NewClient(opts...)
-	input := prompt
-	if includeHistory {
-		withHistory, err := a.promptWithHistory(runCtx, command, prompt)
-		if err != nil {
-			return err
-		}
-		input = withHistory
+	resume, err := a.resumeInput(runCtx, command, prompt, includeHistory)
+	if err != nil {
+		return err
 	}
-	resumeMode := "new"
-	previousResponseID := ""
-	if includeHistory {
-		resumeMode = "history_context"
-		if responseID, ok := a.previousResponseID(runCtx, command); ok {
-			previousResponseID = responseID
-			input = prompt
-			resumeMode = "previous_response_id"
-		}
-	}
-	nextInput := responses.ResponseNewParamsInputUnion{OfString: openai.String(input)}
+	previousResponseID := resume.PreviousResponseID
+	resumeMode := resume.ResumeMode
+	nextInput := responses.ResponseNewParamsInputUnion{OfString: openai.String(resume.Input)}
 	for {
 		params := responses.ResponseNewParams{
 			Model: openai.ResponsesModel(model),
@@ -193,6 +187,25 @@ func (a *Adapter) send(ctx context.Context, command protocol.Command, sink runti
 		nextInput = responses.ResponseNewParamsInputUnion{OfInputItemList: responses.ResponseInputParam{approvalResponse}}
 		resumeMode = "approval_response"
 	}
+}
+
+func (a *Adapter) resumeInput(ctx context.Context, command protocol.Command, prompt string, includeHistory bool) (resumeInput, error) {
+	resume := resumeInput{Input: prompt, ResumeMode: "new"}
+	if !includeHistory {
+		return resume, nil
+	}
+	if responseID, ok := a.previousResponseID(ctx, command); ok {
+		resume.PreviousResponseID = responseID
+		resume.ResumeMode = "previous_response_id"
+		return resume, nil
+	}
+	withHistory, err := a.promptWithHistory(ctx, command, prompt)
+	if err != nil {
+		return resumeInput{}, err
+	}
+	resume.Input = withHistory
+	resume.ResumeMode = "history_context"
+	return resume, nil
 }
 
 func (a *Adapter) streamOnce(ctx context.Context, client openai.Client, params responses.ResponseNewParams, command protocol.Command, sink runtime.Sink, resumeMode string) (streamResult, error) {
