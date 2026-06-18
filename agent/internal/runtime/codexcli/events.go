@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
+	"sync/atomic"
 
 	"ov-computeruse/agent/internal/localstate"
 	"ov-computeruse/agent/internal/protocol"
@@ -47,7 +48,21 @@ type execItem struct {
 	Raw              json.RawMessage `json:"-"`
 }
 
-func (a *Adapter) readStdout(ctx context.Context, stdout io.Reader, command protocol.Command, resolved localstate.CommandContext, sink agentruntime.Sink) error {
+type completionSignal struct {
+	done atomic.Bool
+}
+
+func (s *completionSignal) MarkDone() {
+	if s != nil {
+		s.done.Store(true)
+	}
+}
+
+func (s *completionSignal) Done() bool {
+	return s != nil && s.done.Load()
+}
+
+func (a *Adapter) readStdout(ctx context.Context, stdout io.Reader, command protocol.Command, resolved localstate.CommandContext, sink agentruntime.Sink, completion *completionSignal) error {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 64<<10), 8<<20)
 	for scanner.Scan() {
@@ -62,11 +77,23 @@ func (a *Adapter) readStdout(ctx context.Context, stdout io.Reader, command prot
 			}
 			continue
 		}
+		if isTerminalExecEvent(event.Type) {
+			completion.MarkDone()
+		}
 		if err := a.emitEvent(ctx, command, resolved, event, sink); err != nil {
 			return err
 		}
 	}
 	return scanner.Err()
+}
+
+func isTerminalExecEvent(eventType string) bool {
+	switch eventType {
+	case "turn.completed", "turn.failed", "error":
+		return true
+	default:
+		return false
+	}
 }
 
 func readStderr(ctx context.Context, stderr io.Reader, command protocol.Command, sink agentruntime.Sink) error {

@@ -78,8 +78,12 @@ func TestReadStdoutMapsCodexExecEvents(t *testing.T) {
 		`{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}`,
 	}, "\n")
 	sink := &captureSink{}
-	if err := adapter.readStdout(context.Background(), strings.NewReader(input), command, localstate.CommandContext{}, sink); err != nil && err != io.EOF {
+	completion := &completionSignal{}
+	if err := adapter.readStdout(context.Background(), strings.NewReader(input), command, localstate.CommandContext{}, sink, completion); err != nil && err != io.EOF {
 		t.Fatalf("read stdout: %v", err)
+	}
+	if !completion.Done() {
+		t.Fatal("expected completion signal after turn.completed")
 	}
 
 	kinds := make([]string, 0, len(sink.events))
@@ -113,8 +117,12 @@ func TestReadStdoutMapsCodexToolItems(t *testing.T) {
 		`{"type":"turn.failed","error":{"message":"boom"}}`,
 	}, "\n")
 	sink := &captureSink{}
-	if err := adapter.readStdout(context.Background(), strings.NewReader(input), command, localstate.CommandContext{}, sink); err != nil && err != io.EOF {
+	completion := &completionSignal{}
+	if err := adapter.readStdout(context.Background(), strings.NewReader(input), command, localstate.CommandContext{}, sink, completion); err != nil && err != io.EOF {
 		t.Fatalf("read stdout: %v", err)
+	}
+	if !completion.Done() {
+		t.Fatal("expected completion signal after turn.failed")
 	}
 
 	kinds := make([]string, 0, len(sink.events))
@@ -145,7 +153,7 @@ func TestReadStdoutMapsCodexToolItems(t *testing.T) {
 
 func TestBinCandidatesPreferWindowsLaunchers(t *testing.T) {
 	got := binCandidates("windows")
-	want := []string{"codex.cmd", "codex.exe", "codex"}
+	want := []string{"codex.exe", "codex.cmd", "codex"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("windows candidates = %#v, want %#v", got, want)
 	}

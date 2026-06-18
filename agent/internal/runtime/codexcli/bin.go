@@ -27,7 +27,7 @@ func ResolveBin(configured string) (string, error) {
 
 func binCandidates(goos string) []string {
 	if goos == "windows" {
-		return []string{"codex.cmd", "codex.exe", "codex"}
+		return []string{"codex.exe", "codex.cmd", "codex"}
 	}
 	return []string{"codex"}
 }

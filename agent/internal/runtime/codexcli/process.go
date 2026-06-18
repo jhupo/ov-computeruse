@@ -5,10 +5,14 @@ import (
 	"errors"
 	"io"
 	"os/exec"
+	"time"
 
+	"ov-computeruse/agent/internal/processtree"
 	"ov-computeruse/agent/internal/protocol"
 	agentruntime "ov-computeruse/agent/internal/runtime"
 )
+
+const completedProcessGrace = 3 * time.Second
 
 func (a *Adapter) exec(ctx context.Context, command protocol.Command, sink agentruntime.Sink, resume bool) error {
 	prompt, err := promptFromCommand(command)
@@ -35,7 +39,7 @@ func (a *Adapter) exec(ctx context.Context, command protocol.Command, sink agent
 		a.active.untrack(command)
 	}()
 
-	cmd := exec.CommandContext(runCtx, bin, args...)
+	cmd := exec.Command(bin, args...)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
@@ -51,24 +55,27 @@ func (a *Adapter) exec(ctx context.Context, command protocol.Command, sink agent
 	if err != nil {
 		return err
 	}
-	if err := cmd.Start(); err != nil {
+	processtree.Prepare(cmd)
+	if err := processtree.Start(cmd); err != nil {
 		return err
 	}
 	if err := emitProcessStarted(runCtx, sink, command, bin, args, cwd); err != nil {
-		_ = cmd.Process.Kill()
+		processtree.Kill(cmd)
 		return err
 	}
 	if _, err := io.WriteString(stdin, prompt); err != nil {
 		_ = stdin.Close()
+		processtree.Kill(cmd)
 		return err
 	}
 	_ = stdin.Close()
 
 	readErrs := make(chan error, 2)
-	go func() { readErrs <- a.readStdout(runCtx, stdout, command, resolved, sink) }()
+	completion := &completionSignal{}
+	go func() { readErrs <- a.readStdout(runCtx, stdout, command, resolved, sink, completion) }()
 	go func() { readErrs <- readStderr(runCtx, stderr, command, sink) }()
 
-	waitErr := cmd.Wait()
+	waitErr := a.waitForProcess(runCtx, cmd, completion)
 	for i := 0; i < 2; i++ {
 		if err := <-readErrs; err != nil && waitErr == nil {
 			waitErr = err
@@ -81,6 +88,35 @@ func (a *Adapter) exec(ctx context.Context, command protocol.Command, sink agent
 		return err
 	}
 	return waitErr
+}
+
+func (a *Adapter) waitForProcess(ctx context.Context, cmd *exec.Cmd, completion *completionSignal) error {
+	errCh := make(chan error, 1)
+	go func() { errCh <- processtree.Wait(ctx, cmd) }()
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	var graceDeadline time.Time
+
+	for {
+		select {
+		case err := <-errCh:
+			return err
+		case <-ctx.Done():
+			processtree.Kill(cmd)
+			<-errCh
+			return ctx.Err()
+		case now := <-ticker.C:
+			if graceDeadline.IsZero() && completion.Done() {
+				graceDeadline = now.Add(completedProcessGrace)
+			}
+			if !graceDeadline.IsZero() && !now.Before(graceDeadline) {
+				processtree.Kill(cmd)
+				<-errCh
+				return nil
+			}
+		}
+	}
 }
 
 func emitProcessStarted(ctx context.Context, sink agentruntime.Sink, command protocol.Command, bin string, args []string, cwd string) error {

@@ -76,7 +76,7 @@ Runtime behavior:
 - receive server commands for new session, resume, send, stop, and index refresh.
 - stream structured events for dash to render like Codex desktop.
 - run multiple projects or independent sessions concurrently up to `max_concurrent_runs`; commands targeting the same session stay serialized.
-- execute Responses `local_shell` tool calls only when `allow_local_shell` is enabled, the command is approved, and the working directory is inside an indexed project.
+- execute local workspace commands only through the local Codex runtime path and approval policy; the current production runtime is `codex.cli`.
 
 ## Build
 
