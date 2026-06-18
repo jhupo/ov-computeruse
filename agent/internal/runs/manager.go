@@ -32,10 +32,16 @@ type EventSink interface {
 	Emit(context.Context, protocol.RunEvent) error
 }
 
+type AckStore interface {
+	CommandAck(context.Context, string) (protocol.Ack, bool, error)
+	SaveCommandAck(context.Context, protocol.Ack) error
+}
+
 type Manager struct {
 	mu        sync.Mutex
 	runtime   runtime.Runtime
 	sink      EventSink
+	acks      AckStore
 	logger    *slog.Logger
 	active    map[string]*activeRun
 	commands  map[string]protocol.Ack
@@ -73,11 +79,20 @@ func (m *Manager) SetSink(sink EventSink) {
 	m.mu.Unlock()
 }
 
+func (m *Manager) SetAckStore(store AckStore) {
+	m.mu.Lock()
+	m.acks = store
+	m.mu.Unlock()
+}
+
 func (m *Manager) Handle(ctx context.Context, command protocol.Command) protocol.Ack {
 	if command.CommandID == "" {
 		command.CommandID = protocol.NewID("cmd")
 	}
 	if ack, ok := m.cachedAck(command.CommandID); ok {
+		return ack
+	}
+	if ack, ok := m.storedAck(ctx, command.CommandID); ok {
 		return ack
 	}
 
@@ -322,9 +337,36 @@ func (m *Manager) cachedAck(commandID string) (protocol.Ack, bool) {
 	return ack, ok
 }
 
+func (m *Manager) storedAck(ctx context.Context, commandID string) (protocol.Ack, bool) {
+	m.mu.Lock()
+	store := m.acks
+	m.mu.Unlock()
+	if store == nil || commandID == "" {
+		return protocol.Ack{}, false
+	}
+	ack, ok, err := store.CommandAck(ctx, commandID)
+	if err != nil {
+		m.logger.WarnContext(ctx, "command ack cache load failed", "command_id", commandID, "error", err)
+		return protocol.Ack{}, false
+	}
+	if !ok {
+		return protocol.Ack{}, false
+	}
+	m.mu.Lock()
+	m.commands[commandID] = ack
+	m.mu.Unlock()
+	return ack, true
+}
+
 func (m *Manager) remember(ack protocol.Ack) protocol.Ack {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	store := m.acks
 	m.commands[ack.CommandID] = ack
+	m.mu.Unlock()
+	if store != nil && ack.CommandID != "" {
+		if err := store.SaveCommandAck(context.Background(), ack); err != nil {
+			m.logger.Warn("command ack cache save failed", "command_id", ack.CommandID, "error", err)
+		}
+	}
 	return ack
 }

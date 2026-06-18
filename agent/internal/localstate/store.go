@@ -14,6 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"ov-computeruse/agent/internal/codexscan"
+	"ov-computeruse/agent/internal/protocol"
 )
 
 type Store struct {
@@ -234,6 +235,76 @@ func (s *Store) RuntimeSession(ctx context.Context, sessionID, runtime string) (
 	return session, err
 }
 
+func (s *Store) SaveCommandAck(ctx context.Context, ack protocol.Ack) error {
+	return s.saveCommandAckRecord(ctx, CommandAck{
+		CommandID: ack.CommandID,
+		RunID:     ack.RunID,
+		Status:    ack.Status,
+		Message:   ack.Message,
+		AckSeq:    ack.AckSeq,
+		At:        ack.At,
+	})
+}
+
+func (s *Store) saveCommandAckRecord(ctx context.Context, ack CommandAck) error {
+	if s == nil || strings.TrimSpace(ack.CommandID) == "" {
+		return nil
+	}
+	if ack.At.IsZero() {
+		ack.At = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO command_acks(command_id, run_id, status, message, ack_seq, ack_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(command_id) DO UPDATE SET
+			run_id = excluded.run_id,
+			status = excluded.status,
+			message = excluded.message,
+			ack_seq = excluded.ack_seq,
+			ack_at = excluded.ack_at,
+			updated_at = excluded.updated_at
+	`, ack.CommandID, ack.RunID, ack.Status, ack.Message, ack.AckSeq, ack.At.UTC().Format(time.RFC3339Nano), now())
+	return err
+}
+
+func (s *Store) CommandAck(ctx context.Context, commandID string) (protocol.Ack, bool, error) {
+	ack, err := s.commandAckRecord(ctx, commandID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return protocol.Ack{}, false, nil
+	}
+	if err != nil {
+		return protocol.Ack{}, false, err
+	}
+	return protocol.Ack{
+		CommandID: ack.CommandID,
+		RunID:     ack.RunID,
+		Status:    ack.Status,
+		Message:   ack.Message,
+		AckSeq:    ack.AckSeq,
+		At:        ack.At,
+	}, true, nil
+}
+
+func (s *Store) commandAckRecord(ctx context.Context, commandID string) (CommandAck, error) {
+	if s == nil || strings.TrimSpace(commandID) == "" {
+		return CommandAck{}, sql.ErrNoRows
+	}
+	var ack CommandAck
+	var ackAt string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT command_id, run_id, status, message, ack_seq, ack_at
+		FROM command_acks
+		WHERE command_id = ?
+	`, commandID).Scan(&ack.CommandID, &ack.RunID, &ack.Status, &ack.Message, &ack.AckSeq, &ackAt)
+	if err != nil {
+		return CommandAck{}, err
+	}
+	if parsed, parseErr := time.Parse(time.RFC3339Nano, ackAt); parseErr == nil {
+		ack.At = parsed.UTC()
+	}
+	return ack, nil
+}
+
 type HistoryChunkAck struct {
 	SessionID string
 	Index     int
@@ -253,6 +324,15 @@ type RuntimeSession struct {
 	LastResponseID  string
 	ResumeMode      string
 	LastRunID       string
+}
+
+type CommandAck struct {
+	CommandID string
+	RunID     string
+	Status    string
+	Message   string
+	AckSeq    uint64
+	At        time.Time
 }
 
 type DeletedIndex struct {
@@ -346,6 +426,16 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at TEXT NOT NULL,
 			PRIMARY KEY(session_id, runtime)
 		)`,
+		`CREATE TABLE IF NOT EXISTS command_acks (
+			command_id TEXT PRIMARY KEY,
+			run_id TEXT,
+			status TEXT NOT NULL,
+			message TEXT,
+			ack_seq INTEGER NOT NULL DEFAULT 0,
+			ack_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_command_acks_run ON command_acks(run_id)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {

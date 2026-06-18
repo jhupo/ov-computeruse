@@ -223,6 +223,7 @@ func runAgent(args []string) {
 		logger.Warn("codex credential not found; runtime is noop", "error", err)
 	}
 	manager := runs.NewManager(rt, nil, logger)
+	manager.SetAckStore(state)
 	client := transport.NewClient(identity, manager, scanner, deviceProfile, cfg, state, cfg.DisableScan, cfg.UploadHistory, logger)
 	fatalIf(logger, client.Run(ctx))
 }

@@ -42,6 +42,11 @@ func (s *Server) dispatchPendingCommands(ctx context.Context) {
 			s.log.WarnContext(ctx, "pending command agent lookup failed", "agent_id", command.AgentID, "command_id", command.ID, "error", err)
 			continue
 		}
+		if err := s.validateCommandTargets(ctx, command.AgentID, command.ToProtocol()); err != nil {
+			_ = s.store.MarkCommandFailed(ctx, command.AgentID, command.ID, err.Error())
+			s.log.WarnContext(ctx, "pending command target invalid", "agent_id", command.AgentID, "command_id", command.ID, "error", err)
+			continue
+		}
 		record, dispatched := s.dispatchCommand(ctx, identity, command.ToProtocol())
 		if dispatched {
 			s.log.InfoContext(ctx, "pending command dispatched", "agent_id", command.AgentID, "command_id", command.ID, "status", record.Status)
