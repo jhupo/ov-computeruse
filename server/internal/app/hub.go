@@ -78,6 +78,10 @@ func NewHub(redisClient *redis.Client, commands EventRepository, logger *slog.Lo
 	return &Hub{instanceID: randomHubInstanceID(), redis: redisClient, commands: commands, log: logger, agents: map[string]*AgentConn{}, dashes: map[string]*DashConn{}}
 }
 
+func (h *Hub) InstanceID() string {
+	return h.instanceID
+}
+
 func (h *Hub) Run(ctx context.Context) {
 	go h.subscribeDash(ctx)
 	go h.subscribeCommands(ctx)

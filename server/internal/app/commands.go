@@ -198,7 +198,21 @@ func (s *Server) handleDashCommandRetry(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) dispatchStoredCommand(r *http.Request, identity store.AgentIdentity, command protocol.Command) (store.CommandRecord, bool) {
-	return s.dispatchCommand(r.Context(), identity, command)
+	return s.claimAndDispatchCommand(r.Context(), identity, command)
+}
+
+func (s *Server) claimAndDispatchCommand(ctx context.Context, identity store.AgentIdentity, command protocol.Command) (store.CommandRecord, bool) {
+	claimed, ok, err := s.store.ClaimCommand(ctx, identity.AgentID, command.CommandID, s.hub.InstanceID())
+	if err != nil {
+		s.log.WarnContext(ctx, "command claim failed", "agent_id", identity.AgentID, "command_id", command.CommandID, "error", err)
+		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
+		return record, false
+	}
+	if !ok {
+		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
+		return record, false
+	}
+	return s.dispatchCommand(ctx, identity, claimed.ToProtocol())
 }
 
 func (s *Server) dispatchCommand(ctx context.Context, identity store.AgentIdentity, command protocol.Command) (store.CommandRecord, bool) {

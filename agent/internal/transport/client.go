@@ -173,6 +173,12 @@ func (c *Client) flushRunEventOutbox(ctx context.Context) error {
 		return err
 	}
 	for _, event := range events {
+		if skipRunEvent(event) {
+			if err := c.state.MarkRunEventSent(ctx, event); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := c.sendRunEvent(ctx, event); err != nil {
 			_ = c.state.MarkRunEventError(ctx, event, err)
 			return err
@@ -425,6 +431,9 @@ func (c *Client) uploadHistoryItems(ctx context.Context, session codexscan.Sessi
 		return nil
 	}
 	err := codexscan.ForEachSessionItem(ctx, session, 256<<10, func(item codexscan.HistoryItem) error {
+		if skipHistoryItem(item) {
+			return nil
+		}
 		wire := protocol.HistoryItem{
 			SessionID:     session.ID,
 			Index:         item.Index,
@@ -460,6 +469,15 @@ func (c *Client) uploadHistoryItems(ctx context.Context, session codexscan.Sessi
 		}
 	}
 	return c.send(ctx, "sync.cursor", protocol.SyncCursor{Stream: "history.items", SubjectID: session.ID, Cursor: cursor, At: time.Now().UTC()})
+}
+
+func skipHistoryItem(item codexscan.HistoryItem) bool {
+	switch strings.ToLower(strings.TrimSpace(item.Kind)) {
+	case "usage", "response.usage", "token_usage", "billing", "cost":
+		return true
+	default:
+		return false
+	}
 }
 
 func historyCursor(session codexscan.Session) string {

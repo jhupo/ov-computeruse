@@ -428,16 +428,36 @@ func (s *Store) CommandByIdempotencyKey(ctx context.Context, agentID, key string
 }
 
 func (s *Store) PendingCommands(ctx context.Context, agentID string, limit int) ([]CommandRecord, error) {
+	return s.ClaimPendingCommands(ctx, agentID, "replay", limit)
+}
+
+func (s *Store) ClaimPendingCommands(ctx context.Context, agentID, claimant string, limit int) ([]CommandRecord, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id, agent_id, COALESCE(run_id, ''), COALESCE(session_id, ''), COALESCE(project_id, ''), kind, COALESCE(mode, ''), payload, status, COALESCE(status_reason, ''), created_at, dispatched_at, acked_at, deadline_at, expires_at, retry_count, COALESCE(idempotency_key, '')
-		FROM commands
-		WHERE agent_id=$1
-			AND status IN ('queued','dispatch_failed','dispatched')
-			AND (expires_at IS NULL OR expires_at > now())
-		ORDER BY created_at ASC
-		LIMIT $2`, agentID, limit)
+	claimant = strings.TrimSpace(claimant)
+	if claimant == "" {
+		claimant = "unknown"
+	}
+	rows, err := s.pool.Query(ctx, `WITH picked AS (
+			SELECT id
+			FROM commands
+			WHERE agent_id=$1
+				AND status IN ('queued','dispatch_failed','dispatched')
+				AND (expires_at IS NULL OR expires_at > now())
+				AND (dispatch_claimed_until IS NULL OR dispatch_claimed_until < now())
+			ORDER BY created_at ASC
+			FOR UPDATE SKIP LOCKED
+			LIMIT $3
+		)
+		UPDATE commands c
+		SET dispatch_claimed_by=$2,
+			dispatch_claimed_at=now(),
+			dispatch_claimed_until=now() + interval '30 seconds'
+		FROM picked
+		WHERE c.agent_id=$1 AND c.id=picked.id
+		RETURNING c.id, c.agent_id, COALESCE(c.run_id, ''), COALESCE(c.session_id, ''), COALESCE(c.project_id, ''), c.kind, COALESCE(c.mode, ''), c.payload, c.status, COALESCE(c.status_reason, ''), c.created_at, c.dispatched_at, c.acked_at, c.deadline_at, c.expires_at, c.retry_count, COALESCE(c.idempotency_key, '')
+	`, agentID, claimant, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -453,17 +473,58 @@ func (s *Store) PendingCommands(ctx context.Context, agentID string, limit int) 
 	return out, rows.Err()
 }
 
-func (s *Store) PendingDispatchCommands(ctx context.Context, limit int) ([]CommandRecord, error) {
+func (s *Store) ClaimCommand(ctx context.Context, agentID, commandID, claimant string) (CommandRecord, bool, error) {
+	claimant = strings.TrimSpace(claimant)
+	if claimant == "" {
+		claimant = "unknown"
+	}
+	row := s.pool.QueryRow(ctx, `UPDATE commands
+		SET dispatch_claimed_by=$3,
+			dispatch_claimed_at=now(),
+			dispatch_claimed_until=now() + interval '30 seconds'
+		WHERE agent_id=$1 AND id=$2
+			AND status IN ('queued','dispatch_failed','dispatched')
+			AND (expires_at IS NULL OR expires_at > now())
+			AND (dispatch_claimed_until IS NULL OR dispatch_claimed_until < now())
+		RETURNING id, agent_id, COALESCE(run_id, ''), COALESCE(session_id, ''), COALESCE(project_id, ''), kind, COALESCE(mode, ''), payload, status, COALESCE(status_reason, ''), created_at, dispatched_at, acked_at, deadline_at, expires_at, retry_count, COALESCE(idempotency_key, '')
+	`, agentID, commandID, claimant)
+	item, err := scanCommandRecord(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return CommandRecord{}, false, nil
+		}
+		return CommandRecord{}, false, err
+	}
+	return item, true, nil
+}
+
+func (s *Store) ClaimDispatchCommands(ctx context.Context, claimant string, limit int) ([]CommandRecord, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id, agent_id, COALESCE(run_id, ''), COALESCE(session_id, ''), COALESCE(project_id, ''), kind, COALESCE(mode, ''), payload, status, COALESCE(status_reason, ''), created_at, dispatched_at, acked_at, deadline_at, expires_at, retry_count, COALESCE(idempotency_key, '')
-		FROM commands
-		WHERE status IN ('queued','dispatch_failed','dispatched')
-			AND (expires_at IS NULL OR expires_at > now())
-			AND (dispatched_at IS NULL OR dispatched_at < now() - interval '15 seconds')
-		ORDER BY created_at ASC
-		LIMIT $1`, limit)
+	claimant = strings.TrimSpace(claimant)
+	if claimant == "" {
+		claimant = "unknown"
+	}
+	rows, err := s.pool.Query(ctx, `WITH picked AS (
+			SELECT id, agent_id
+			FROM commands
+			WHERE status IN ('queued','dispatch_failed','dispatched')
+				AND (expires_at IS NULL OR expires_at > now())
+				AND (dispatched_at IS NULL OR dispatched_at < now() - interval '15 seconds')
+				AND (dispatch_claimed_until IS NULL OR dispatch_claimed_until < now())
+			ORDER BY created_at ASC
+			FOR UPDATE SKIP LOCKED
+			LIMIT $2
+		)
+		UPDATE commands c
+		SET dispatch_claimed_by=$1,
+			dispatch_claimed_at=now(),
+			dispatch_claimed_until=now() + interval '30 seconds'
+		FROM picked
+		WHERE c.agent_id=picked.agent_id AND c.id=picked.id
+		RETURNING c.id, c.agent_id, COALESCE(c.run_id, ''), COALESCE(c.session_id, ''), COALESCE(c.project_id, ''), c.kind, COALESCE(c.mode, ''), c.payload, c.status, COALESCE(c.status_reason, ''), c.created_at, c.dispatched_at, c.acked_at, c.deadline_at, c.expires_at, c.retry_count, COALESCE(c.idempotency_key, '')
+	`, claimant, limit)
 	if err != nil {
 		return nil, err
 	}

@@ -254,9 +254,9 @@ func dashEvent(eventType string, agent *AgentConn, payload any) []byte {
 }
 
 func (s *Server) replayPendingCommands(r *http.Request, identity store.AgentIdentity) {
-	commands, err := s.store.PendingCommands(r.Context(), identity.AgentID, 50)
+	commands, err := s.store.ClaimPendingCommands(r.Context(), identity.AgentID, s.hub.InstanceID(), 50)
 	if err != nil {
-		s.log.WarnContext(r.Context(), "pending command load failed", "agent_id", identity.AgentID, "error", err)
+		s.log.WarnContext(r.Context(), "pending command claim failed", "agent_id", identity.AgentID, "error", err)
 		return
 	}
 	for _, command := range commands {

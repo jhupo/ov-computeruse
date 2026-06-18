@@ -24,9 +24,9 @@ func (s *Server) runCommandDispatcher(ctx context.Context) {
 }
 
 func (s *Server) dispatchPendingCommands(ctx context.Context) {
-	commands, err := s.store.PendingDispatchCommands(ctx, commandDispatchBatch)
+	commands, err := s.store.ClaimDispatchCommands(ctx, s.hub.InstanceID(), commandDispatchBatch)
 	if err != nil {
-		s.log.WarnContext(ctx, "pending command scan failed", "error", err)
+		s.log.WarnContext(ctx, "pending command claim failed", "error", err)
 		return
 	}
 	seenAgents := map[string]struct{}{}

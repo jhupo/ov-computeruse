@@ -869,7 +869,7 @@ func parseHistoryItem(sessionID string, index int, rawLine []byte, maxText int) 
 	_ = json.Unmarshal(row.Payload, &payload)
 	payloadType := stringFromAny(payload["type"])
 	kind := historyKind(row.Type, payloadType)
-	if kind == "" {
+	if kind == "" || skipHistoryKind(kind) {
 		return HistoryItem{}, false
 	}
 	role := stringFromAny(payload["role"])
@@ -917,6 +917,15 @@ func historyKind(rowType, payloadType string) string {
 		}
 	}
 	return ""
+}
+
+func skipHistoryKind(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "usage", "response.usage", "token_usage", "billing", "cost":
+		return true
+	default:
+		return false
+	}
 }
 
 func historyText(kind string, payload map[string]any, max int) string {
