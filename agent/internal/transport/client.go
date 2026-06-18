@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"ov-computeruse/agent/internal/codexhistory"
 	"ov-computeruse/agent/internal/codexscan"
 	"ov-computeruse/agent/internal/config"
 	"ov-computeruse/agent/internal/device"
@@ -42,6 +43,7 @@ type Client struct {
 
 	historyAckMu      sync.Mutex
 	pendingHistoryAck map[string]chan protocol.HistoryItemsAck
+	historyWriter     codexhistory.Writer
 }
 
 type scanner interface {
@@ -72,6 +74,7 @@ func newClient(identity securestore.Identity, manager *runs.Manager, scanner sca
 		logger:            logger,
 		dialer:            WebSocketDialer{},
 		pendingHistoryAck: map[string]chan protocol.HistoryItemsAck{},
+		historyWriter:     codexhistory.New(state),
 	}
 }
 
@@ -119,6 +122,9 @@ func (c *Client) Emit(ctx context.Context, event protocol.RunEvent) error {
 	if c.state != nil {
 		if err := c.state.SaveRunEvent(ctx, event); err != nil {
 			return err
+		}
+		if err := c.historyWriter.SyncRunEvent(ctx, event); err != nil {
+			c.logger.WarnContext(ctx, "codex history sync skipped", "run_id", event.RunID, "session_id", event.SessionID, "event_id", event.EventID, "kind", event.Kind, "error", err)
 		}
 	}
 	if err := c.sendRunEvent(ctx, event); err != nil {

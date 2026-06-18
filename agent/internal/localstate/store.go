@@ -88,6 +88,27 @@ func (s *Store) SaveCodexRoots(ctx context.Context, roots []codexscan.Root) erro
 	return tx.Commit()
 }
 
+func (s *Store) CodexRoot(ctx context.Context) (string, error) {
+	if s == nil {
+		return "", sql.ErrNoRows
+	}
+	var path string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT path FROM codex_roots
+		WHERE is_present = 1
+		ORDER BY CASE WHEN kind = 'codex_home' THEN 0 ELSE 1 END, last_seen_at DESC
+		LIMIT 1
+	`).Scan(&path)
+	return path, err
+}
+
+func (s *Store) SaveSessionRecord(ctx context.Context, session codexscan.Session) error {
+	if s == nil {
+		return nil
+	}
+	return upsertSessions(ctx, s.db, []codexscan.Session{session})
+}
+
 func (s *Store) SaveScanResult(ctx context.Context, result codexscan.Result) (DeletedIndex, error) {
 	if s == nil {
 		return DeletedIndex{}, nil
@@ -151,6 +172,17 @@ func (s *Store) Session(ctx context.Context, sessionID string) (SessionRecord, e
 		WHERE id = ? AND deleted_at IS NULL
 	`, sessionID).Scan(&session.ID, &session.IDSource, &session.RootPath, &session.ProjectID, &session.Title, &session.Path, &session.CWD)
 	return session, err
+}
+
+func (s *Store) SessionPath(ctx context.Context, sessionID string) (string, error) {
+	session, err := s.Session(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(session.Path) == "" {
+		return "", sql.ErrNoRows
+	}
+	return session.Path, nil
 }
 
 func (s *Store) ProjectRoots(ctx context.Context) ([]string, error) {
@@ -537,6 +569,32 @@ func (s *Store) SaveRunEvent(ctx context.Context, event protocol.RunEvent) error
 		return err
 	}
 	return s.projectRunView(ctx, event)
+}
+
+func (s *Store) MarkCodexHistorySynced(ctx context.Context, eventID, sessionID string) error {
+	if s == nil || strings.TrimSpace(eventID) == "" || strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO codex_history_sync(event_id, session_id, synced_at)
+		VALUES(?, ?, ?)
+	`, eventID, sessionID, now())
+	return err
+}
+
+func (s *Store) CodexHistorySynced(ctx context.Context, eventID string) (bool, error) {
+	if s == nil || strings.TrimSpace(eventID) == "" {
+		return false, nil
+	}
+	var syncedAt string
+	err := s.db.QueryRowContext(ctx, `SELECT synced_at FROM codex_history_sync WHERE event_id = ?`, eventID).Scan(&syncedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(syncedAt) != "", nil
 }
 
 func (s *Store) PendingRunEvents(ctx context.Context, limit int) ([]protocol.RunEvent, error) {
@@ -1114,6 +1172,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_run_events_pending ON run_events(acked_at, event_at, seq)`,
 		`CREATE INDEX IF NOT EXISTS idx_run_events_run_seq ON run_events(run_id, seq)`,
+		`CREATE TABLE IF NOT EXISTS codex_history_sync (
+			event_id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			synced_at TEXT NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS runs (
 			id TEXT PRIMARY KEY,
 			command_id TEXT,
