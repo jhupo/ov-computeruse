@@ -7,10 +7,10 @@ agent 是本地 Codex 执行器，不承载业务决策，也不承载 Web UI。
 ## 边界
 
 - agent：本地安装、账号绑定、设备注册、本地 Codex 扫描、SDK 执行、事件采集、心跳、托盘/退出能力。
-- server：用户鉴权、key/余额/设备策略校验、agent 索引存储、命令下发、输出广播、审计。
+- server：用户鉴权、key/设备策略校验、agent 索引存储、命令下发、输出广播、审计。
 - dash：选择设备、项目和历史会话，输入 prompt，查看实时输出和运行状态。
 
-agent 不保存服务端私钥，不接受公网入站连接，不绕过 server 做计费和设备策略。
+agent 不保存服务端私钥，不接受公网入站连接，不绕过 server 做设备策略。用量和扣费由本地 Codex credential 指向的中转站承担，agent 不采集、不上报、不投影 token usage。
 
 ## 安装绑定
 
@@ -18,7 +18,7 @@ agent 不保存服务端私钥，不接受公网入站连接，不绕过 server 
 
 绑定明文在本机内存中组装，包含用户凭据、Codex credential、设备画像和请求时间。传输前使用 server 公钥混合加密：AES-256-GCM 加密内容，RSA-OAEP-SHA256 加密随机内容密钥。agent 编译时注入 server URL、公钥 key id、公钥和 fingerprint；安装时先校验 fingerprint，防止公钥被替换。
 
-server 解密后完成用户名密码校验、用户 key/余额校验、Codex key fingerprint 校验、设备策略校验，并返回 `agent_id`、`workspace_id`、`device_id`、`agent_secret`。agent 将绑定结果写入用户级 config 目录下的 `identity.json`。`agent_secret` 只用于后续 WSS bearer token 和消息 HMAC 签名。
+server 解密后完成用户名密码校验、用户 key 可用性校验、Codex key fingerprint 校验、设备策略校验，并返回 `agent_id`、`workspace_id`、`device_id`、`agent_secret`。agent 将绑定结果写入用户级 config 目录下的 `identity.json`。`agent_secret` 只用于后续 WSS bearer token 和消息 HMAC 签名。
 
 ## 本地目录
 

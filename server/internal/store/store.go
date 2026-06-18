@@ -25,9 +25,8 @@ type AgentIdentity struct {
 }
 
 type UserIdentity struct {
-	UserID       string `json:"user_id"`
-	Username     string `json:"username"`
-	BalanceCents int64  `json:"balance_cents"`
+	UserID   string `json:"user_id"`
+	Username string `json:"username"`
 }
 
 func New(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {

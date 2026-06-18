@@ -4,8 +4,8 @@ import "context"
 
 func (s *Store) migrate(ctx context.Context) error {
 	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, balance_cents BIGINT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
-		`CREATE TABLE IF NOT EXISTS user_keys (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), base_url TEXT NOT NULL, key_fingerprint TEXT NOT NULL, balance_cents BIGINT NOT NULL DEFAULT 0, disabled_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
+		`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
+		`CREATE TABLE IF NOT EXISTS user_keys (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), base_url TEXT NOT NULL, key_fingerprint TEXT NOT NULL, disabled_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
 		`CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), install_id TEXT NOT NULL, machine_hash TEXT NOT NULL, hostname TEXT, os TEXT, arch TEXT, username_hash TEXT, agent_version TEXT, install_state JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), last_seen_at TIMESTAMPTZ)`,
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS install_state JSONB`,
 		`CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL REFERENCES users(id), device_id TEXT NOT NULL UNIQUE REFERENCES devices(id), agent_secret TEXT NOT NULL, server_key_id TEXT NOT NULL, protocol_version TEXT, capabilities JSONB, credential JSONB, registered_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), last_seen_at TIMESTAMPTZ)`,

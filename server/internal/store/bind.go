@@ -19,7 +19,6 @@ type BindUser struct {
 	Password    string `json:"password"`
 	BaseURL     string `json:"base_url"`
 	Fingerprint string `json:"fingerprint"`
-	Balance     int64  `json:"balance_cents"`
 }
 
 type DeviceProfile struct {
@@ -46,7 +45,7 @@ func (s *Store) EnsureBindUser(ctx context.Context, user BindUser) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `INSERT INTO users (id, username, password_hash, balance_cents) VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO UPDATE SET username=EXCLUDED.username, password_hash=EXCLUDED.password_hash, balance_cents=EXCLUDED.balance_cents`, user.ID, user.Username, string(passwordHash), user.Balance)
+	_, err = s.pool.Exec(ctx, `INSERT INTO users (id, username, password_hash) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET username=EXCLUDED.username, password_hash=EXCLUDED.password_hash`, user.ID, user.Username, string(passwordHash))
 	if err != nil {
 		return err
 	}
@@ -54,14 +53,14 @@ func (s *Store) EnsureBindUser(ctx context.Context, user BindUser) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `INSERT INTO user_keys (id, user_id, base_url, key_fingerprint, balance_cents) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (id) DO UPDATE SET base_url=EXCLUDED.base_url, key_fingerprint=EXCLUDED.key_fingerprint, balance_cents=EXCLUDED.balance_cents`, "key_"+user.ID, user.ID, baseURL, user.Fingerprint, user.Balance)
+	_, err = s.pool.Exec(ctx, `INSERT INTO user_keys (id, user_id, base_url, key_fingerprint) VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO UPDATE SET base_url=EXCLUDED.base_url, key_fingerprint=EXCLUDED.key_fingerprint`, "key_"+user.ID, user.ID, baseURL, user.Fingerprint)
 	return err
 }
 
 func (s *Store) AuthenticateUser(ctx context.Context, username, password string) (UserIdentity, error) {
 	var user UserIdentity
 	var passwordHash string
-	err := s.pool.QueryRow(ctx, `SELECT id, username, password_hash, balance_cents FROM users WHERE username=$1`, username).Scan(&user.UserID, &user.Username, &passwordHash, &user.BalanceCents)
+	err := s.pool.QueryRow(ctx, `SELECT id, username, password_hash FROM users WHERE username=$1`, username).Scan(&user.UserID, &user.Username, &passwordHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return UserIdentity{}, errors.New("invalid username or password")
 	}
@@ -80,10 +79,6 @@ func (s *Store) AuthenticateAndBind(ctx context.Context, username, password stri
 		_ = s.SaveAuditLog(ctx, "", "", "agent.bind.rejected", map[string]any{"username": username, "reason": "invalid_credentials"})
 		return AgentIdentity{}, err
 	}
-	if user.BalanceCents <= 0 {
-		_ = s.SaveAuditLog(ctx, user.UserID, "", "agent.bind.rejected", map[string]any{"username": username, "reason": "account_balance_exhausted"})
-		return AgentIdentity{}, errors.New("account balance is exhausted")
-	}
 	if strings.TrimSpace(credential.Fingerprint) == "" || strings.TrimSpace(credential.BaseURL) == "" {
 		_ = s.SaveAuditLog(ctx, user.UserID, "", "agent.bind.rejected", map[string]any{"username": username, "reason": "credential_incomplete"})
 		return AgentIdentity{}, errors.New("codex credential is incomplete")
@@ -94,7 +89,7 @@ func (s *Store) AuthenticateAndBind(ctx context.Context, username, password stri
 		return AgentIdentity{}, errors.New("codex credential base_url is invalid")
 	}
 	var keyID string
-	err = s.pool.QueryRow(ctx, `SELECT id FROM user_keys WHERE user_id=$1 AND key_fingerprint=$2 AND lower(trim(trailing '/' from base_url))=$3 AND disabled_at IS NULL AND balance_cents > 0 LIMIT 1`, user.UserID, credential.Fingerprint, baseURL).Scan(&keyID)
+	err = s.pool.QueryRow(ctx, `SELECT id FROM user_keys WHERE user_id=$1 AND key_fingerprint=$2 AND lower(trim(trailing '/' from base_url))=$3 AND disabled_at IS NULL LIMIT 1`, user.UserID, credential.Fingerprint, baseURL).Scan(&keyID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_ = s.SaveAuditLog(ctx, user.UserID, "", "agent.bind.rejected", map[string]any{"username": username, "reason": "credential_not_assigned", "base_url": baseURL, "key_fingerprint": credential.Fingerprint})
 		return AgentIdentity{}, errors.New("codex credential is not assigned to user")

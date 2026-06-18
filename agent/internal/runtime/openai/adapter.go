@@ -262,9 +262,6 @@ func (a *Adapter) streamOnce(ctx context.Context, client openai.Client, params r
 			if err := a.emitRuntimeSession(ctx, sink, command, "session.updated", variant.Response.ID, resumeMode); err != nil {
 				return result, err
 			}
-			if err := emitUsage(ctx, sink, command, variant.Response); err != nil {
-				return result, err
-			}
 			if err := emit(ctx, sink, command, "run.status", map[string]string{"status": "response.completed", "response_id": variant.Response.ID}); err != nil {
 				return result, err
 			}
@@ -399,18 +396,6 @@ func outputItemPayload(item responses.ResponseOutputItemUnion) map[string]any {
 	default:
 		return nil
 	}
-}
-
-func emitUsage(ctx context.Context, sink runtime.Sink, command protocol.Command, response responses.Response) error {
-	return emit(ctx, sink, command, "usage", map[string]any{
-		"response_id":      response.ID,
-		"model":            string(response.Model),
-		"input_tokens":     response.Usage.InputTokens,
-		"output_tokens":    response.Usage.OutputTokens,
-		"total_tokens":     response.Usage.TotalTokens,
-		"cached_tokens":    response.Usage.InputTokensDetails.CachedTokens,
-		"reasoning_tokens": response.Usage.OutputTokensDetails.ReasoningTokens,
-	})
 }
 
 func rawJSON(item responses.ResponseOutputItemUnion) json.RawMessage {

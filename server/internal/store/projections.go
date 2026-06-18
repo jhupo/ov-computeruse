@@ -126,6 +126,8 @@ func (s *Store) projectRunEvent(ctx context.Context, agentID string, event proto
 		return s.upsertToolCall(ctx, agentID, event)
 	case "terminal.output", "diff.created", "run.status", "session.created", "session.updated", "session.resumed":
 		return s.upsertRunStep(ctx, agentID, event, event.Kind, stepTitle(event), stepStatus(event), true)
+	case "usage":
+		return nil
 	case "run.started":
 		return s.upsertRunStep(ctx, agentID, event, "run", "Run started", "running", false)
 	case "run.done", "run.completed":

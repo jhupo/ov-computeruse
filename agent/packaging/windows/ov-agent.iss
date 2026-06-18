@@ -105,7 +105,7 @@ begin
       end;
       if ResultCode <> 0 then
       begin
-        MsgBox('Login, balance, device, or Codex credential validation failed. Installation cannot continue.', mbError, MB_OK);
+        MsgBox('Login, device, or Codex credential validation failed. Installation cannot continue.', mbError, MB_OK);
         Result := False;
         exit;
       end;

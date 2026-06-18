@@ -19,7 +19,7 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 - `OV_SERVER_DASH_TOKEN`, internal/admin bearer token; normal users should use `/api/dash/login`
 - `OV_SERVER_BIND_USERS_JSON`, optional bootstrap users for local/dev binding
 
-`OV_SERVER_BIND_USERS_JSON` is a JSON array with username/password and allowed Codex key fingerprint records. It is only a bootstrap path until the real user/key/balance admin service exists.
+`OV_SERVER_BIND_USERS_JSON` is a JSON array with username/password and allowed Codex key fingerprint records. It is only a bootstrap path until the real user/key admin service exists.
 
 ## Endpoints
 
