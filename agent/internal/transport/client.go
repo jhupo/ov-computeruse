@@ -142,7 +142,7 @@ func (c *Client) Emit(ctx context.Context, event protocol.RunEvent) error {
 
 func (c *Client) shouldRefreshIndexAfter(event protocol.RunEvent) bool {
 	switch event.Kind {
-	case "run.done", "run.completed":
+	case "run.done", "run.completed", "run.error", "run.failed", "run.stopped":
 		return !c.noScan
 	default:
 		return false

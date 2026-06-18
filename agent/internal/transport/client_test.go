@@ -40,6 +40,22 @@ func TestUniqueRuntimeSessionsKeepsNativeOnlySessions(t *testing.T) {
 	}
 }
 
+func TestShouldRefreshIndexAfterTerminalRunEvents(t *testing.T) {
+	client := &Client{}
+	for _, kind := range []string{"run.done", "run.completed", "run.error", "run.failed", "run.stopped"} {
+		if !client.shouldRefreshIndexAfter(protocol.RunEvent{Kind: kind}) {
+			t.Fatalf("expected refresh after %s", kind)
+		}
+	}
+	if client.shouldRefreshIndexAfter(protocol.RunEvent{Kind: "run.status"}) {
+		t.Fatal("did not expect refresh after run.status")
+	}
+	client.noScan = true
+	if client.shouldRefreshIndexAfter(protocol.RunEvent{Kind: "run.done"}) {
+		t.Fatal("did not expect refresh when scan is disabled")
+	}
+}
+
 func TestServeStartsReadLoopBeforeIndexUploadCompletes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

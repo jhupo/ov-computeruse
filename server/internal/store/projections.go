@@ -146,7 +146,14 @@ func (s *Store) projectRunEvent(ctx context.Context, agentID string, event proto
 			return err
 		}
 		return s.upsertToolCall(ctx, agentID, event)
-	case "terminal.output", "diff.created", "run.status", "session.created", "session.updated", "session.resumed":
+	case "terminal.output":
+		if payloadString(event.Payload, "tool_call_id", "call_id", "id") != "" {
+			if err := s.upsertToolCall(ctx, agentID, event); err != nil {
+				return err
+			}
+		}
+		return s.upsertRunStep(ctx, agentID, event, event.Kind, stepTitle(event), stepStatus(event), true)
+	case "diff.created", "run.status", "session.created", "session.updated", "session.resumed":
 		return s.upsertRunStep(ctx, agentID, event, event.Kind, stepTitle(event), stepStatus(event), true)
 	case "run.started":
 		return s.upsertRunStep(ctx, agentID, event, "run", "Run started", "running", false)
@@ -234,7 +241,7 @@ func (s *Store) upsertToolCall(ctx context.Context, agentID string, event protoc
 	toolName := payloadString(event.Payload, "tool_name", "name", "tool")
 	status := toolStatus(event.Kind)
 	arguments := payloadObject(event.Payload, "arguments", "args")
-	output := payloadObject(event.Payload, "output", "result")
+	output := payloadObject(event.Payload, "output", "result", "text")
 	approvalID := payloadString(event.Payload, "approval_id")
 	id := projectionID(agentID, event.RunID, toolCallID, "tool_call")
 	finished := status == "done" || status == "output"
@@ -499,6 +506,8 @@ func toolStatus(kind string) string {
 	case "tool.call.done":
 		return "done"
 	case "tool.output":
+		return "output"
+	case "terminal.output":
 		return "output"
 	case "approval.requested":
 		return "awaiting_approval"

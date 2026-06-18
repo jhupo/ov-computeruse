@@ -46,7 +46,7 @@ func (a *Adapter) buildArgs(command protocol.Command, resolved localstate.Comman
 		args = append(args, "-C", cwd)
 	}
 	if resume {
-		nativeSessionID := firstNonEmpty(resolved.Session.ID, command.SessionID)
+		nativeSessionID := firstNonEmpty(resolved.RuntimeSession.NativeSessionID, resolved.RuntimeSession.SessionID, resolved.Session.ID, command.SessionID)
 		if strings.TrimSpace(nativeSessionID) == "" {
 			return nil, "", errors.New("session_id is required for codex resume")
 		}

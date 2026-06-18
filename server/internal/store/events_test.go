@@ -47,3 +47,19 @@ func TestRuntimeSessionFromEventRejectsRunStatusAndOtherRuntimes(t *testing.T) {
 		}
 	}
 }
+
+func TestTerminalOutputPayloadCanProjectAsToolOutput(t *testing.T) {
+	raw := protocol.Raw(map[string]string{
+		"tool_call_id": "tool_1",
+		"text":         "streamed output",
+	})
+	if got := payloadString(raw, "tool_call_id"); got != "tool_1" {
+		t.Fatalf("tool_call_id = %q, want tool_1", got)
+	}
+	if got := string(payloadObject(raw, "output", "result", "text")); got != `"streamed output"` {
+		t.Fatalf("projected output = %s", got)
+	}
+	if got := toolStatus("terminal.output"); got != "output" {
+		t.Fatalf("terminal output status = %q, want output", got)
+	}
+}

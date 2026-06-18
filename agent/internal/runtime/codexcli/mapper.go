@@ -36,7 +36,7 @@ func emitItem(ctx context.Context, command protocol.Command, phase string, item 
 	case "reasoning":
 		return emitReasoning(ctx, command, phase, item, sink)
 	case "command_execution":
-		return emitTool(ctx, command, phase, item, "terminal", commandExecutionPayload(item), sink)
+		return emitCommandExecution(ctx, command, phase, item, sink)
 	case "mcp_tool_call":
 		return emitTool(ctx, command, phase, item, firstNonEmpty(item.Tool, item.Name, "mcp"), mcpToolPayload(item), sink)
 	case "file_change":
@@ -50,6 +50,26 @@ func emitItem(ctx context.Context, command protocol.Command, phase string, item 
 	default:
 		return emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.item", "phase": phase, "item_type": item.Type, "item": rawJSON(item.Raw)})
 	}
+}
+
+func emitCommandExecution(ctx context.Context, command protocol.Command, phase string, item execItem, sink agentruntime.Sink) error {
+	payload := commandExecutionPayload(item)
+	if err := emitTool(ctx, command, phase, item, "terminal", payload, sink); err != nil {
+		return err
+	}
+	if phase != "item.updated" {
+		return nil
+	}
+	output := firstNonEmpty(item.AggregatedOutput, item.Output)
+	if output == "" {
+		return nil
+	}
+	return emit(ctx, sink, command, "terminal.output", map[string]any{
+		"stream":       "stdout",
+		"text":         output,
+		"tool_call_id": item.ID,
+		"tool_name":    "terminal",
+	})
 }
 
 func emitAgentMessage(ctx context.Context, command protocol.Command, phase string, item execItem, sink agentruntime.Sink) error {

@@ -49,6 +49,20 @@ func TestBuildArgsForResume(t *testing.T) {
 	}
 }
 
+func TestBuildArgsForResumePrefersRuntimeNativeSessionID(t *testing.T) {
+	adapter := New(Config{})
+	args, _, err := adapter.buildArgs(protocol.Command{SessionID: "dash_session"}, localstate.CommandContext{
+		Session:        localstate.SessionRecord{ID: "indexed_session"},
+		RuntimeSession: localstate.RuntimeSession{SessionID: "runtime_session", NativeSessionID: "native_thread"},
+	}, true)
+	if err != nil {
+		t.Fatalf("build resume args: %v", err)
+	}
+	if got := args[len(args)-2]; got != "native_thread" {
+		t.Fatalf("resume session arg = %q, want native_thread; args=%#v", got, args)
+	}
+}
+
 func TestReadStdoutMapsCodexExecEvents(t *testing.T) {
 	adapter := New(Config{})
 	command := protocol.Command{
@@ -91,6 +105,7 @@ func TestReadStdoutMapsCodexToolItems(t *testing.T) {
 	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1"}
 	input := strings.Join([]string{
 		`{"type":"item.started","item":{"id":"cmd","type":"command_execution","command":"git status","status":"running"}}`,
+		`{"type":"item.updated","item":{"id":"cmd","type":"command_execution","command":"git status","aggregated_output":"still running","status":"running"}}`,
 		`{"type":"item.completed","item":{"id":"cmd","type":"command_execution","command":"git status","aggregated_output":"clean","exit_code":0,"status":"succeeded"}}`,
 		`{"type":"item.completed","item":{"id":"mcp","type":"mcp_tool_call","server":"fs","tool":"read","arguments":{"path":"README.md"},"result":{"content":"ok"},"status":"succeeded"}}`,
 		`{"type":"item.completed","item":{"id":"file","type":"file_change","changes":[{"path":"a.go","kind":"modified"}],"status":"succeeded"}}`,
@@ -108,6 +123,8 @@ func TestReadStdoutMapsCodexToolItems(t *testing.T) {
 	}
 	wantKinds := []string{
 		"tool.call.started",
+		"tool.call.delta",
+		"terminal.output",
 		"tool.call.done",
 		"tool.output",
 		"tool.call.done",
@@ -120,9 +137,10 @@ func TestReadStdoutMapsCodexToolItems(t *testing.T) {
 	if strings.Join(kinds, "\x00") != strings.Join(wantKinds, "\x00") {
 		t.Fatalf("event kinds = %#v, want %#v", kinds, wantKinds)
 	}
-	assertPayloadString(t, sink.events[2].Payload, "output", "clean")
-	assertPayloadString(t, sink.events[4].Payload, "tool", "read")
-	assertPayloadString(t, sink.events[8].Payload, "message", "boom")
+	assertPayloadString(t, sink.events[2].Payload, "tool_call_id", "cmd")
+	assertPayloadString(t, sink.events[4].Payload, "output", "clean")
+	assertPayloadString(t, sink.events[6].Payload, "tool", "read")
+	assertPayloadString(t, sink.events[10].Payload, "message", "boom")
 }
 
 func TestBinCandidatesPreferWindowsLaunchers(t *testing.T) {
@@ -131,6 +149,22 @@ func TestBinCandidatesPreferWindowsLaunchers(t *testing.T) {
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("windows candidates = %#v, want %#v", got, want)
 	}
+}
+
+func TestProcessStatusEvents(t *testing.T) {
+	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1"}
+	sink := &captureSink{}
+	if err := emitProcessStarted(context.Background(), sink, command, "codex.cmd", []string{"exec", "--json", "-"}, `C:\repo`); err != nil {
+		t.Fatalf("emit started: %v", err)
+	}
+	if err := emitProcessExited(context.Background(), sink, command, nil); err != nil {
+		t.Fatalf("emit exited: %v", err)
+	}
+	if len(sink.events) != 2 {
+		t.Fatalf("event count = %d, want 2", len(sink.events))
+	}
+	assertPayloadString(t, sink.events[0].Payload, "status", "codex.process.started")
+	assertPayloadString(t, sink.events[1].Payload, "status", "codex.process.exited")
 }
 
 func assertPayloadString(t *testing.T, raw json.RawMessage, key, want string) {

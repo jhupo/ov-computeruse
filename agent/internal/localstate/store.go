@@ -43,8 +43,9 @@ type SessionRecord struct {
 }
 
 type CommandContext struct {
-	Project ProjectRecord
-	Session SessionRecord
+	Project        ProjectRecord
+	Session        SessionRecord
+	RuntimeSession RuntimeSession
 }
 
 func Open(path string) (*Store, error) {
@@ -266,6 +267,7 @@ func (s *Store) ResolveCommandContext(ctx context.Context, command protocol.Comm
 					ProjectID: runtimeSession.ProjectID,
 					Title:     firstNonEmpty(runtimeSession.NativeSessionID, runtimeSession.SessionID),
 				}
+				resolved.RuntimeSession = runtimeSession
 				if strings.TrimSpace(command.ProjectID) != "" && strings.TrimSpace(runtimeSession.ProjectID) != "" && command.ProjectID != runtimeSession.ProjectID {
 					return resolved, errors.New("command project does not match runtime session project")
 				}
@@ -835,6 +837,11 @@ func (s *Store) projectRunView(ctx context.Context, event protocol.RunEvent) err
 		return s.upsertRunMessage(ctx, event, "user", "done", true)
 	case "tool.call.started", "tool.call.delta", "tool.call.done", "tool.output", "approval.requested":
 		return s.upsertToolCall(ctx, event)
+	case "terminal.output":
+		if payloadString(event.Payload, "tool_call_id", "call_id", "id") != "" {
+			return s.upsertToolCall(ctx, event)
+		}
+		return nil
 	default:
 		return nil
 	}
@@ -921,7 +928,7 @@ func (s *Store) upsertToolCall(ctx context.Context, event protocol.RunEvent) err
 	toolName := payloadString(event.Payload, "tool_name", "name", "tool")
 	status := toolStatus(event.Kind)
 	arguments := payloadObject(event.Payload, "arguments", "args")
-	output := payloadObject(event.Payload, "output", "result")
+	output := payloadObject(event.Payload, "output", "result", "text")
 	approvalID := payloadString(event.Payload, "approval_id")
 	id := projectionID(event.RunID, toolCallID, "tool_call")
 	finished := status == "done" || status == "output"
@@ -996,6 +1003,8 @@ func toolStatus(kind string) string {
 	case "tool.call.done":
 		return "done"
 	case "tool.output":
+		return "output"
+	case "terminal.output":
 		return "output"
 	case "approval.requested":
 		return "awaiting_approval"
