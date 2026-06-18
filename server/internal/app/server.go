@@ -78,6 +78,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/dash/workspace/search", s.handleDashWorkspaceSearch)
 	mux.HandleFunc("GET /api/dash/workspace/git-status", s.handleDashWorkspaceGitStatus)
 	mux.HandleFunc("GET /api/dash/workspace/git-diff", s.handleDashWorkspaceGitDiff)
+	mux.HandleFunc("POST /api/dash/workspace/request", s.handleDashWorkspaceRequest)
 	mux.HandleFunc("GET /api/dash/approvals", s.handleDashApprovals)
 	mux.HandleFunc("POST /api/dash/approvals/{approval_id}/decision", s.handleDashApprovalDecision)
 	mux.HandleFunc("GET /ws/agent", s.handleAgentWS)

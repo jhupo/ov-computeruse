@@ -11,6 +11,11 @@ import (
 	"ov-computeruse/server/internal/store"
 )
 
+type dashWorkspaceRequest struct {
+	AgentID string                    `json:"agent_id"`
+	Request protocol.WorkspaceRequest `json:"request"`
+}
+
 func (s *Server) handleDashWorkspaceTree(w http.ResponseWriter, r *http.Request) {
 	_, identity, req, ok := s.workspaceRequestFromQuery(w, r, "list")
 	if !ok {
@@ -112,6 +117,28 @@ func (s *Server) handleDashWorkspaceGitDiff(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "path": req.Path, "diff": resp.Diff})
 }
 
+func (s *Server) handleDashWorkspaceRequest(w http.ResponseWriter, r *http.Request) {
+	var body dashWorkspaceRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", "invalid workspace request payload")
+		return
+	}
+	_, identity, req, ok := s.workspaceRequestFromBody(w, r, body)
+	if !ok {
+		return
+	}
+	resp, status, err := s.sendWorkspaceRequest(r.Context(), identity, req)
+	if err != nil {
+		writeError(w, status, workspaceErrorCode(status), err.Error())
+		return
+	}
+	if resp.Status != "ok" {
+		writeError(w, http.StatusBadGateway, firstWorkspaceCode(resp.Code, "workspace_request_failed"), firstWorkspaceMessage(resp.Message, "workspace request failed"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "request_id": req.RequestID, "response": resp})
+}
+
 func (s *Server) workspaceRequestFromQuery(w http.ResponseWriter, r *http.Request, operation string) (DashPrincipal, store.AgentIdentity, protocol.WorkspaceRequest, bool) {
 	agentID := strings.TrimSpace(r.URL.Query().Get("agent_id"))
 	principal, identity, ok := s.authorizeAgentByID(w, r, agentID)
@@ -147,6 +174,50 @@ func (s *Server) workspaceRequestFromQuery(w http.ResponseWriter, r *http.Reques
 		ProjectID: projectID,
 		Path:      strings.TrimSpace(r.URL.Query().Get("path")),
 	}, true
+}
+
+func (s *Server) workspaceRequestFromBody(w http.ResponseWriter, r *http.Request, body dashWorkspaceRequest) (DashPrincipal, store.AgentIdentity, protocol.WorkspaceRequest, bool) {
+	body.AgentID = strings.TrimSpace(body.AgentID)
+	principal, identity, ok := s.authorizeAgentByID(w, r, body.AgentID)
+	if !ok {
+		return DashPrincipal{}, store.AgentIdentity{}, protocol.WorkspaceRequest{}, false
+	}
+	if err := identity.AccessError(); err != nil {
+		writeError(w, http.StatusConflict, "agent_disabled", err.Error())
+		return DashPrincipal{}, store.AgentIdentity{}, protocol.WorkspaceRequest{}, false
+	}
+	req := normalizeWorkspaceRequest(body.Request)
+	if err := validateWorkspaceCapability(identity, req.Operation); err != nil {
+		writeError(w, http.StatusConflict, "workspace_not_supported", err.Error())
+		return DashPrincipal{}, store.AgentIdentity{}, protocol.WorkspaceRequest{}, false
+	}
+	if req.ProjectID == "" {
+		writeError(w, http.StatusBadRequest, "missing_project_id", "project_id is required")
+		return DashPrincipal{}, store.AgentIdentity{}, protocol.WorkspaceRequest{}, false
+	}
+	exists, err := s.store.ProjectExists(r.Context(), identity.AgentID, req.ProjectID)
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "workspace project lookup failed", "agent_id", identity.AgentID, "project_id", req.ProjectID, "user_id", principal.UserID, "error", err)
+		writeError(w, http.StatusInternalServerError, "project_lookup_failed", "unable to load project")
+		return DashPrincipal{}, store.AgentIdentity{}, protocol.WorkspaceRequest{}, false
+	}
+	if !exists {
+		writeError(w, http.StatusNotFound, "project_not_found", "project not found")
+		return DashPrincipal{}, store.AgentIdentity{}, protocol.WorkspaceRequest{}, false
+	}
+	return principal, identity, req, true
+}
+
+func normalizeWorkspaceRequest(req protocol.WorkspaceRequest) protocol.WorkspaceRequest {
+	req.RequestID = strings.TrimSpace(req.RequestID)
+	if req.RequestID == "" {
+		req.RequestID = protocol.NewID("wsreq")
+	}
+	req.Operation = strings.TrimSpace(req.Operation)
+	req.ProjectID = strings.TrimSpace(req.ProjectID)
+	req.Path = strings.TrimSpace(req.Path)
+	req.Query = strings.TrimSpace(req.Query)
+	return req
 }
 
 func (s *Server) sendWorkspaceRequest(ctx context.Context, identity store.AgentIdentity, req protocol.WorkspaceRequest) (protocol.WorkspaceResponse, int, error) {
