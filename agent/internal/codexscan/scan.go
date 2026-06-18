@@ -862,15 +862,20 @@ func parseHistoryItem(sessionID string, index int, rawLine []byte, maxText int) 
 
 func historyKind(rowType, payloadType string) string {
 	switch payloadType {
-	case "message":
+	case "message", "agent_message":
 		return "message"
 	case "reasoning", "reasoning_item":
 		return "reasoning"
-	case "function_call", "mcp_call", "local_shell_call", "code_interpreter_call", "file_search_call", "web_search_call", "computer_call":
+	case "function_call", "mcp_call", "local_shell_call", "code_interpreter_call", "file_search_call", "web_search_call", "computer_call",
+		"command_execution", "mcp_tool_call", "file_change", "web_search", "collab_tool_call":
 		return "tool.call"
 	case "function_call_output", "mcp_call_output", "local_shell_call_output", "code_interpreter_call_output", "file_search_call_output", "web_search_call_output", "computer_call_output":
 		return "tool.output"
-	case "mcp_approval_request":
+	case "todo_list":
+		return "todo.list"
+	case "error":
+		return "error"
+	case "mcp_approval_request", "exec_approval_request", "apply_patch_approval_request", "elicitation_request":
 		return "approval.requested"
 	case "mcp_approval_response":
 		return "approval.resolved"
@@ -904,17 +909,22 @@ func skipHistoryKind(kind string) bool {
 func historyText(kind string, payload map[string]any, max int) string {
 	switch kind {
 	case "message":
-		return truncateText(messageTextFromAny(payload["content"]), max)
+		return truncateText(firstNonEmpty(stringFromAny(payload["text"]), messageTextFromAny(payload["content"])), max)
 	case "reasoning":
 		return truncateText(firstNonEmpty(messageTextFromAny(payload["summary"]), messageTextFromAny(payload["content"]), stringFromAny(payload["text"])), max)
 	case "tool.call":
 		return truncateText(firstNonEmpty(
 			stringFromAny(payload["name"]),
 			stringFromAny(payload["tool_name"]),
+			stringFromAny(payload["tool"]),
 			stringFromAny(payload["command"]),
+			messageTextFromAny(payload["changes"]),
+			messageTextFromAny(payload["output"]),
+			messageTextFromAny(payload["result"]),
 			stringFromAny(payload["arguments"]),
 			compactJSONText(payload["arguments"]),
 			compactJSONText(payload["action"]),
+			compactJSONText(payload["changes"]),
 		), max)
 	case "tool.output":
 		return truncateText(firstNonEmpty(
@@ -926,7 +936,11 @@ func historyText(kind string, payload map[string]any, max int) string {
 			compactJSONText(payload["error"]),
 		), max)
 	case "approval.requested":
-		return truncateText(firstNonEmpty(stringFromAny(payload["name"]), stringFromAny(payload["action"]), compactJSONText(payload["arguments"])), max)
+		return truncateText(firstNonEmpty(stringFromAny(payload["command"]), stringFromAny(payload["name"]), stringFromAny(payload["tool"]), stringFromAny(payload["action"]), compactJSONText(payload["arguments"])), max)
+	case "todo.list":
+		return truncateText(firstNonEmpty(messageTextFromAny(payload["items"]), compactJSONText(payload["items"])), max)
+	case "error":
+		return truncateText(firstNonEmpty(stringFromAny(payload["message"]), messageTextFromAny(payload["error"]), compactJSONText(payload["error"])), max)
 	default:
 		return truncateText(firstNonEmpty(stringFromAny(payload["text"]), messageTextFromAny(payload["summary"]), stringFromAny(payload["status"]), compactJSONText(payload)), max)
 	}
@@ -949,7 +963,7 @@ func messageTextFromAny(value any) string {
 		}
 		return strings.TrimSpace(strings.Join(parts, "\n"))
 	case map[string]any:
-		for _, key := range []string{"text", "content", "summary", "output", "result", "error"} {
+		for _, key := range []string{"text", "content", "summary", "output", "result", "error", "command", "path", "kind"} {
 			if text := messageTextFromAny(typed[key]); text != "" {
 				return text
 			}
