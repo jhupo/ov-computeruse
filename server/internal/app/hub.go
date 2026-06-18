@@ -281,15 +281,6 @@ func dashAcceptsBroadcast(dash *DashConn, data []byte) bool {
 	if dash == nil {
 		return true
 	}
-	dash.mu.RLock()
-	subscriptions := make([]DashSubscription, 0, len(dash.Subscriptions))
-	for _, subscription := range dash.Subscriptions {
-		subscriptions = append(subscriptions, subscription)
-	}
-	dash.mu.RUnlock()
-	if len(subscriptions) == 0 {
-		return true
-	}
 	var event struct {
 		Type    string `json:"type"`
 		AgentID string `json:"agent_id"`
@@ -303,6 +294,12 @@ func dashAcceptsBroadcast(dash *DashConn, data []byte) bool {
 	if event.Type != "run.event" {
 		return true
 	}
+	dash.mu.RLock()
+	subscriptions := make([]DashSubscription, 0, len(dash.Subscriptions))
+	for _, subscription := range dash.Subscriptions {
+		subscriptions = append(subscriptions, subscription)
+	}
+	dash.mu.RUnlock()
 	for _, subscription := range subscriptions {
 		if subscription.AgentID == event.AgentID && subscription.RunID == event.Payload.RunID {
 			return true
