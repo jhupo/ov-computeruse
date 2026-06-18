@@ -341,6 +341,9 @@ func validateCommandCapabilities(identity store.AgentIdentity, command protocol.
 		if !caps.SupportsRuntime {
 			return errors.New("agent does not support runtime execution")
 		}
+		if !capabilityHasFeature(caps, "runtime."+protocol.RuntimeCodexCLI) {
+			return errors.New("agent does not support runtime." + protocol.RuntimeCodexCLI)
+		}
 	case "approval_decision":
 		if !capabilityHasFeature(caps, "approval.decision") {
 			return errors.New("agent does not support approval decisions")

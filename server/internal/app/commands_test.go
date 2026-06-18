@@ -82,3 +82,19 @@ func TestValidateCommandCapabilitiesAcceptsRuntimeCommand(t *testing.T) {
 		t.Fatalf("runtime command rejected: %v", err)
 	}
 }
+
+func TestValidateCommandCapabilitiesRejectsNonCodexRuntime(t *testing.T) {
+	identity := store.AgentIdentity{
+		Capabilities: protocol.Raw(protocol.Capabilities{
+			SupportsRuntime: true,
+			Features:        []string{"command.new_session", "runtime.openai.responses"},
+		}),
+	}
+	command := protocol.Command{
+		Kind:    "command.new_session",
+		Payload: protocol.Raw(map[string]string{"prompt": "hi"}),
+	}
+	if err := validateCommandCapabilities(identity, command); err == nil {
+		t.Fatal("expected runtime command to require codex.cli capability")
+	}
+}
