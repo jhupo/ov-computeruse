@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"testing"
 
 	"ov-computeruse/server/internal/protocol"
@@ -25,5 +26,14 @@ func TestStatusStepProjectionIgnoresRegularStatus(t *testing.T) {
 	kind, title, status := statusStepProjection(event)
 	if kind != "" || title != "" || status != "" {
 		t.Fatalf("projection = %q %q %q, want empty", kind, title, status)
+	}
+}
+
+func TestConversationQueryHidesRemoteRunsAfterHistorySync(t *testing.T) {
+	query := conversationItemsQuery()
+	for _, want := range []string{"r.finished_at IS NULL", "history_items hi", "hi.received_at >= r.finished_at"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("conversation query missing %q:\n%s", want, query)
+		}
 	}
 }

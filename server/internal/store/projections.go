@@ -300,24 +300,7 @@ func (s *Store) ListConversationItems(ctx context.Context, agentID, sessionID st
 	if limit <= 0 || limit > 2000 {
 		limit = 500
 	}
-	rows, err := s.pool.Query(ctx, `WITH history AS (
-			SELECT id, agent_id, session_id, '' AS run_id, item_index, 0::BIGINT AS seq_start, COALESCE(role, '') AS role, kind, COALESCE(text, '') AS text, payload, COALESCE(source, 'codex.history') AS source, item_at AS at, received_at
-			FROM history_items
-			WHERE agent_id=$1 AND session_id=$2 AND lower(trim(kind)) NOT IN ('usage','response.usage','token_usage','billing','cost')
-		), remote AS (
-			SELECT rm.id, rm.agent_id, r.session_id, rm.run_id, 0 AS item_index, rm.seq_start, rm.role, 'message' AS kind, COALESCE(rm.content, '') AS text, rm.payload, 'remote.run' AS source, rm.started_at AS at, rm.started_at AS received_at
-			FROM run_messages rm
-			JOIN runs r ON r.agent_id=rm.agent_id AND r.id=rm.run_id
-			WHERE rm.agent_id=$1 AND r.session_id=$2
-		)
-		SELECT id, agent_id, session_id, run_id, item_index, seq_start, role, kind, text, payload, source, at, received_at
-		FROM (
-			SELECT * FROM history
-			UNION ALL
-			SELECT * FROM remote
-		) items
-		ORDER BY COALESCE(at, received_at) ASC, source ASC, item_index ASC, seq_start ASC
-		LIMIT $3`, agentID, sessionID, limit)
+	rows, err := s.pool.Query(ctx, conversationItemsQuery(), agentID, sessionID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -343,6 +326,38 @@ func (s *Store) ListConversationItems(ctx context.Context, agentID, sessionID st
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func conversationItemsQuery() string {
+	return `WITH history AS (
+			SELECT id, agent_id, session_id, '' AS run_id, item_index, 0::BIGINT AS seq_start, COALESCE(role, '') AS role, kind, COALESCE(text, '') AS text, payload, COALESCE(source, 'codex.history') AS source, item_at AS at, received_at
+			FROM history_items
+			WHERE agent_id=$1 AND session_id=$2 AND lower(trim(kind)) NOT IN ('usage','response.usage','token_usage','billing','cost')
+		), remote AS (
+			SELECT rm.id, rm.agent_id, r.session_id, rm.run_id, 0 AS item_index, rm.seq_start, rm.role, 'message' AS kind, COALESCE(rm.content, '') AS text, rm.payload, 'remote.run' AS source, rm.started_at AS at, rm.started_at AS received_at
+			FROM run_messages rm
+			JOIN runs r ON r.agent_id=rm.agent_id AND r.id=rm.run_id
+			WHERE rm.agent_id=$1 AND r.session_id=$2
+				AND (
+					r.finished_at IS NULL
+					OR NOT EXISTS (
+						SELECT 1 FROM history_items hi
+						WHERE hi.agent_id=r.agent_id
+							AND hi.session_id=r.session_id
+							AND hi.source='codex.history'
+							AND hi.kind='message'
+							AND hi.received_at >= r.finished_at
+					)
+				)
+		)
+		SELECT id, agent_id, session_id, run_id, item_index, seq_start, role, kind, text, payload, source, at, received_at
+		FROM (
+			SELECT * FROM history
+			UNION ALL
+			SELECT * FROM remote
+		) items
+		ORDER BY COALESCE(at, received_at) ASC, source ASC, item_index ASC, seq_start ASC
+		LIMIT $3`
 }
 
 func (s *Store) ListRunMessages(ctx context.Context, agentID, runID string) ([]RunMessage, error) {
