@@ -310,6 +310,12 @@ func (s *Server) replayPendingCommands(r *http.Request, identity store.AgentIden
 }
 
 func (s *Server) dispatchClaimedCommand(ctx context.Context, identity store.AgentIdentity, command store.CommandRecord) (store.CommandRecord, bool) {
+	if err := s.validateCommandTargets(ctx, identity.AgentID, command.ToProtocol()); err != nil {
+		_ = s.store.MarkCommandFailed(ctx, identity.AgentID, command.ID, err.Error())
+		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.ID)
+		s.log.WarnContext(ctx, "claimed command target invalid", "agent_id", identity.AgentID, "command_id", command.ID, "error", err)
+		return record, false
+	}
 	return s.dispatchCommand(ctx, identity, command.ToProtocol())
 }
 
