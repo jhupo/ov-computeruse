@@ -993,30 +993,23 @@ func (c *Client) readLoop(ctx context.Context, conn Conn) error {
 				continue
 			}
 			if strings.TrimPrefix(command.Kind, "command.") == "approval_decision" {
-				ack := c.handleApprovalDecisionCommand(ctx, env.MessageID, command)
+				ack := c.handleSpecialCommand(ctx, env.MessageID, command, func() protocol.Ack {
+					return c.handleApprovalDecisionCommand(ctx, env.MessageID, command)
+				})
 				_ = c.send(ctx, "ack", ack)
 				continue
 			}
 			if strings.TrimPrefix(command.Kind, "command.") == "refresh_index" {
-				ack := protocol.Ack{MessageID: env.MessageID, CommandID: command.CommandID, Status: "ok", Message: "refresh started", At: time.Now().UTC()}
+				ack := c.handleSpecialCommand(ctx, env.MessageID, command, func() protocol.Ack {
+					if err := c.uploadIndex(ctx); err != nil {
+						return protocol.Ack{MessageID: env.MessageID, CommandID: command.CommandID, Status: "failed", Message: err.Error(), At: time.Now().UTC()}
+					}
+					return protocol.Ack{MessageID: env.MessageID, CommandID: command.CommandID, Status: "ok", Message: "refresh completed", At: time.Now().UTC()}
+				})
 				_ = c.send(ctx, "ack", ack)
-				if err := c.uploadIndex(ctx); err != nil {
-					_ = c.send(ctx, "ack", protocol.Ack{MessageID: env.MessageID, CommandID: command.CommandID, Status: "failed", Message: err.Error(), At: time.Now().UTC()})
-				}
 				continue
 			}
 			ack := c.manager.Handle(ctx, command)
-			ack.MessageID = env.MessageID
-			_ = c.send(ctx, "ack", ack)
-		case "command.refresh_index":
-			_ = c.uploadIndex(ctx)
-		case "approval.decision":
-			decision, err := protocol.Decode[protocol.ApprovalDecision](env.Data)
-			if err != nil {
-				_ = c.send(ctx, "ack", protocol.Ack{MessageID: env.MessageID, Status: "rejected", Message: err.Error(), At: time.Now().UTC()})
-				continue
-			}
-			ack := c.manager.DecideApproval(ctx, decision)
 			ack.MessageID = env.MessageID
 			_ = c.send(ctx, "ack", ack)
 		case "workspace.request":
@@ -1072,6 +1065,47 @@ func (c *Client) readLoop(ctx context.Context, conn Conn) error {
 				_ = c.state.MarkRunEventAcked(ctx, ack)
 			}
 		}
+	}
+}
+
+func (c *Client) handleSpecialCommand(ctx context.Context, messageID string, command protocol.Command, execute func() protocol.Ack) protocol.Ack {
+	if cached, ok := c.storedCommandAck(ctx, command.CommandID); ok {
+		cached.MessageID = messageID
+		return cached
+	}
+	ack := execute()
+	ack.MessageID = messageID
+	if ack.CommandID == "" {
+		ack.CommandID = command.CommandID
+	}
+	if ack.RunID == "" {
+		ack.RunID = command.RunID
+	}
+	if ack.At.IsZero() {
+		ack.At = time.Now().UTC()
+	}
+	c.saveCommandAck(ctx, ack)
+	return ack
+}
+
+func (c *Client) storedCommandAck(ctx context.Context, commandID string) (protocol.Ack, bool) {
+	if c.state == nil || strings.TrimSpace(commandID) == "" {
+		return protocol.Ack{}, false
+	}
+	ack, ok, err := c.state.CommandAck(ctx, commandID)
+	if err != nil {
+		c.logger.WarnContext(ctx, "command ack cache load failed", "command_id", commandID, "error", err)
+		return protocol.Ack{}, false
+	}
+	return ack, ok
+}
+
+func (c *Client) saveCommandAck(ctx context.Context, ack protocol.Ack) {
+	if c.state == nil || strings.TrimSpace(ack.CommandID) == "" {
+		return
+	}
+	if err := c.state.SaveCommandAck(ctx, ack); err != nil {
+		c.logger.WarnContext(ctx, "command ack cache save failed", "command_id", ack.CommandID, "error", err)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"ov-computeruse/agent/internal/codexscan"
 	"ov-computeruse/agent/internal/config"
 	"ov-computeruse/agent/internal/device"
+	"ov-computeruse/agent/internal/localstate"
 	"ov-computeruse/agent/internal/protocol"
 	"ov-computeruse/agent/internal/securestore"
 	"ov-computeruse/agent/internal/security"
@@ -183,6 +184,139 @@ func TestServeStartsReadLoopBeforeIndexUploadCompletes(t *testing.T) {
 	}
 }
 
+func TestRefreshIndexCommandAckIsPersistedAndReplayed(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	state, err := localstate.Open(t.TempDir() + "/state.db")
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer state.Close()
+
+	conn := newMemoryConn()
+	client := newClient(
+		securestore.Identity{AgentID: "agent_1", DeviceID: "device_1", AgentSecret: "secret", ServerURL: "https://server.test"},
+		nil,
+		blockingScanner{},
+		protocolDevice(),
+		defaultConfig(),
+		state,
+		true,
+		false,
+		nil,
+	)
+	client.setConn(conn)
+
+	done := make(chan error, 1)
+	go func() { done <- client.readLoop(ctx, conn) }()
+
+	command := protocol.Command{CommandID: "cmd_refresh_1", Kind: "command.refresh_index"}
+	if err := conn.pushEncrypted("command", "server", "server_device", 1, command, "secret"); err != nil {
+		t.Fatal(err)
+	}
+	waitForWrittenType(t, conn, "index.updated")
+	firstAck := waitForWrittenAck(t, conn)
+	if firstAck.CommandID != command.CommandID || firstAck.Status != "ok" {
+		t.Fatalf("first ack = %+v", firstAck)
+	}
+
+	if err := conn.pushEncrypted("command", "server", "server_device", 2, command, "secret"); err != nil {
+		t.Fatal(err)
+	}
+	secondAck := waitForWrittenAck(t, conn)
+	if secondAck.CommandID != command.CommandID || secondAck.Status != firstAck.Status || secondAck.Message != firstAck.Message {
+		t.Fatalf("second ack = %+v, want replay of %+v", secondAck, firstAck)
+	}
+	assertNoWrittenType(t, conn, "index.updated", 150*time.Millisecond)
+
+	stored, ok, err := state.CommandAck(ctx, command.CommandID)
+	if err != nil {
+		t.Fatalf("load stored ack: %v", err)
+	}
+	if !ok || stored.Status != "ok" {
+		t.Fatalf("stored ack = %+v, ok=%v", stored, ok)
+	}
+
+	conn.closeWith(errors.New("done"))
+	select {
+	case err := <-done:
+		if err == nil || err.Error() != "done" {
+			t.Fatalf("read loop error = %v, want done", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("read loop did not exit")
+	}
+}
+
+func TestApprovalDecisionCommandAckIsPersistedAndReplayed(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	state, err := localstate.Open(t.TempDir() + "/state.db")
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer state.Close()
+
+	conn := newMemoryConn()
+	client := newClient(
+		securestore.Identity{AgentID: "agent_1", DeviceID: "device_1", AgentSecret: "secret", ServerURL: "https://server.test"},
+		nil,
+		blockingScanner{},
+		protocolDevice(),
+		defaultConfig(),
+		state,
+		true,
+		false,
+		nil,
+	)
+	client.setConn(conn)
+
+	done := make(chan error, 1)
+	go func() { done <- client.readLoop(ctx, conn) }()
+
+	command := protocol.Command{
+		CommandID: "cmd_approval_1",
+		RunID:     "run_1",
+		Kind:      "command.approval_decision",
+		Payload:   protocol.Raw(protocol.ApprovalDecision{ApprovalID: "approval_1", Decision: "approved"}),
+	}
+	if err := conn.pushEncrypted("command", "server", "server_device", 1, command, "secret"); err != nil {
+		t.Fatal(err)
+	}
+	firstAck := waitForWrittenAck(t, conn)
+	if firstAck.CommandID != command.CommandID || firstAck.RunID != command.RunID || firstAck.Status != "rejected" {
+		t.Fatalf("first ack = %+v", firstAck)
+	}
+
+	if err := conn.pushEncrypted("command", "server", "server_device", 2, command, "secret"); err != nil {
+		t.Fatal(err)
+	}
+	secondAck := waitForWrittenAck(t, conn)
+	if secondAck.CommandID != firstAck.CommandID || secondAck.RunID != firstAck.RunID || secondAck.Status != firstAck.Status || secondAck.Message != firstAck.Message {
+		t.Fatalf("second ack = %+v, want replay of %+v", secondAck, firstAck)
+	}
+
+	stored, ok, err := state.CommandAck(ctx, command.CommandID)
+	if err != nil {
+		t.Fatalf("load stored ack: %v", err)
+	}
+	if !ok || stored.Status != "rejected" {
+		t.Fatalf("stored ack = %+v, ok=%v", stored, ok)
+	}
+
+	conn.closeWith(errors.New("done"))
+	select {
+	case err := <-done:
+		if err == nil || err.Error() != "done" {
+			t.Fatalf("read loop error = %v, want done", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("read loop did not exit")
+	}
+}
+
 type memoryConn struct {
 	readCh  chan protocol.Envelope
 	writeCh chan protocol.Envelope
@@ -257,6 +391,36 @@ func waitForWrittenEnvelope(t *testing.T, conn *memoryConn, messageType string) 
 			}
 		case <-deadline:
 			t.Fatalf("timed out waiting for %s", messageType)
+		}
+	}
+}
+
+func waitForWrittenAck(t *testing.T, conn *memoryConn) protocol.Ack {
+	t.Helper()
+	env := waitForWrittenEnvelope(t, conn, "ack")
+	decrypted, err := protocol.DecryptEnvelopeData("secret", env)
+	if err != nil {
+		t.Fatalf("decrypt ack: %v", err)
+	}
+	var ack protocol.Ack
+	if err := json.Unmarshal(decrypted.Data, &ack); err != nil {
+		t.Fatalf("decode ack: %v", err)
+	}
+	return ack
+}
+
+func assertNoWrittenType(t *testing.T, conn *memoryConn, messageType string, wait time.Duration) {
+	t.Helper()
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	for {
+		select {
+		case env := <-conn.writeCh:
+			if env.Type == messageType {
+				t.Fatalf("unexpected %s envelope", messageType)
+			}
+		case <-timer.C:
+			return
 		}
 	}
 }
