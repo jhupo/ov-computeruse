@@ -566,15 +566,23 @@ func (s *Store) ensureSessionHasNoActiveRun(ctx context.Context, tx pgx.Tx, agen
 }
 
 func (s *Store) MarkCommandDispatched(ctx context.Context, agentID, commandID string) error {
-	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status='dispatched', status_reason='', dispatched_at=now(), retry_count=retry_count+1, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatch_failed','failed','expired','dispatched')`, agentID, commandID); err != nil {
+	tag, err := s.pool.Exec(ctx, `UPDATE commands SET status='dispatched', status_reason='', dispatched_at=now(), retry_count=retry_count+1, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatch_failed','dispatched')`, agentID, commandID)
+	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil
 	}
 	return s.SaveCommandAttempt(ctx, agentID, commandID, "dispatch", "dispatched", "command written to agent transport", nil)
 }
 
 func (s *Store) MarkCommandDispatchFailed(ctx context.Context, agentID, commandID, reason string) error {
-	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status='dispatch_failed', status_reason=$3, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, reason); err != nil {
+	tag, err := s.pool.Exec(ctx, `UPDATE commands SET status='dispatch_failed', status_reason=$3, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed')`, agentID, commandID, reason)
+	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil
 	}
 	return s.SaveCommandAttempt(ctx, agentID, commandID, "dispatch", "failed", reason, nil)
 }
