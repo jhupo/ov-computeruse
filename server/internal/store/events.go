@@ -462,7 +462,7 @@ func (s *Store) SaveCommand(ctx context.Context, agentID string, command protoco
 }
 
 func (s *Store) MarkCommandDispatched(ctx context.Context, agentID, commandID string) error {
-	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status='dispatched', status_reason='', dispatched_at=now(), retry_count=retry_count+1 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatch_failed','failed','expired')`, agentID, commandID); err != nil {
+	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status='dispatched', status_reason='', dispatched_at=now(), retry_count=retry_count+1 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatch_failed','failed','expired','dispatched')`, agentID, commandID); err != nil {
 		return err
 	}
 	return s.SaveCommandAttempt(ctx, agentID, commandID, "dispatch", "dispatched", "command written to agent transport", nil)
