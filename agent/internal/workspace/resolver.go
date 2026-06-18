@@ -28,37 +28,58 @@ func (r Resolver) Resolve(ctx context.Context, projectID, rel string) (Target, e
 	if err != nil {
 		return Target{Rel: rel}, err
 	}
-	if r.state == nil {
-		return Target{Rel: rel}, errors.New("workspace state is unavailable")
-	}
-	if projectID == "" {
-		return Target{Rel: rel}, errors.New("project_id is required")
-	}
-	root, err := r.state.ProjectPath(ctx, projectID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Target{Rel: rel}, errors.New("project is not indexed locally")
-	}
+	root, err := r.projectRoot(ctx, projectID)
 	if err != nil {
 		return Target{Rel: rel}, err
 	}
-	root = strings.TrimSpace(root)
-	if root == "" {
-		return Target{Rel: rel}, errors.New("project path is empty")
-	}
-	realRoot, err := realDirectory(root)
-	if err != nil {
-		return Target{Rel: rel}, err
-	}
-	target := filepath.Join(realRoot, filepath.FromSlash(rel))
+	target := filepath.Join(root, filepath.FromSlash(rel))
 	target = filepath.Clean(target)
 	realTarget, err := realPath(target)
 	if err != nil {
 		return Target{Rel: rel}, err
 	}
-	if !pathWithin(realRoot, realTarget) {
+	if !pathWithin(root, realTarget) {
 		return Target{Rel: rel}, errors.New("path escapes project root")
 	}
-	return Target{Root: realRoot, Path: realTarget, Rel: rel}, nil
+	return Target{Root: root, Path: realTarget, Rel: rel}, nil
+}
+
+func (r Resolver) ResolveGit(ctx context.Context, projectID, rel string) (Target, error) {
+	rel, err := cleanRel(rel)
+	if err != nil {
+		return Target{Rel: rel}, err
+	}
+	root, err := r.projectRoot(ctx, projectID)
+	if err != nil {
+		return Target{Rel: rel}, err
+	}
+	target := filepath.Join(root, filepath.FromSlash(rel))
+	target = filepath.Clean(target)
+	if !pathWithin(root, target) {
+		return Target{Rel: rel}, errors.New("path escapes project root")
+	}
+	return Target{Root: root, Path: target, Rel: rel}, nil
+}
+
+func (r Resolver) projectRoot(ctx context.Context, projectID string) (string, error) {
+	if r.state == nil {
+		return "", errors.New("workspace state is unavailable")
+	}
+	if projectID == "" {
+		return "", errors.New("project_id is required")
+	}
+	root, err := r.state.ProjectPath(ctx, projectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", errors.New("project is not indexed locally")
+	}
+	if err != nil {
+		return "", err
+	}
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return "", errors.New("project path is empty")
+	}
+	return realDirectory(root)
 }
 
 func cleanRel(path string) (string, error) {

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -23,7 +24,7 @@ func (s *Server) handleDashWorkspaceTree(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if resp.Status != "ok" {
-		writeError(w, http.StatusBadGateway, "workspace_request_failed", firstWorkspaceMessage(resp.Message, "workspace request failed"))
+		writeError(w, http.StatusBadGateway, firstWorkspaceCode(resp.Code, "workspace_request_failed"), firstWorkspaceMessage(resp.Message, "workspace request failed"))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "path": req.Path, "entries": resp.Entries})
@@ -47,6 +48,43 @@ func (s *Server) handleDashWorkspaceFile(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "path": req.Path, "file": resp.File})
 }
 
+func (s *Server) handleDashWorkspaceGitStatus(w http.ResponseWriter, r *http.Request) {
+	_, identity, req, ok := s.workspaceRequestFromQuery(w, r, "git_status")
+	if !ok {
+		return
+	}
+	req.Limit = queryInt(r, "limit", 500)
+	resp, status, err := s.sendWorkspaceRequest(r.Context(), identity, req)
+	if err != nil {
+		writeError(w, status, workspaceErrorCode(status), err.Error())
+		return
+	}
+	if resp.Status != "ok" {
+		writeError(w, http.StatusBadGateway, "workspace_request_failed", firstWorkspaceMessage(resp.Message, "workspace request failed"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "git": resp.Git})
+}
+
+func (s *Server) handleDashWorkspaceGitDiff(w http.ResponseWriter, r *http.Request) {
+	_, identity, req, ok := s.workspaceRequestFromQuery(w, r, "git_diff")
+	if !ok {
+		return
+	}
+	req.Staged = queryBool(r, "staged", false)
+	req.MaxBytes = int64(queryInt(r, "max_bytes", 512<<10))
+	resp, status, err := s.sendWorkspaceRequest(r.Context(), identity, req)
+	if err != nil {
+		writeError(w, status, workspaceErrorCode(status), err.Error())
+		return
+	}
+	if resp.Status != "ok" {
+		writeError(w, http.StatusBadGateway, firstWorkspaceCode(resp.Code, "workspace_request_failed"), firstWorkspaceMessage(resp.Message, "workspace request failed"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "path": req.Path, "diff": resp.Diff})
+}
+
 func (s *Server) workspaceRequestFromQuery(w http.ResponseWriter, r *http.Request, operation string) (DashPrincipal, store.AgentIdentity, protocol.WorkspaceRequest, bool) {
 	agentID := strings.TrimSpace(r.URL.Query().Get("agent_id"))
 	principal, identity, ok := s.authorizeAgentByID(w, r, agentID)
@@ -55,6 +93,10 @@ func (s *Server) workspaceRequestFromQuery(w http.ResponseWriter, r *http.Reques
 	}
 	if err := identity.AccessError(); err != nil {
 		writeError(w, http.StatusConflict, "agent_disabled", err.Error())
+		return DashPrincipal{}, store.AgentIdentity{}, protocol.WorkspaceRequest{}, false
+	}
+	if err := validateWorkspaceCapability(identity, operation); err != nil {
+		writeError(w, http.StatusConflict, "workspace_not_supported", err.Error())
 		return DashPrincipal{}, store.AgentIdentity{}, protocol.WorkspaceRequest{}, false
 	}
 	projectID := strings.TrimSpace(r.URL.Query().Get("project_id"))
@@ -107,4 +149,41 @@ func firstWorkspaceMessage(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstWorkspaceCode(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func validateWorkspaceCapability(identity store.AgentIdentity, operation string) error {
+	var caps protocol.Capabilities
+	if len(identity.Capabilities) == 0 {
+		return errors.New("agent has not registered capabilities")
+	}
+	if err := json.Unmarshal(identity.Capabilities, &caps); err != nil {
+		return errors.New("agent capabilities are invalid")
+	}
+	switch operation {
+	case "list", "read":
+		if !capabilityHasFeature(caps, "workspace.files") {
+			return errors.New("agent does not support workspace files")
+		}
+	case "git_status":
+		if !caps.SupportsGit || !capabilityHasFeature(caps, "git.status") {
+			return errors.New("agent does not support git status")
+		}
+	case "git_diff":
+		if !caps.SupportsGit || !capabilityHasFeature(caps, "git.diff") {
+			return errors.New("agent does not support git diff")
+		}
+	default:
+		return errors.New("unsupported workspace operation")
+	}
+	return nil
 }

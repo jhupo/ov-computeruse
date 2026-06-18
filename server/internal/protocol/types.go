@@ -154,6 +154,7 @@ type WorkspaceRequest struct {
 	Operation     string `json:"operation"`
 	ProjectID     string `json:"project_id"`
 	Path          string `json:"path,omitempty"`
+	Staged        bool   `json:"staged,omitempty"`
 	Depth         int    `json:"depth,omitempty"`
 	Limit         int    `json:"limit,omitempty"`
 	MaxBytes      int64  `json:"max_bytes,omitempty"`
@@ -161,15 +162,18 @@ type WorkspaceRequest struct {
 }
 
 type WorkspaceResponse struct {
-	RequestID string           `json:"request_id"`
-	Operation string           `json:"operation"`
-	ProjectID string           `json:"project_id,omitempty"`
-	Path      string           `json:"path,omitempty"`
-	Status    string           `json:"status"`
-	Message   string           `json:"message,omitempty"`
-	Entries   []WorkspaceEntry `json:"entries,omitempty"`
-	File      *WorkspaceFile   `json:"file,omitempty"`
-	At        time.Time        `json:"at,omitempty"`
+	RequestID string            `json:"request_id"`
+	Operation string            `json:"operation"`
+	ProjectID string            `json:"project_id,omitempty"`
+	Path      string            `json:"path,omitempty"`
+	Status    string            `json:"status"`
+	Code      string            `json:"code,omitempty"`
+	Message   string            `json:"message,omitempty"`
+	Entries   []WorkspaceEntry  `json:"entries,omitempty"`
+	File      *WorkspaceFile    `json:"file,omitempty"`
+	Git       *WorkspaceGit     `json:"git,omitempty"`
+	Diff      *WorkspaceGitDiff `json:"diff,omitempty"`
+	At        time.Time         `json:"at,omitempty"`
 }
 
 type WorkspaceEntry struct {
@@ -191,6 +195,47 @@ type WorkspaceFile struct {
 	Truncated bool      `json:"truncated,omitempty"`
 	Binary    bool      `json:"binary,omitempty"`
 	Sensitive bool      `json:"sensitive,omitempty"`
+}
+
+type WorkspaceGit struct {
+	Branch    string               `json:"branch,omitempty"`
+	Head      string               `json:"head,omitempty"`
+	Upstream  string               `json:"upstream,omitempty"`
+	Ahead     int                  `json:"ahead,omitempty"`
+	Behind    int                  `json:"behind,omitempty"`
+	Clean     bool                 `json:"clean"`
+	Counts    WorkspaceGitCounts   `json:"counts"`
+	Files     []WorkspaceGitChange `json:"files,omitempty"`
+	Truncated bool                 `json:"truncated,omitempty"`
+}
+
+type WorkspaceGitCounts struct {
+	Modified   int `json:"modified,omitempty"`
+	Added      int `json:"added,omitempty"`
+	Deleted    int `json:"deleted,omitempty"`
+	Renamed    int `json:"renamed,omitempty"`
+	Untracked  int `json:"untracked,omitempty"`
+	Conflicted int `json:"conflicted,omitempty"`
+	Total      int `json:"total"`
+}
+
+type WorkspaceGitChange struct {
+	Path       string `json:"path"`
+	OldPath    string `json:"old_path,omitempty"`
+	Index      string `json:"index,omitempty"`
+	Worktree   string `json:"worktree,omitempty"`
+	Kind       string `json:"kind"`
+	Conflicted bool   `json:"conflicted,omitempty"`
+}
+
+type WorkspaceGitDiff struct {
+	Path      string `json:"path,omitempty"`
+	Staged    bool   `json:"staged,omitempty"`
+	Encoding  string `json:"encoding"`
+	Content   string `json:"content,omitempty"`
+	Size      int64  `json:"size"`
+	Truncated bool   `json:"truncated,omitempty"`
+	Binary    bool   `json:"binary,omitempty"`
 }
 
 type HistoryChunk struct {

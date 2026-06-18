@@ -240,6 +240,10 @@ func (c *Client) register(ctx context.Context) error {
 	if supportsRuntime {
 		features = append(features, "approval.decision", "command.new_session", "command.resume", "command.send", "command.stop")
 	}
+	supportsGit := workspace.GitAvailable()
+	if supportsGit {
+		features = append(features, "git.status", "git.diff")
+	}
 	if c.manager != nil && strings.TrimSpace(c.manager.RuntimeName()) != "" {
 		features = append(features, "runtime."+c.manager.RuntimeName())
 	}
@@ -271,7 +275,7 @@ func (c *Client) register(ctx context.Context) error {
 			SupportsRuntime:   supportsRuntime,
 			SupportsHistory:   true,
 			SupportsTerminal:  c.cfg.AllowLocalShell,
-			SupportsGit:       false,
+			SupportsGit:       supportsGit,
 			Features:          features,
 			MaxConcurrentRuns: c.maxConcurrentRuns(),
 		},
