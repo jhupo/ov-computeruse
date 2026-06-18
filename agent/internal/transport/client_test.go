@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -53,6 +54,53 @@ func TestShouldRefreshIndexAfterTerminalRunEvents(t *testing.T) {
 	client.noScan = true
 	if client.shouldRefreshIndexAfter(protocol.RunEvent{Kind: "run.done"}) {
 		t.Fatal("did not expect refresh when scan is disabled")
+	}
+}
+
+func TestEmitSendsRunEventImmediately(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	conn := newMemoryConn()
+	client := newClient(
+		securestore.Identity{AgentID: "agent_1", DeviceID: "device_1", AgentSecret: "secret", ServerURL: "https://server.test"},
+		nil,
+		blockingScanner{},
+		protocolDevice(),
+		defaultConfig(),
+		nil,
+		false,
+		false,
+		nil,
+	)
+	client.setConn(conn)
+
+	event := protocol.RunEvent{
+		EventID: "evt_1",
+		RunID:   "run_1",
+		Seq:     7,
+		Kind:    "assistant.message.done",
+		Payload: protocol.Raw(map[string]string{"text": "stream-now"}),
+		At:      time.Now().UTC(),
+	}
+	if err := client.Emit(ctx, event); err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+
+	env := waitForWrittenEnvelope(t, conn, "run.event")
+	decrypted, err := protocol.DecryptEnvelopeData("secret", env)
+	if err != nil {
+		t.Fatalf("decrypt envelope: %v", err)
+	}
+	var sent protocol.RunEvent
+	if err := json.Unmarshal(decrypted.Data, &sent); err != nil {
+		t.Fatalf("decode run event: %v", err)
+	}
+	if sent.EventID != event.EventID || sent.RunID != event.RunID || sent.Seq != event.Seq || sent.Kind != event.Kind {
+		t.Fatalf("sent event = %+v, want %+v", sent, event)
+	}
+	if string(sent.Payload) != string(event.Payload) {
+		t.Fatalf("payload = %s, want %s", sent.Payload, event.Payload)
 	}
 }
 
@@ -154,12 +202,17 @@ func (c *memoryConn) pushEncrypted(messageType, agentID, deviceID string, seq ui
 
 func waitForWrittenType(t *testing.T, conn *memoryConn, messageType string) {
 	t.Helper()
+	_ = waitForWrittenEnvelope(t, conn, messageType)
+}
+
+func waitForWrittenEnvelope(t *testing.T, conn *memoryConn, messageType string) protocol.Envelope {
+	t.Helper()
 	deadline := time.After(time.Second)
 	for {
 		select {
 		case env := <-conn.writeCh:
 			if env.Type == messageType {
-				return
+				return env
 			}
 		case <-deadline:
 			t.Fatalf("timed out waiting for %s", messageType)
