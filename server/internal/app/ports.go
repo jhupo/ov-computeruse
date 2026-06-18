@@ -62,6 +62,7 @@ type EventRepository interface {
 	MarkCommandDispatched(context.Context, string, string) error
 	MarkCommandFailed(context.Context, string, string, string) error
 	MarkCommandExpired(context.Context, string, string, string) error
+	ReleaseApprovalDecisionCommand(context.Context, string, string, string) error
 	PrepareCommandRetry(context.Context, string, string, time.Time, time.Time) error
 	ExpireCommands(context.Context, string) error
 	MarkCommandAck(context.Context, string, protocol.Ack) error

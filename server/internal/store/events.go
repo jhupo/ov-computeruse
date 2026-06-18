@@ -527,11 +527,17 @@ func (s *Store) MarkCommandFailed(ctx context.Context, agentID, commandID, reaso
 	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status='dispatch_failed', status_reason=$3, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, reason); err != nil {
 		return err
 	}
+	if err := s.releaseFailedApprovalDecisionCommand(ctx, agentID, commandID, reason); err != nil {
+		return err
+	}
 	return s.SaveCommandAttempt(ctx, agentID, commandID, "dispatch", "failed", reason, nil)
 }
 
 func (s *Store) MarkCommandExpired(ctx context.Context, agentID, commandID, reason string) error {
 	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status='expired', status_reason=$3, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, reason); err != nil {
+		return err
+	}
+	if err := s.releaseFailedApprovalDecisionCommand(ctx, agentID, commandID, reason); err != nil {
 		return err
 	}
 	return s.SaveCommandAttempt(ctx, agentID, commandID, "expire", "expired", reason, nil)
@@ -568,6 +574,11 @@ func (s *Store) MarkCommandAck(ctx context.Context, agentID string, ack protocol
 			AND (run_id IS NULL OR run_id='' OR $5='' OR run_id=$5)
 			AND status NOT IN ('done','expired','failed','rejected','stopped')`, status, ack.Message, agentID, ack.CommandID, ack.RunID, accepted); err != nil {
 		return err
+	}
+	if !accepted {
+		if err := s.releaseFailedApprovalDecisionCommand(ctx, agentID, ack.CommandID, ack.Message); err != nil {
+			return err
+		}
 	}
 	if err := s.SaveCommandAttempt(ctx, agentID, ack.CommandID, "ack", status, ack.Message, protocol.Raw(ack)); err != nil {
 		return err
@@ -607,6 +618,9 @@ func (s *Store) ExpireCommands(ctx context.Context, agentID string) error {
 		return err
 	}
 	for _, commandID := range expired {
+		if err := s.releaseFailedApprovalDecisionCommand(ctx, agentID, commandID, "command expired before agent accepted it"); err != nil {
+			return err
+		}
 		if err := s.SaveCommandAttempt(ctx, agentID, commandID, "expire", "expired", "command expired before agent accepted it", nil); err != nil {
 			return err
 		}
@@ -650,6 +664,17 @@ func (s *Store) ReconcileHeartbeatRuns(ctx context.Context, agentID string, hear
 		}
 	}
 	return s.ExpireCommands(ctx, agentID)
+}
+
+func (s *Store) releaseFailedApprovalDecisionCommand(ctx context.Context, agentID, commandID, reason string) error {
+	command, found, err := s.CommandByID(ctx, agentID, commandID)
+	if err != nil || !found {
+		return err
+	}
+	if strings.TrimPrefix(command.Kind, "command.") != "approval_decision" {
+		return nil
+	}
+	return s.ReleaseApprovalDecisionCommand(ctx, agentID, commandID, reason)
 }
 
 func normalizeCommand(command protocol.Command) protocol.Command {

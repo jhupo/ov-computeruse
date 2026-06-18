@@ -159,6 +159,10 @@ func (s *Server) handleDashCommandRetry(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusConflict, "command_not_retryable", "command is not in a retryable state")
 		return
 	}
+	if strings.TrimPrefix(record.Kind, "command.") == "approval_decision" {
+		writeError(w, http.StatusConflict, "approval_command_retry_not_allowed", "approval decision commands must be retried from the approval decision endpoint")
+		return
+	}
 	if err := s.validateCommandTargets(r.Context(), agentID, record.ToProtocol()); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_command_target", err.Error())
 		return

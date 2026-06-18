@@ -815,6 +815,22 @@ func (s *Store) DecideApproval(ctx context.Context, approvalID string, decision 
 	return err
 }
 
+func (s *Store) ReleaseApprovalDecisionCommand(ctx context.Context, agentID, commandID, reason string) error {
+	if agentID == "" || commandID == "" {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE approval_requests
+		SET decision=NULL,
+			decision_reason=$3,
+			decision_command_id=NULL,
+			decision_queued_at=NULL,
+			decided_by=NULL
+		WHERE agent_id=$1
+			AND decision_command_id=$2
+			AND status='pending'`, agentID, commandID, nullString(reason))
+	return err
+}
+
 func (s *Store) QueueApprovalDecision(ctx context.Context, approvalID string, decision protocol.ApprovalDecision, commandID string) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE approval_requests
 		SET decision=$2, decision_reason=$3, decision_command_id=$4, decision_queued_at=$5, decided_by=$6
@@ -847,21 +863,62 @@ func (s *Store) QueueApprovalDecisionCommand(ctx context.Context, agentID, appro
 		return protocol.Command{}, ErrApprovalDecisionAlreadyQueued
 	}
 	normalized := normalizeCommand(command)
-	tag, err := tx.Exec(ctx, `INSERT INTO commands (id, agent_id, run_id, session_id, project_id, kind, mode, payload, status, deadline_at, expires_at, idempotency_key)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,$10,$11)
-		ON CONFLICT (id) DO NOTHING`,
-		normalized.CommandID, agentID, normalized.RunID, normalized.SessionID, normalized.ProjectID, normalized.Kind, normalized.Mode, jsonRaw(normalized.Payload), nullTime(normalized.DeadlineAt), nullTime(normalized.ExpiresAt), nullString(normalized.IdempotencyKey))
-	if err != nil {
-		return protocol.Command{}, err
+	requeued := false
+	if normalized.IdempotencyKey != "" {
+		row := tx.QueryRow(ctx, `SELECT id, agent_id, COALESCE(run_id, ''), COALESCE(session_id, ''), COALESCE(project_id, ''), kind, COALESCE(mode, ''), payload, status, COALESCE(status_reason, ''), created_at, dispatched_at, acked_at, deadline_at, expires_at, retry_count, COALESCE(idempotency_key, '')
+			FROM commands
+			WHERE agent_id=$1 AND idempotency_key=$2
+			FOR UPDATE`, agentID, normalized.IdempotencyKey)
+		existing, scanErr := scanCommandRecord(row)
+		if scanErr != nil && !errors.Is(scanErr, pgx.ErrNoRows) {
+			return protocol.Command{}, scanErr
+		}
+		if scanErr == nil {
+			if !approvalDecisionCommandReusable(existing.Status) {
+				return protocol.Command{}, ErrApprovalDecisionAlreadyQueued
+			}
+			normalized.CommandID = existing.ID
+			if _, err := tx.Exec(ctx, `UPDATE commands
+				SET run_id=$3,
+					session_id=$4,
+					project_id=$5,
+					kind=$6,
+					mode=$7,
+					payload=$8,
+					status='queued',
+					status_reason='approval decision requeued',
+					deadline_at=$9,
+					expires_at=$10,
+					dispatch_claimed_by=NULL,
+					dispatch_claimed_at=NULL,
+					dispatch_claimed_until=NULL
+				WHERE agent_id=$1 AND id=$2`,
+				agentID, normalized.CommandID, normalized.RunID, normalized.SessionID, normalized.ProjectID, normalized.Kind, normalized.Mode, jsonRaw(normalized.Payload), nullTime(normalized.DeadlineAt), nullTime(normalized.ExpiresAt)); err != nil {
+				return protocol.Command{}, err
+			}
+			requeued = true
+		}
 	}
-	if tag.RowsAffected() == 0 {
-		existing, ok, err := s.CommandByID(ctx, agentID, normalized.CommandID)
+	if !requeued {
+		tag, err := tx.Exec(ctx, `INSERT INTO commands (id, agent_id, run_id, session_id, project_id, kind, mode, payload, status, deadline_at, expires_at, idempotency_key)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,$10,$11)
+			ON CONFLICT (id) DO NOTHING`,
+			normalized.CommandID, agentID, normalized.RunID, normalized.SessionID, normalized.ProjectID, normalized.Kind, normalized.Mode, jsonRaw(normalized.Payload), nullTime(normalized.DeadlineAt), nullTime(normalized.ExpiresAt), nullString(normalized.IdempotencyKey))
 		if err != nil {
 			return protocol.Command{}, err
 		}
-		if ok {
-			normalized = existing.ToProtocol()
+		if tag.RowsAffected() == 0 {
+			existing, ok, err := s.CommandByID(ctx, agentID, normalized.CommandID)
+			if err != nil {
+				return protocol.Command{}, err
+			}
+			if ok {
+				normalized = existing.ToProtocol()
+			}
 		}
+	}
+	if normalized.CommandID == "" {
+		return protocol.Command{}, errors.New("approval decision command id is empty")
 	}
 	if _, err := tx.Exec(ctx, `UPDATE approval_requests
 		SET decision=$2, decision_reason=$3, decision_command_id=$4, decision_queued_at=$5, decided_by=$6
@@ -869,15 +926,31 @@ func (s *Store) QueueApprovalDecisionCommand(ctx context.Context, agentID, appro
 		approvalID, decision.Decision, nullString(decision.Reason), normalized.CommandID, now(), nullString(decision.DecidedBy)); err != nil {
 		return protocol.Command{}, err
 	}
+	var attemptNo int
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(attempt_no), 0) + 1 FROM command_attempts WHERE agent_id=$1 AND command_id=$2`, agentID, normalized.CommandID).Scan(&attemptNo); err != nil {
+		return protocol.Command{}, err
+	}
+	attemptReason := "approval decision queued"
+	if requeued {
+		attemptReason = "approval decision requeued"
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO command_attempts (id, agent_id, command_id, attempt_no, phase, status, reason, payload, created_at)
-		VALUES ($1,$2,$3,1,'queued','queued','approval decision queued',NULL,now())
-		ON CONFLICT DO NOTHING`, protocol.NewID("cat"), agentID, normalized.CommandID); err != nil {
+		VALUES ($1,$2,$3,$4,'queued','queued',$5,NULL,now())`, protocol.NewID("cat"), agentID, normalized.CommandID, attemptNo, attemptReason); err != nil {
 		return protocol.Command{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return protocol.Command{}, err
 	}
 	return normalized, nil
+}
+
+func approvalDecisionCommandReusable(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "queued", "dispatched", "dispatch_failed", "failed", "expired", "rejected":
+		return true
+	default:
+		return false
+	}
 }
 
 func runtimeSessionID(agentID, runtime, native string) string {
