@@ -60,6 +60,20 @@ func (s *Server) handleDashApprovalDecision(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusForbidden, "forbidden", "approval does not belong to this user")
 		return
 	}
+	approval, found, err := s.store.ApprovalByID(r.Context(), approvalID)
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "approval load failed", "approval_id", approvalID, "user_id", principal.UserID, "error", err)
+		writeError(w, http.StatusInternalServerError, "approval_load_failed", "unable to load approval")
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "approval_not_found", "approval not found")
+		return
+	}
+	if approval.Status != "pending" {
+		writeError(w, http.StatusConflict, "approval_already_decided", "approval is not pending")
+		return
+	}
 	decision := protocol.ApprovalDecision{
 		ApprovalID: approvalID,
 		Decision:   req.Decision,
@@ -67,20 +81,41 @@ func (s *Server) handleDashApprovalDecision(w http.ResponseWriter, r *http.Reque
 		DecidedBy:  principal.UserID,
 		DecidedAt:  time.Now().UTC(),
 	}
-	if err := s.store.DecideApproval(r.Context(), approvalID, decision); err != nil {
-		s.log.ErrorContext(r.Context(), "approval decision failed", "approval_id", approvalID, "user_id", principal.UserID, "error", err)
-		writeError(w, http.StatusInternalServerError, "approval_decision_failed", "unable to save approval decision")
+	now := time.Now().UTC()
+	command := protocol.Command{
+		CommandID:      protocol.NewID("cmd"),
+		RunID:          approval.RunID,
+		SessionID:      approval.SessionID,
+		ProjectID:      approval.ProjectID,
+		Kind:           "command.approval_decision",
+		Payload:        protocol.Raw(decision),
+		IdempotencyKey: "approval:" + approvalID + ":" + req.Decision,
+		DeadlineAt:     now.Add(10 * time.Minute),
+		ExpiresAt:      now.Add(1 * time.Hour),
+	}
+	if err := validateCommand(command); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_approval_command", err.Error())
 		return
 	}
-	message := s.agentEnvelope(&AgentConn{AgentID: identity.AgentID, UserID: identity.UserID, DeviceID: identity.DeviceID, Secret: identity.AgentSecret}, "approval.decision", decision)
-	if message == nil {
-		writeError(w, http.StatusInternalServerError, "encode_failed", "unable to encode approval decision")
+	if err := s.validateCommandTargets(r.Context(), identity.AgentID, command); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_command_target", err.Error())
 		return
 	}
-	if !s.hub.DispatchCommand(r.Context(), identity.AgentID, identity.UserID, "", message) {
-		writeError(w, http.StatusConflict, "agent_offline", "agent is not connected")
+	if err := validateCommandCapabilities(identity, command); err != nil {
+		writeError(w, http.StatusConflict, "command_not_supported", err.Error())
 		return
 	}
-	s.hub.BroadcastDash(identity.UserID, protocol.Raw(map[string]any{"type": "approval.decided", "approval_id": approvalID, "decision": req.Decision, "agent_id": identity.AgentID}))
-	writeJSON(w, http.StatusAccepted, map[string]any{"approval_id": approvalID, "decision": req.Decision})
+	saved, err := s.store.SaveCommand(r.Context(), identity.AgentID, command)
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "approval command save failed", "approval_id", approvalID, "agent_id", identity.AgentID, "error", err)
+		writeError(w, http.StatusInternalServerError, "approval_command_failed", "unable to queue approval decision")
+		return
+	}
+	record, dispatched := s.dispatchStoredCommand(r, identity, saved)
+	status := "queued"
+	if dispatched {
+		status = "dispatched"
+	}
+	s.hub.BroadcastDash(identity.UserID, protocol.Raw(map[string]any{"type": "approval.decision.queued", "approval_id": approvalID, "decision": req.Decision, "agent_id": identity.AgentID, "command_id": saved.CommandID, "status": status}))
+	writeJSON(w, http.StatusAccepted, map[string]any{"approval_id": approvalID, "decision": req.Decision, "command": record})
 }

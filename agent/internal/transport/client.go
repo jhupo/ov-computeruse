@@ -124,7 +124,12 @@ func (c *Client) serve(ctx context.Context, conn Conn) error {
 }
 
 func (c *Client) register(ctx context.Context) error {
-	cred, _ := c.scanner.Credential()
+	cred, credErr := c.scanner.Credential()
+	features := []string{"codex.scan", "history.items", "index.runtime_sessions", "run.events", "runtime.session", "command.refresh_index"}
+	supportsSDK := credErr == nil && strings.TrimSpace(cred.Fingerprint) != ""
+	if supportsSDK {
+		features = append(features, "approval.decision", "command.new_session", "command.resume", "command.send", "command.stop")
+	}
 	register := protocol.AgentRegister{
 		AgentID:     c.identity.AgentID,
 		WorkspaceID: c.identity.WorkspaceID,
@@ -147,11 +152,11 @@ func (c *Client) register(ctx context.Context) error {
 			Source:             cred.Source,
 		},
 		Capabilities: protocol.Capabilities{
-			SupportsSDK:       true,
+			SupportsSDK:       supportsSDK,
 			SupportsHistory:   true,
 			SupportsTerminal:  false,
 			SupportsGit:       false,
-			Features:          []string{"codex.scan", "history.items", "index.runtime_sessions", "run.events", "runtime.session", "approval.decision", "command.new_session", "command.resume", "command.send", "command.stop", "command.refresh_index"},
+			Features:          features,
 			MaxConcurrentRuns: 1,
 		},
 	}
@@ -554,6 +559,11 @@ func (c *Client) readLoop(ctx context.Context, conn Conn) error {
 				_ = c.send(ctx, "ack", protocol.Ack{MessageID: env.MessageID, Status: "rejected", Message: err.Error(), At: time.Now().UTC()})
 				continue
 			}
+			if strings.TrimPrefix(command.Kind, "command.") == "approval_decision" {
+				ack := c.handleApprovalDecisionCommand(ctx, env.MessageID, command)
+				_ = c.send(ctx, "ack", ack)
+				continue
+			}
 			if strings.TrimPrefix(command.Kind, "command.") == "refresh_index" {
 				ack := protocol.Ack{MessageID: env.MessageID, CommandID: command.CommandID, Status: "ok", Message: "refresh started", At: time.Now().UTC()}
 				_ = c.send(ctx, "ack", ack)
@@ -606,6 +616,23 @@ func (c *Client) readLoop(ctx context.Context, conn Conn) error {
 			})
 		}
 	}
+}
+
+func (c *Client) handleApprovalDecisionCommand(ctx context.Context, messageID string, command protocol.Command) protocol.Ack {
+	if c.manager == nil {
+		return protocol.Ack{MessageID: messageID, CommandID: command.CommandID, RunID: command.RunID, Status: "rejected", Message: "run manager is unavailable", At: time.Now().UTC()}
+	}
+	decision, err := protocol.Decode[protocol.ApprovalDecision](command.Payload)
+	if err != nil {
+		return protocol.Ack{MessageID: messageID, CommandID: command.CommandID, RunID: command.RunID, Status: "rejected", Message: err.Error(), At: time.Now().UTC()}
+	}
+	ack := c.manager.DecideApproval(ctx, decision)
+	ack.MessageID = messageID
+	ack.CommandID = command.CommandID
+	if ack.RunID == "" {
+		ack.RunID = command.RunID
+	}
+	return ack
 }
 
 func (c *Client) send(ctx context.Context, messageType string, data any) error {

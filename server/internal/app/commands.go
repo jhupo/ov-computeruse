@@ -251,6 +251,14 @@ func validateCommand(command protocol.Command) error {
 		if strings.TrimSpace(command.RunID) == "" && strings.TrimSpace(command.SessionID) == "" {
 			return errors.New("run_id or session_id is required for stop")
 		}
+	case "approval_decision":
+		if strings.TrimSpace(command.RunID) == "" {
+			return errors.New("run_id is required for approval_decision")
+		}
+		var decision protocol.ApprovalDecision
+		if len(command.Payload) == 0 || json.Unmarshal(command.Payload, &decision) != nil || strings.TrimSpace(decision.ApprovalID) == "" {
+			return errors.New("payload.approval_id is required for approval_decision")
+		}
 	case "refresh_index":
 	default:
 		return errors.New("unsupported command kind")
@@ -275,6 +283,10 @@ func validateCommandCapabilities(identity store.AgentIdentity, command protocol.
 	case "new_session", "resume", "send":
 		if !caps.SupportsSDK {
 			return errors.New("agent does not support sdk execution")
+		}
+	case "approval_decision":
+		if !capabilityHasFeature(caps, "approval.decision") {
+			return errors.New("agent does not support approval decisions")
 		}
 	case "refresh_index":
 		if !capabilityHasFeature(caps, "codex.scan") {
@@ -329,6 +341,23 @@ func (s *Server) validateCommandTargets(ctx context.Context, agentID string, com
 				return err
 			}
 			if !exists {
+				return errors.New("session_id does not belong to this agent")
+			}
+		}
+	case "approval_decision":
+		runExists, err := s.store.RunExists(ctx, agentID, strings.TrimSpace(command.RunID))
+		if err != nil {
+			return err
+		}
+		if !runExists {
+			return errors.New("run_id does not belong to this agent")
+		}
+		if strings.TrimSpace(command.SessionID) != "" {
+			sessionExists, err := s.store.SessionExists(ctx, agentID, strings.TrimSpace(command.SessionID))
+			if err != nil {
+				return err
+			}
+			if !sessionExists {
 				return errors.New("session_id does not belong to this agent")
 			}
 		}

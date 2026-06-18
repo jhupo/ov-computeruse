@@ -637,6 +637,28 @@ func (s *Store) ListApprovals(ctx context.Context, userID string, admin bool, st
 	return out, rows.Err()
 }
 
+func (s *Store) ApprovalByID(ctx context.Context, approvalID string) (ApprovalSummary, bool, error) {
+	row := s.pool.QueryRow(ctx, `SELECT id, agent_id, COALESCE(run_id, ''), COALESCE(project_id, ''), COALESCE(session_id, ''), COALESCE(category, ''), COALESCE(action, ''), COALESCE(risk_level, ''), payload, status, requested_at, decided_at
+		FROM approval_requests
+		WHERE id=$1`, approvalID)
+	var item ApprovalSummary
+	var payload []byte
+	var decidedAt sql.NullTime
+	if err := row.Scan(&item.ID, &item.AgentID, &item.RunID, &item.ProjectID, &item.SessionID, &item.Category, &item.Action, &item.RiskLevel, &payload, &item.Status, &item.RequestedAt, &decidedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ApprovalSummary{}, false, nil
+		}
+		return ApprovalSummary{}, false, err
+	}
+	if len(payload) > 0 {
+		item.Payload = append(json.RawMessage(nil), payload...)
+	}
+	if decidedAt.Valid {
+		item.DecidedAt = decidedAt.Time
+	}
+	return item, true, nil
+}
+
 func (s *Store) ApprovalAgent(ctx context.Context, approvalID string) (AgentIdentity, error) {
 	var identity AgentIdentity
 	err := s.pool.QueryRow(ctx, `SELECT a.id, a.workspace_id, a.user_id, a.device_id, a.agent_secret, a.server_key_id

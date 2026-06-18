@@ -364,7 +364,7 @@ func (s *Store) SaveCommand(ctx context.Context, agentID string, command protoco
 	if err := s.SaveCommandAttempt(ctx, agentID, command.CommandID, "queued", "queued", "command queued", nil); err != nil {
 		return protocol.Command{}, err
 	}
-	if command.RunID == "" {
+	if !storeCommandCreatesRun(command.Kind) {
 		return command, nil
 	}
 	_, err = s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, started_at) VALUES ($1,$2,$3,$4,$5,'queued','command_queued',now()) ON CONFLICT (id) DO UPDATE SET command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id)`, command.RunID, agentID, command.CommandID, command.ProjectID, command.SessionID)
@@ -403,6 +403,13 @@ func (s *Store) MarkCommandAck(ctx context.Context, agentID string, ack protocol
 	if ack.CommandID == "" {
 		return nil
 	}
+	command, found, err := s.CommandByID(ctx, agentID, ack.CommandID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
 	status := commandStatusFromAck(ack)
 	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status=$1, status_reason=$2, acked_at=now()
 		WHERE agent_id=$3 AND id=$4
@@ -410,7 +417,19 @@ func (s *Store) MarkCommandAck(ctx context.Context, agentID string, ack protocol
 			AND status NOT IN ('done','expired','rejected','stopped')`, status, ack.Message, agentID, ack.CommandID, ack.RunID); err != nil {
 		return err
 	}
-	return s.SaveCommandAttempt(ctx, agentID, ack.CommandID, "ack", status, ack.Message, protocol.Raw(ack))
+	if err := s.SaveCommandAttempt(ctx, agentID, ack.CommandID, "ack", status, ack.Message, protocol.Raw(ack)); err != nil {
+		return err
+	}
+	if isAcceptedAckStatus(status) && strings.TrimPrefix(command.Kind, "command.") == "approval_decision" {
+		var decision protocol.ApprovalDecision
+		if err := json.Unmarshal(command.Payload, &decision); err == nil && decision.ApprovalID != "" {
+			if decision.DecidedAt.IsZero() {
+				decision.DecidedAt = time.Now().UTC()
+			}
+			return s.DecideApproval(ctx, decision.ApprovalID, decision)
+		}
+	}
+	return nil
 }
 
 func (s *Store) ExpireCommands(ctx context.Context, agentID string) error {
@@ -506,5 +525,23 @@ func commandStatusFromAck(ack protocol.Ack) string {
 			return "acked"
 		}
 		return strings.ToLower(strings.TrimSpace(ack.Status))
+	}
+}
+
+func isAcceptedAckStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "accepted", "acked", "ok":
+		return true
+	default:
+		return false
+	}
+}
+
+func storeCommandCreatesRun(kind string) bool {
+	switch strings.TrimPrefix(kind, "command.") {
+	case "new_session", "resume", "send":
+		return true
+	default:
+		return false
 	}
 }

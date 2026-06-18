@@ -71,6 +71,7 @@ type DashboardRepository interface {
 	ListRuntimeSessions(context.Context, string, string) ([]protocol.RuntimeSession, error)
 	SaveApprovalRequest(context.Context, string, protocol.ApprovalRequest) error
 	ListApprovals(context.Context, string, bool, string, int) ([]store.ApprovalSummary, error)
+	ApprovalByID(context.Context, string) (store.ApprovalSummary, bool, error)
 	ApprovalAgent(context.Context, string) (store.AgentIdentity, error)
 	DecideApproval(context.Context, string, protocol.ApprovalDecision) error
 }
