@@ -6,9 +6,12 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"ov-computeruse/server/internal/protocol"
 )
@@ -109,9 +112,9 @@ func (s *Store) projectRunEvent(ctx context.Context, agentID string, event proto
 	}
 	switch event.Kind {
 	case "assistant.message.delta":
-		return s.upsertRunMessage(ctx, agentID, event, "assistant", "streaming", false)
+		return s.appendAssistantRunMessage(ctx, agentID, event)
 	case "assistant.message.done":
-		return s.upsertRunMessage(ctx, agentID, event, "assistant", "done", true)
+		return s.finishAssistantRunMessage(ctx, agentID, event)
 	case "user.message":
 		return s.upsertRunMessage(ctx, agentID, event, "user", "done", true)
 	case "tool.call.started", "tool.call.delta", "tool.call.done", "tool.output":
@@ -134,6 +137,50 @@ func (s *Store) projectRunEvent(ctx context.Context, agentID string, event proto
 	default:
 		return s.upsertRunStep(ctx, agentID, event, event.Kind, stepTitle(event), "done", true)
 	}
+}
+
+func (s *Store) appendAssistantRunMessage(ctx context.Context, agentID string, event protocol.RunEvent) error {
+	content := payloadText(event.Payload)
+	if content == "" {
+		return nil
+	}
+	existingID, existingContent, ok, err := s.lastRunMessage(ctx, agentID, event.RunID, "assistant")
+	if err != nil {
+		return err
+	}
+	if ok {
+		_, err := s.pool.Exec(ctx, `UPDATE run_messages SET seq_end=$1, content=$2, payload=$3, status='streaming' WHERE id=$4 AND agent_id=$5`,
+			event.Seq, existingContent+content, jsonRaw(event.Payload), existingID, agentID)
+		return err
+	}
+	return s.upsertRunMessage(ctx, agentID, event, "assistant", "streaming", false)
+}
+
+func (s *Store) finishAssistantRunMessage(ctx context.Context, agentID string, event protocol.RunEvent) error {
+	content := payloadText(event.Payload)
+	existingID, _, ok, err := s.lastRunMessage(ctx, agentID, event.RunID, "assistant")
+	if err != nil {
+		return err
+	}
+	if ok {
+		_, err := s.pool.Exec(ctx, `UPDATE run_messages SET seq_end=$1, content=COALESCE(NULLIF($2, ''), content), payload=$3, status='done', finished_at=$4 WHERE id=$5 AND agent_id=$6`,
+			event.Seq, content, jsonRaw(event.Payload), eventTime(event), existingID, agentID)
+		return err
+	}
+	return s.upsertRunMessage(ctx, agentID, event, "assistant", "done", true)
+}
+
+func (s *Store) lastRunMessage(ctx context.Context, agentID, runID, role string) (string, string, bool, error) {
+	var id string
+	var content string
+	err := s.pool.QueryRow(ctx, `SELECT id, COALESCE(content, '') FROM run_messages WHERE agent_id=$1 AND run_id=$2 AND role=$3 ORDER BY seq_start DESC LIMIT 1`, agentID, runID, role).Scan(&id, &content)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", "", false, nil
+		}
+		return "", "", false, err
+	}
+	return id, content, true, nil
 }
 
 func (s *Store) upsertRunMessage(ctx context.Context, agentID string, event protocol.RunEvent, role, status string, finished bool) error {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	openai "github.com/openai/openai-go"
@@ -29,7 +30,8 @@ type Config struct {
 }
 
 type Adapter struct {
-	cfg Config
+	cfg    Config
+	active activeRuns
 }
 
 type promptPayload struct {
@@ -42,6 +44,12 @@ type streamResult struct {
 	ResumeMode string
 	Approval   *protocol.ApprovalRequest
 	Failed     error
+}
+
+type activeRuns struct {
+	mu     sync.Mutex
+	byRun  map[string]context.CancelFunc
+	bySess map[string]string
 }
 
 func New(cfg Config) *Adapter {
@@ -60,7 +68,46 @@ func (a *Adapter) Send(ctx context.Context, command protocol.Command, sink runti
 	return a.send(ctx, command, sink, command.SessionID != "")
 }
 
+func (a *Adapter) trackRun(command protocol.Command, cancel context.CancelFunc) {
+	if a == nil || cancel == nil || strings.TrimSpace(command.RunID) == "" {
+		return
+	}
+	a.active.mu.Lock()
+	defer a.active.mu.Unlock()
+	if a.active.byRun == nil {
+		a.active.byRun = make(map[string]context.CancelFunc)
+	}
+	if a.active.bySess == nil {
+		a.active.bySess = make(map[string]string)
+	}
+	a.active.byRun[command.RunID] = cancel
+	if strings.TrimSpace(command.SessionID) != "" {
+		a.active.bySess[command.SessionID] = command.RunID
+	}
+}
+
+func (a *Adapter) untrackRun(command protocol.Command) {
+	if a == nil || strings.TrimSpace(command.RunID) == "" {
+		return
+	}
+	a.active.mu.Lock()
+	defer a.active.mu.Unlock()
+	delete(a.active.byRun, command.RunID)
+	if strings.TrimSpace(command.SessionID) != "" {
+		if a.active.bySess[command.SessionID] == command.RunID {
+			delete(a.active.bySess, command.SessionID)
+		}
+	}
+}
+
 func (a *Adapter) send(ctx context.Context, command protocol.Command, sink runtime.Sink, includeHistory bool) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	a.trackRun(command, cancel)
+	defer func() {
+		cancel()
+		a.untrackRun(command)
+	}()
+
 	prompt, err := commandPrompt(command)
 	if err != nil {
 		return err
@@ -80,7 +127,7 @@ func (a *Adapter) send(ctx context.Context, command protocol.Command, sink runti
 	client := openai.NewClient(opts...)
 	input := prompt
 	if includeHistory {
-		withHistory, err := a.promptWithHistory(ctx, command, prompt)
+		withHistory, err := a.promptWithHistory(runCtx, command, prompt)
 		if err != nil {
 			return err
 		}
@@ -90,7 +137,7 @@ func (a *Adapter) send(ctx context.Context, command protocol.Command, sink runti
 	previousResponseID := ""
 	if includeHistory {
 		resumeMode = "history_context"
-		if responseID, ok := a.previousResponseID(ctx, command); ok {
+		if responseID, ok := a.previousResponseID(runCtx, command); ok {
 			previousResponseID = responseID
 			input = prompt
 			resumeMode = "previous_response_id"
@@ -106,7 +153,7 @@ func (a *Adapter) send(ctx context.Context, command protocol.Command, sink runti
 		if previousResponseID != "" {
 			params.PreviousResponseID = openai.String(previousResponseID)
 		}
-		result, err := a.streamOnce(ctx, client, params, command, sink, resumeMode)
+		result, err := a.streamOnce(runCtx, client, params, command, sink, resumeMode)
 		if err != nil {
 			return err
 		}
@@ -120,7 +167,7 @@ func (a *Adapter) send(ctx context.Context, command protocol.Command, sink runti
 		if !ok {
 			return errors.New("runtime sink does not support approvals")
 		}
-		decision, err := waiter.AwaitApproval(ctx, *result.Approval)
+		decision, err := waiter.AwaitApproval(runCtx, *result.Approval)
 		if err != nil {
 			return err
 		}
@@ -423,7 +470,29 @@ func (a *Adapter) promptWithHistory(ctx context.Context, command protocol.Comman
 }
 
 func (a *Adapter) Stop(ctx context.Context, command protocol.Command) error {
+	cancel, ok := a.cancelFunc(command)
+	if !ok {
+		return nil
+	}
+	cancel()
 	return nil
+}
+
+func (a *Adapter) cancelFunc(command protocol.Command) (context.CancelFunc, bool) {
+	if a == nil {
+		return nil, false
+	}
+	a.active.mu.Lock()
+	defer a.active.mu.Unlock()
+	runID := strings.TrimSpace(command.RunID)
+	if runID == "" && strings.TrimSpace(command.SessionID) != "" {
+		runID = a.active.bySess[command.SessionID]
+	}
+	if runID == "" {
+		return nil, false
+	}
+	cancel := a.active.byRun[runID]
+	return cancel, cancel != nil
 }
 
 func commandPrompt(command protocol.Command) (string, error) {

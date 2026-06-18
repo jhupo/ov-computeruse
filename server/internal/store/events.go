@@ -404,7 +404,10 @@ func (s *Store) MarkCommandAck(ctx context.Context, agentID string, ack protocol
 		return nil
 	}
 	status := commandStatusFromAck(ack)
-	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status=$1, status_reason=$2, acked_at=now() WHERE agent_id=$3 AND id=$4`, status, ack.Message, agentID, ack.CommandID); err != nil {
+	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status=$1, status_reason=$2, acked_at=now()
+		WHERE agent_id=$3 AND id=$4
+			AND (run_id IS NULL OR run_id='' OR $5='' OR run_id=$5)
+			AND status NOT IN ('done','expired','rejected','stopped')`, status, ack.Message, agentID, ack.CommandID, ack.RunID); err != nil {
 		return err
 	}
 	return s.SaveCommandAttempt(ctx, agentID, ack.CommandID, "ack", status, ack.Message, protocol.Raw(ack))

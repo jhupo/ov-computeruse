@@ -923,37 +923,68 @@ func historyText(kind string, payload map[string]any, max int) string {
 	switch kind {
 	case "message":
 		return truncateText(messageTextFromAny(payload["content"]), max)
+	case "reasoning":
+		return truncateText(firstNonEmpty(messageTextFromAny(payload["summary"]), messageTextFromAny(payload["content"]), stringFromAny(payload["text"])), max)
 	case "tool.call":
-		return truncateText(firstNonEmpty(stringFromAny(payload["name"]), stringFromAny(payload["tool_name"]), stringFromAny(payload["command"])), max)
+		return truncateText(firstNonEmpty(
+			stringFromAny(payload["name"]),
+			stringFromAny(payload["tool_name"]),
+			stringFromAny(payload["command"]),
+			stringFromAny(payload["arguments"]),
+			compactJSONText(payload["arguments"]),
+			compactJSONText(payload["action"]),
+		), max)
 	case "tool.output":
-		return truncateText(firstNonEmpty(stringFromAny(payload["output"]), stringFromAny(payload["result"]), stringFromAny(payload["error"])), max)
+		return truncateText(firstNonEmpty(
+			messageTextFromAny(payload["output"]),
+			messageTextFromAny(payload["result"]),
+			stringFromAny(payload["error"]),
+			compactJSONText(payload["output"]),
+			compactJSONText(payload["result"]),
+			compactJSONText(payload["error"]),
+		), max)
 	case "approval.requested":
-		return truncateText(firstNonEmpty(stringFromAny(payload["name"]), stringFromAny(payload["action"])), max)
+		return truncateText(firstNonEmpty(stringFromAny(payload["name"]), stringFromAny(payload["action"]), compactJSONText(payload["arguments"])), max)
 	default:
-		return truncateText(firstNonEmpty(stringFromAny(payload["text"]), stringFromAny(payload["summary"]), stringFromAny(payload["status"])), max)
+		return truncateText(firstNonEmpty(stringFromAny(payload["text"]), messageTextFromAny(payload["summary"]), stringFromAny(payload["status"]), compactJSONText(payload)), max)
 	}
 }
 
 func messageTextFromAny(value any) string {
-	items, ok := value.([]any)
-	if !ok {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
 		return stringFromAny(value)
+	case []string:
+		return strings.TrimSpace(strings.Join(typed, "\n"))
+	case []any:
+		parts := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text := messageTextFromAny(item); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.TrimSpace(strings.Join(parts, "\n"))
+	case map[string]any:
+		for _, key := range []string{"text", "content", "summary", "output", "result", "error"} {
+			if text := messageTextFromAny(typed[key]); text != "" {
+				return text
+			}
+		}
 	}
-	parts := make([]string, 0, len(items))
-	for _, item := range items {
-		object, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		if text := stringFromAny(object["text"]); text != "" {
-			parts = append(parts, text)
-			continue
-		}
-		if text := stringFromAny(object["content"]); text != "" {
-			parts = append(parts, text)
-		}
+	return ""
+}
+
+func compactJSONText(value any) string {
+	if value == nil {
+		return ""
 	}
-	return strings.TrimSpace(strings.Join(parts, "\n"))
+	raw, err := json.Marshal(value)
+	if err != nil || string(raw) == "null" {
+		return ""
+	}
+	return string(raw)
 }
 
 func stringFromAny(value any) string {

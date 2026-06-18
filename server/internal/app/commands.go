@@ -41,6 +41,10 @@ func (s *Server) handleDashCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "command_not_supported", err.Error())
 		return
 	}
+	if err := s.validateExecutionCredential(r.Context(), identity, req.Command); err != nil {
+		writeError(w, http.StatusConflict, "credential_not_authorized", err.Error())
+		return
+	}
 	if err := s.validateCommandTargets(r.Context(), req.AgentID, req.Command); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_command_target", err.Error())
 		return
@@ -164,6 +168,10 @@ func (s *Server) handleDashCommandRetry(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusConflict, "command_not_supported", err.Error())
 		return
 	}
+	if err := s.validateExecutionCredential(r.Context(), identity, record.ToProtocol()); err != nil {
+		writeError(w, http.StatusConflict, "credential_not_authorized", err.Error())
+		return
+	}
 	deadlineAt := time.Now().UTC().Add(10 * time.Minute)
 	expiresAt := deadlineAt.Add(50 * time.Minute)
 	if err := s.store.PrepareCommandRetry(r.Context(), agentID, commandID, deadlineAt, expiresAt); err != nil {
@@ -196,6 +204,11 @@ func (s *Server) dispatchCommand(ctx context.Context, identity store.AgentIdenti
 		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
 		return record, false
 	}
+	if err := s.validateExecutionCredential(ctx, identity, command); err != nil {
+		_ = s.store.MarkCommandFailed(ctx, identity.AgentID, command.CommandID, err.Error())
+		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
+		return record, false
+	}
 	message := s.agentEnvelope(&AgentConn{AgentID: identity.AgentID, UserID: identity.UserID, DeviceID: identity.DeviceID, Secret: identity.AgentSecret}, "command", command)
 	if message == nil {
 		_ = s.store.MarkCommandFailed(ctx, identity.AgentID, command.CommandID, "unable to encode command")
@@ -209,6 +222,15 @@ func (s *Server) dispatchCommand(ctx context.Context, identity store.AgentIdenti
 	}
 	record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
 	return record, true
+}
+
+func (s *Server) validateExecutionCredential(ctx context.Context, identity store.AgentIdentity, command protocol.Command) error {
+	switch strings.TrimPrefix(command.Kind, "command.") {
+	case "new_session", "resume", "send":
+		return s.store.AgentCredentialValid(ctx, identity)
+	default:
+		return nil
+	}
 }
 
 func validateCommand(command protocol.Command) error {

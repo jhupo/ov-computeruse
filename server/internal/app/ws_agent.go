@@ -114,6 +114,9 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 	case "agent.register":
 		register, err := protocol.Decode[protocol.AgentRegister](env.Data)
 		if err == nil {
+			register.AgentID = agent.AgentID
+			register.DeviceID = agent.DeviceID
+			register.WorkspaceID = ""
 			_ = s.store.SaveAgentRegister(ctx, register)
 		} else {
 			_ = s.store.TouchAgent(ctx, agent.AgentID)

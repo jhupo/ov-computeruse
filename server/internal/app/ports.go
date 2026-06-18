@@ -14,6 +14,7 @@ type AgentRepository interface {
 	AgentByID(context.Context, string) (store.AgentIdentity, error)
 	SaveAgentRegister(context.Context, protocol.AgentRegister) error
 	TouchAgent(context.Context, string) error
+	AgentCredentialValid(context.Context, store.AgentIdentity) error
 }
 
 type BindRepository interface {

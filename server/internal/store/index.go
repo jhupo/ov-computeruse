@@ -84,7 +84,7 @@ func (s *Store) MarkIndexDeleted(ctx context.Context, agentID string, deleted pr
 }
 
 func (s *Store) SaveHistoryChunk(ctx context.Context, agentID string, chunk protocol.HistoryChunk) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO history_chunks (agent_id, session_id, chunk_index, sha256, size_bytes, received_at) VALUES ($1,$2,$3,$4,$5,now()) ON CONFLICT DO NOTHING`, agentID, chunk.SessionID, chunk.Index, chunk.SHA256, len(chunk.Data))
+	_, err := s.pool.Exec(ctx, `INSERT INTO history_chunks (agent_id, session_id, chunk_index, sha256, size_bytes, data, received_at) VALUES ($1,$2,$3,$4,$5,$6,now()) ON CONFLICT DO NOTHING`, agentID, chunk.SessionID, chunk.Index, chunk.SHA256, len(chunk.Data), chunk.Data)
 	return err
 }
 

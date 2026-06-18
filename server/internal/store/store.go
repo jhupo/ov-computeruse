@@ -21,6 +21,7 @@ type AgentIdentity struct {
 	ServerURL    string          `json:"server_url"`
 	ServerKeyID  string          `json:"server_key_id"`
 	Capabilities json.RawMessage `json:"capabilities,omitempty"`
+	Credential   json.RawMessage `json:"credential,omitempty"`
 }
 
 type UserIdentity struct {
