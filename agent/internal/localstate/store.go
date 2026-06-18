@@ -491,13 +491,24 @@ func (s *Store) SaveRunEvent(ctx context.Context, event protocol.RunEvent) error
 	if event.At.IsZero() {
 		event.At = time.Now().UTC()
 	}
-	if _, err := s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 		INSERT OR IGNORE INTO run_events(event_id, run_id, command_id, project_id, session_id, seq, kind, payload, event_at, updated_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, event.EventID, event.RunID, event.CommandID, event.ProjectID, event.SessionID, event.Seq, event.Kind, jsonRaw(event.Payload), event.At.UTC().Format(time.RFC3339Nano), now()); err != nil {
+	`, event.EventID, event.RunID, event.CommandID, event.ProjectID, event.SessionID, event.Seq, event.Kind, jsonRaw(event.Payload), event.At.UTC().Format(time.RFC3339Nano), now())
+	if err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		var existingEventID string
+		err = s.db.QueryRowContext(ctx, `SELECT event_id FROM run_events WHERE event_id = ?`, event.EventID).Scan(&existingEventID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	_, err = s.db.ExecContext(ctx, `
 		UPDATE run_events
 		SET run_id = ?, command_id = ?, project_id = ?, session_id = ?, seq = ?, kind = ?, payload = ?, event_at = ?, updated_at = ?
 		WHERE event_id = ?

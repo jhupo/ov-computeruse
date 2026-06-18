@@ -816,10 +816,19 @@ func (c *Client) readLoop(ctx context.Context, conn Conn) error {
 			if err != nil {
 				continue
 			}
-			if ack.Status == "" || ack.Status == "ok" || ack.Status == "acked" {
+			if runEventAckTerminal(ack.Status) {
 				_ = c.state.MarkRunEventAcked(ctx, ack)
 			}
 		}
+	}
+}
+
+func runEventAckTerminal(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "", "ok", "acked", "ignored", "duplicate", "conflict":
+		return true
+	default:
+		return false
 	}
 }
 

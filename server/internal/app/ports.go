@@ -55,7 +55,7 @@ type IndexRepository interface {
 }
 
 type EventRepository interface {
-	SaveRunEvent(context.Context, string, string, protocol.RunEvent) error
+	SaveRunEvent(context.Context, string, string, protocol.RunEvent) (store.RunEventSaveResult, error)
 	RebuildRunProjections(context.Context, string, string) (store.ProjectionRebuildResult, error)
 	SaveHeartbeat(context.Context, string, string, protocol.Heartbeat) error
 	SaveCommand(context.Context, string, protocol.Command) (protocol.Command, error)

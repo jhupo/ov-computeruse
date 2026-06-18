@@ -117,3 +117,67 @@ func TestResolveCommandContextAcceptsRuntimeSession(t *testing.T) {
 		t.Fatalf("runtime session not fully preserved: %+v", runtimeSessions[0])
 	}
 }
+
+func TestSaveRunEventDoesNotProjectConflictingSeq(t *testing.T) {
+	state, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer state.Close()
+	ctx := context.Background()
+	first := protocol.RunEvent{
+		EventID: "evt_1",
+		RunID:   "run_1",
+		Seq:     1,
+		Kind:    "assistant.message.delta",
+		Payload: protocol.Raw(map[string]string{"role": "assistant", "text": "first"}),
+		At:      time.Now().UTC(),
+	}
+	if err := state.SaveRunEvent(ctx, first); err != nil {
+		t.Fatalf("save first event: %v", err)
+	}
+	conflict := protocol.RunEvent{
+		EventID: "evt_2",
+		RunID:   "run_1",
+		Seq:     1,
+		Kind:    "assistant.message.delta",
+		Payload: protocol.Raw(map[string]string{"role": "assistant", "text": "conflict"}),
+		At:      time.Now().UTC(),
+	}
+	if err := state.SaveRunEvent(ctx, conflict); err != nil {
+		t.Fatalf("save conflicting event: %v", err)
+	}
+	rows, err := state.db.QueryContext(ctx, `SELECT event_id, payload FROM run_events WHERE run_id = ? AND seq = ?`, "run_1", 1)
+	if err != nil {
+		t.Fatalf("query run event: %v", err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+		var eventID string
+		var payload []byte
+		if err := rows.Scan(&eventID, &payload); err != nil {
+			t.Fatalf("scan run event: %v", err)
+		}
+		if eventID != "evt_1" {
+			t.Fatalf("event id = %q, want evt_1", eventID)
+		}
+		if string(payload) != string(first.Payload) {
+			t.Fatalf("payload = %s, want %s", payload, first.Payload)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("run event count = %d, want 1", count)
+	}
+	var content string
+	if err := state.db.QueryRowContext(ctx, `SELECT COALESCE(content, '') FROM run_messages WHERE run_id = ? AND seq_start = ?`, "run_1", 1).Scan(&content); err != nil {
+		t.Fatalf("query projected message: %v", err)
+	}
+	if content != "first" {
+		t.Fatalf("projected content = %q, want first", content)
+	}
+}

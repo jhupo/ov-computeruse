@@ -215,14 +215,17 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 				}
 				return
 			}
-			if err := s.store.SaveRunEvent(ctx, agent.AgentID, agent.DeviceID, event); err == nil {
+			result, err := s.store.SaveRunEvent(ctx, agent.AgentID, agent.DeviceID, event)
+			if err == nil {
 				if event.RunID != "" && event.Seq > 0 {
-					s.sendAgent(agent, "run.event.ack", protocol.Ack{RunID: event.RunID, Status: "acked", AckSeq: event.Seq, At: time.Now().UTC()})
+					s.sendAgent(agent, "run.event.ack", protocol.Ack{RunID: event.RunID, Status: result.AckStatus(), AckSeq: event.Seq, At: time.Now().UTC()})
 				}
-				if runtimeSession, ok := runtimeSessionFromRunEvent(event); ok {
-					s.hub.BroadcastDash(agent.UserID, dashEvent("runtime.session.updated", agent, runtimeSession))
+				if result.ShouldBroadcast() {
+					if runtimeSession, ok := runtimeSessionFromRunEvent(event); ok {
+						s.hub.BroadcastDash(agent.UserID, dashEvent("runtime.session.updated", agent, runtimeSession))
+					}
+					s.hub.BroadcastDash(agent.UserID, dashEvent("run.event", agent, event))
 				}
-				s.hub.BroadcastDash(agent.UserID, dashEvent("run.event", agent, event))
 			}
 		}
 	case "ack":

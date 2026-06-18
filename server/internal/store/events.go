@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -11,9 +12,48 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"ov-computeruse/server/internal/protocol"
 )
+
+type RunEventSaveStatus string
+
+const (
+	RunEventInserted         RunEventSaveStatus = "inserted"
+	RunEventDuplicate        RunEventSaveStatus = "duplicate"
+	RunEventSequenceConflict RunEventSaveStatus = "seq_conflict"
+	RunEventIDConflict       RunEventSaveStatus = "event_id_conflict"
+	RunEventIgnored          RunEventSaveStatus = "ignored"
+)
+
+type RunEventSaveResult struct {
+	Status RunEventSaveStatus `json:"status"`
+}
+
+type runEventConflict struct {
+	Existing RunEventRecord
+	Observed protocol.RunEvent
+	DeviceID string
+	Message  string
+}
+
+func (r RunEventSaveResult) ShouldBroadcast() bool {
+	return r.Status == RunEventInserted
+}
+
+func (r RunEventSaveResult) AckStatus() string {
+	switch r.Status {
+	case RunEventDuplicate:
+		return "duplicate"
+	case RunEventSequenceConflict, RunEventIDConflict:
+		return "conflict"
+	case RunEventIgnored:
+		return "ignored"
+	default:
+		return "acked"
+	}
+}
 
 type ProjectionRebuildResult struct {
 	AgentID      string    `json:"agent_id"`
@@ -24,9 +64,9 @@ type ProjectionRebuildResult struct {
 	RebuiltAt    time.Time `json:"rebuilt_at"`
 }
 
-func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, event protocol.RunEvent) error {
+func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, event protocol.RunEvent) (RunEventSaveResult, error) {
 	if skipRunEvent(event) {
-		return nil
+		return RunEventSaveResult{Status: RunEventIgnored}, nil
 	}
 	if event.EventID == "" {
 		event.EventID = protocol.NewID("evt")
@@ -35,36 +75,181 @@ func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, even
 		event.At = time.Now().UTC()
 	}
 	if err := s.validateRunEventOwnership(ctx, agentID, event); err != nil {
-		return err
+		return RunEventSaveResult{}, err
 	}
-	tag, err := s.pool.Exec(ctx, `INSERT INTO run_events (id, agent_id, device_id, run_id, command_id, session_id, project_id, seq, kind, payload, event_at)
+	_, err := s.pool.Exec(ctx, `INSERT INTO run_events (id, agent_id, device_id, run_id, command_id, session_id, project_id, seq, kind, payload, event_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-		ON CONFLICT DO NOTHING`, event.EventID, agentID, deviceID, event.RunID, event.CommandID, event.SessionID, event.ProjectID, event.Seq, event.Kind, jsonRaw(event.Payload), event.At)
+		`, event.EventID, agentID, deviceID, event.RunID, event.CommandID, event.SessionID, event.ProjectID, event.Seq, event.Kind, jsonRaw(event.Payload), event.At)
 	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return nil
+		if isUniqueViolation(err) {
+			return s.resolveRunEventInsertConflict(ctx, agentID, deviceID, event)
+		}
+		return RunEventSaveResult{}, err
 	}
 	if err := s.recordRunEventConsistency(ctx, agentID, event); err != nil {
-		return err
+		return RunEventSaveResult{}, err
 	}
 	if err := s.advanceRunEventCursor(ctx, agentID, event); err != nil {
-		return err
+		return RunEventSaveResult{}, err
 	}
 	if err := s.projectApproval(ctx, agentID, event); err != nil {
-		return err
+		return RunEventSaveResult{}, err
 	}
 	if err := s.projectRuntimeSession(ctx, agentID, event); err != nil {
-		return err
+		return RunEventSaveResult{}, err
 	}
 	if err := s.projectRunEvent(ctx, agentID, event); err != nil {
-		return err
+		return RunEventSaveResult{}, err
 	}
 	if err := s.projectRunState(ctx, agentID, event); err != nil {
-		return err
+		return RunEventSaveResult{}, err
 	}
-	return s.projectCommandStateFromRunEvent(ctx, agentID, event, true)
+	if err := s.projectCommandStateFromRunEvent(ctx, agentID, event, true); err != nil {
+		return RunEventSaveResult{}, err
+	}
+	return RunEventSaveResult{Status: RunEventInserted}, nil
+}
+
+func (s *Store) resolveRunEventInsertConflict(ctx context.Context, agentID, deviceID string, event protocol.RunEvent) (RunEventSaveResult, error) {
+	if existing, found, err := s.runEventByID(ctx, event.EventID); err != nil {
+		return RunEventSaveResult{}, err
+	} else if found {
+		if existing.AgentID == agentID && runEventsEquivalent(existing, deviceID, event) {
+			return RunEventSaveResult{Status: RunEventDuplicate}, nil
+		}
+		if err := s.saveRunEventConflict(ctx, agentID, event.RunID, event.Seq, "event_id_conflict", runEventConflict{
+			Existing: existing,
+			Observed: event,
+			DeviceID: deviceID,
+			Message:  "incoming event id matches an existing event with different content or owner",
+		}); err != nil {
+			return RunEventSaveResult{}, err
+		}
+		return RunEventSaveResult{Status: RunEventIDConflict}, nil
+	}
+	if strings.TrimSpace(event.RunID) == "" || event.Seq == 0 {
+		return RunEventSaveResult{Status: RunEventIDConflict}, nil
+	}
+	existing, found, err := s.runEventByRunSeq(ctx, agentID, event.RunID, event.Seq)
+	if err != nil {
+		return RunEventSaveResult{}, err
+	}
+	if !found {
+		return RunEventSaveResult{Status: RunEventIDConflict}, nil
+	}
+	if runEventsEquivalent(existing, deviceID, event) {
+		return RunEventSaveResult{Status: RunEventDuplicate}, nil
+	}
+	if err := s.saveRunEventConflict(ctx, agentID, event.RunID, event.Seq, "seq_conflict", runEventConflict{
+		Existing: existing,
+		Observed: event,
+		DeviceID: deviceID,
+		Message:  "incoming run event has the same run sequence as a different stored event",
+	}); err != nil {
+		return RunEventSaveResult{}, err
+	}
+	return RunEventSaveResult{Status: RunEventSequenceConflict}, nil
+}
+
+func (s *Store) runEventByID(ctx context.Context, eventID string) (RunEventRecord, bool, error) {
+	if strings.TrimSpace(eventID) == "" {
+		return RunEventRecord{}, false, nil
+	}
+	row := s.pool.QueryRow(ctx, `SELECT id, agent_id, device_id, COALESCE(run_id, ''), COALESCE(command_id, ''), COALESCE(session_id, ''), COALESCE(project_id, ''), seq, kind, payload, event_at, received_at
+		FROM run_events
+		WHERE id=$1`, eventID)
+	event, err := scanRunEvent(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RunEventRecord{}, false, nil
+	}
+	if err != nil {
+		return RunEventRecord{}, false, err
+	}
+	return event, true, nil
+}
+
+func (s *Store) runEventByRunSeq(ctx context.Context, agentID, runID string, seq uint64) (RunEventRecord, bool, error) {
+	row := s.pool.QueryRow(ctx, `SELECT id, agent_id, device_id, COALESCE(run_id, ''), COALESCE(command_id, ''), COALESCE(session_id, ''), COALESCE(project_id, ''), seq, kind, payload, event_at, received_at
+		FROM run_events
+		WHERE agent_id=$1 AND run_id=$2 AND seq=$3`, agentID, runID, seq)
+	event, err := scanRunEvent(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RunEventRecord{}, false, nil
+	}
+	if err != nil {
+		return RunEventRecord{}, false, err
+	}
+	return event, true, nil
+}
+
+type runEventScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanRunEvent(scanner runEventScanner) (RunEventRecord, error) {
+	var event RunEventRecord
+	var payload []byte
+	if err := scanner.Scan(&event.ID, &event.AgentID, &event.DeviceID, &event.RunID, &event.CommandID, &event.SessionID, &event.ProjectID, &event.Seq, &event.Kind, &payload, &event.EventAt, &event.ReceivedAt); err != nil {
+		return RunEventRecord{}, err
+	}
+	if len(payload) > 0 {
+		event.Payload = append(json.RawMessage(nil), payload...)
+	}
+	return event, nil
+}
+
+func runEventsEquivalent(existing RunEventRecord, deviceID string, incoming protocol.RunEvent) bool {
+	return existing.DeviceID == deviceID &&
+		existing.RunID == incoming.RunID &&
+		existing.CommandID == incoming.CommandID &&
+		existing.SessionID == incoming.SessionID &&
+		existing.ProjectID == incoming.ProjectID &&
+		existing.Seq == incoming.Seq &&
+		existing.Kind == incoming.Kind &&
+		jsonEquivalent(existing.Payload, incoming.Payload)
+}
+
+func jsonEquivalent(a, b json.RawMessage) bool {
+	if len(a) == 0 || bytes.Equal(a, []byte("null")) {
+		a = nil
+	}
+	if len(b) == 0 || bytes.Equal(b, []byte("null")) {
+		b = nil
+	}
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	var av any
+	var bv any
+	if json.Unmarshal(a, &av) != nil || json.Unmarshal(b, &bv) != nil {
+		return bytes.Equal(bytes.TrimSpace(a), bytes.TrimSpace(b))
+	}
+	ac, aErr := json.Marshal(av)
+	bc, bErr := json.Marshal(bv)
+	if aErr != nil || bErr != nil {
+		return false
+	}
+	return bytes.Equal(ac, bc)
+}
+
+func payloadSHA256(payload json.RawMessage) string {
+	if len(payload) == 0 || bytes.Equal(payload, []byte("null")) {
+		return ""
+	}
+	var value any
+	if json.Unmarshal(payload, &value) == nil {
+		if canonical, err := json.Marshal(value); err == nil {
+			sum := sha256.Sum256(canonical)
+			return hex.EncodeToString(sum[:])
+		}
+	}
+	sum := sha256.Sum256(bytes.TrimSpace(payload))
+	return hex.EncodeToString(sum[:])
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 func (s *Store) validateRunEventOwnership(ctx context.Context, agentID string, event protocol.RunEvent) error {
@@ -271,6 +456,40 @@ func (s *Store) saveRunEventGap(ctx context.Context, agentID, runID string, expe
 	_, err := s.pool.Exec(ctx, `INSERT INTO run_event_gaps (id, agent_id, run_id, expected_seq, observed_seq, kind, status, detected_at)
 		VALUES ($1,$2,$3,$4,$5,$6,'open',now())
 		ON CONFLICT (id) DO NOTHING`, id, agentID, runID, expected, observed, kind)
+	return err
+}
+
+func (s *Store) saveRunEventConflict(ctx context.Context, agentID, runID string, seq uint64, kind string, conflict runEventConflict) error {
+	if strings.TrimSpace(runID) == "" || seq == 0 {
+		return nil
+	}
+	id := runEventGapID(agentID, runID, seq, seq, kind)
+	details := protocol.Raw(map[string]any{
+		"message":          conflict.Message,
+		"existing_device":  conflict.Existing.DeviceID,
+		"observed_device":  conflict.DeviceID,
+		"existing_command": conflict.Existing.CommandID,
+		"observed_command": conflict.Observed.CommandID,
+		"existing_session": conflict.Existing.SessionID,
+		"observed_session": conflict.Observed.SessionID,
+		"existing_project": conflict.Existing.ProjectID,
+		"observed_project": conflict.Observed.ProjectID,
+	})
+	_, err := s.pool.Exec(ctx, `INSERT INTO run_event_gaps (id, agent_id, run_id, expected_seq, observed_seq, kind, status, existing_event_id, observed_event_id, existing_kind, observed_kind, existing_payload_sha256, observed_payload_sha256, details, detected_at)
+		VALUES ($1,$2,$3,$4,$5,$6,'open',$7,$8,$9,$10,$11,$12,$13,now())
+		ON CONFLICT (id) DO UPDATE SET
+			status='open',
+			existing_event_id=COALESCE(run_event_gaps.existing_event_id, EXCLUDED.existing_event_id),
+			observed_event_id=EXCLUDED.observed_event_id,
+			existing_kind=COALESCE(run_event_gaps.existing_kind, EXCLUDED.existing_kind),
+			observed_kind=EXCLUDED.observed_kind,
+			existing_payload_sha256=COALESCE(run_event_gaps.existing_payload_sha256, EXCLUDED.existing_payload_sha256),
+			observed_payload_sha256=EXCLUDED.observed_payload_sha256,
+			details=EXCLUDED.details,
+			resolved_at=NULL`,
+		id, agentID, runID, seq, seq, kind,
+		conflict.Existing.ID, conflict.Observed.EventID, conflict.Existing.Kind, conflict.Observed.Kind,
+		payloadSHA256(conflict.Existing.Payload), payloadSHA256(conflict.Observed.Payload), jsonRaw(details))
 	return err
 }
 
