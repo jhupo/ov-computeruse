@@ -87,6 +87,7 @@ type DashboardRepository interface {
 	ListRunEvents(context.Context, string, string, uint64, int) ([]store.RunEventRecord, error)
 	ListRunEventsThrough(context.Context, string, string, uint64, uint64, int) ([]store.RunEventRecord, error)
 	ListHistoryItems(context.Context, string, string, int, int) ([]store.HistoryItem, error)
+	ListConversationItems(context.Context, string, string, int) ([]store.ConversationItem, error)
 	ListRunMessages(context.Context, string, string) ([]store.RunMessage, error)
 	ListRunSteps(context.Context, string, string) ([]store.RunStep, error)
 	ListToolCalls(context.Context, string, string) ([]store.ToolCall, error)

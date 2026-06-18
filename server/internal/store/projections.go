@@ -31,6 +31,22 @@ type HistoryItem struct {
 	ReceivedAt    time.Time       `json:"received_at,omitempty"`
 }
 
+type ConversationItem struct {
+	ID         string          `json:"id"`
+	AgentID    string          `json:"agent_id"`
+	SessionID  string          `json:"session_id"`
+	RunID      string          `json:"run_id,omitempty"`
+	Index      int             `json:"index,omitempty"`
+	SeqStart   uint64          `json:"seq_start,omitempty"`
+	Role       string          `json:"role,omitempty"`
+	Kind       string          `json:"kind"`
+	Text       string          `json:"text,omitempty"`
+	Payload    json.RawMessage `json:"payload,omitempty"`
+	Source     string          `json:"source"`
+	At         time.Time       `json:"at,omitempty"`
+	ReceivedAt time.Time       `json:"received_at,omitempty"`
+}
+
 type RunMessage struct {
 	ID         string          `json:"id"`
 	AgentID    string          `json:"agent_id"`
@@ -256,6 +272,55 @@ func (s *Store) ListHistoryItems(ctx context.Context, agentID, sessionID string,
 		}
 		if len(payload) > 0 {
 			item.Payload = append(json.RawMessage(nil), payload...)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) ListConversationItems(ctx context.Context, agentID, sessionID string, limit int) ([]ConversationItem, error) {
+	if limit <= 0 || limit > 2000 {
+		limit = 500
+	}
+	rows, err := s.pool.Query(ctx, `WITH history AS (
+			SELECT id, agent_id, session_id, '' AS run_id, item_index, 0::BIGINT AS seq_start, COALESCE(role, '') AS role, kind, COALESCE(text, '') AS text, payload, COALESCE(source, 'codex.history') AS source, item_at AS at, received_at
+			FROM history_items
+			WHERE agent_id=$1 AND session_id=$2 AND lower(trim(kind)) NOT IN ('usage','response.usage','token_usage','billing','cost')
+		), remote AS (
+			SELECT rm.id, rm.agent_id, r.session_id, rm.run_id, 0 AS item_index, rm.seq_start, rm.role, 'message' AS kind, COALESCE(rm.content, '') AS text, rm.payload, 'remote.run' AS source, rm.started_at AS at, rm.started_at AS received_at
+			FROM run_messages rm
+			JOIN runs r ON r.agent_id=rm.agent_id AND r.id=rm.run_id
+			WHERE rm.agent_id=$1 AND r.session_id=$2
+		)
+		SELECT id, agent_id, session_id, run_id, item_index, seq_start, role, kind, text, payload, source, at, received_at
+		FROM (
+			SELECT * FROM history
+			UNION ALL
+			SELECT * FROM remote
+		) items
+		ORDER BY COALESCE(at, received_at) ASC, source ASC, item_index ASC, seq_start ASC
+		LIMIT $3`, agentID, sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ConversationItem{}
+	for rows.Next() {
+		var item ConversationItem
+		var payload []byte
+		var at sql.NullTime
+		var receivedAt sql.NullTime
+		if err := rows.Scan(&item.ID, &item.AgentID, &item.SessionID, &item.RunID, &item.Index, &item.SeqStart, &item.Role, &item.Kind, &item.Text, &payload, &item.Source, &at, &receivedAt); err != nil {
+			return nil, err
+		}
+		if len(payload) > 0 {
+			item.Payload = append(json.RawMessage(nil), payload...)
+		}
+		if at.Valid {
+			item.At = at.Time
+		}
+		if receivedAt.Valid {
+			item.ReceivedAt = receivedAt.Time
 		}
 		items = append(items, item)
 	}

@@ -195,6 +195,25 @@ func (s *Server) handleDashHistoryItems(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"agent_id": agentID, "session_id": sessionID, "items": items})
 }
 
+func (s *Server) handleDashConversationItems(w http.ResponseWriter, r *http.Request) {
+	principal, agentID, ok := s.authorizeAgentQuery(w, r)
+	if !ok {
+		return
+	}
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, "missing_session_id", "session_id is required")
+		return
+	}
+	items, err := s.store.ListConversationItems(r.Context(), agentID, sessionID, queryInt(r, "limit", 500))
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "conversation item list failed", "agent_id", agentID, "session_id", sessionID, "user_id", principal.UserID, "error", err)
+		writeError(w, http.StatusInternalServerError, "conversation_item_list_failed", "unable to load conversation items")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agent_id": agentID, "session_id": sessionID, "items": items})
+}
+
 func (s *Server) authorizeAgentQuery(w http.ResponseWriter, r *http.Request) (DashPrincipal, string, bool) {
 	principal, ok := s.requireDash(r)
 	if !ok {

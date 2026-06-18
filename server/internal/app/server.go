@@ -69,6 +69,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/dash/runs/{run_id}/rebuild", s.handleDashRunRebuild)
 	mux.HandleFunc("GET /api/dash/runtime-sessions", s.handleDashRuntimeSessions)
 	mux.HandleFunc("GET /api/dash/history/items", s.handleDashHistoryItems)
+	mux.HandleFunc("GET /api/dash/conversation/items", s.handleDashConversationItems)
 	mux.HandleFunc("GET /api/dash/approvals", s.handleDashApprovals)
 	mux.HandleFunc("POST /api/dash/approvals/{approval_id}/decision", s.handleDashApprovalDecision)
 	mux.HandleFunc("GET /ws/agent", s.handleAgentWS)

@@ -2,6 +2,7 @@ package runs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"sync"
@@ -347,6 +348,16 @@ func (m *Manager) execute(ctx context.Context, command protocol.Command) {
 		SessionID: command.SessionID,
 		Kind:      "run.started",
 	})
+	if prompt := commandPrompt(command); prompt != "" {
+		_ = m.Emit(ctx, protocol.RunEvent{
+			RunID:     command.RunID,
+			CommandID: command.CommandID,
+			ProjectID: command.ProjectID,
+			SessionID: command.SessionID,
+			Kind:      "user.message",
+			Payload:   protocol.Raw(map[string]string{"text": prompt}),
+		})
+	}
 
 	var err error
 	switch command.Kind {
@@ -385,6 +396,23 @@ func (m *Manager) execute(ctx context.Context, command protocol.Command) {
 	m.mu.Lock()
 	delete(m.active, command.RunID)
 	m.mu.Unlock()
+}
+
+func commandPrompt(command protocol.Command) string {
+	if len(command.Payload) == 0 {
+		return ""
+	}
+	var payload struct {
+		Prompt string `json:"prompt"`
+		Text   string `json:"text"`
+	}
+	if err := json.Unmarshal(command.Payload, &payload); err != nil {
+		return ""
+	}
+	if payload.Prompt != "" {
+		return payload.Prompt
+	}
+	return payload.Text
 }
 
 func commandContext(command protocol.Command) (context.Context, context.CancelFunc, error) {
