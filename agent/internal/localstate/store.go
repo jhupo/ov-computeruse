@@ -874,7 +874,7 @@ func (s *Store) projectRunView(ctx context.Context, event protocol.RunEvent) err
 	case "tool.call.started", "tool.call.delta", "tool.call.done", "tool.output", "approval.requested":
 		return s.upsertToolCall(ctx, event)
 	case "terminal.output":
-		if payloadString(event.Payload, "tool_call_id", "call_id", "id") != "" {
+		if shouldProjectTerminalOutputAsToolCall(event.Payload) {
 			return s.upsertToolCall(ctx, event)
 		}
 		return nil
@@ -982,6 +982,13 @@ func (s *Store) upsertToolCall(ctx context.Context, event protocol.RunEvent) err
 			updated_at = excluded.updated_at
 	`, id, event.RunID, event.Seq, event.Seq, toolCallID, toolName, jsonRaw(arguments), jsonRaw(output), status, approvalID, timeString(event.At), nullableTimeString(event.At, finished), now())
 	return err
+}
+
+func shouldProjectTerminalOutputAsToolCall(raw json.RawMessage) bool {
+	if payloadString(raw, "tool_call_id", "call_id", "id") == "" {
+		return false
+	}
+	return payloadObject(raw, "output", "result", "stdout", "stderr") != nil
 }
 
 func payloadText(raw json.RawMessage) string {

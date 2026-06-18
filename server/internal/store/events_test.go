@@ -65,6 +65,23 @@ func TestTerminalOutputPayloadCanProjectAsToolOutput(t *testing.T) {
 	}
 }
 
+func TestTerminalOutputDeltaDoesNotOverwriteToolOutput(t *testing.T) {
+	delta := protocol.Raw(map[string]string{
+		"tool_call_id": "tool_1",
+		"text":         "delta only",
+	})
+	if shouldProjectTerminalOutputAsToolCall(delta) {
+		t.Fatal("streaming terminal delta should not overwrite projected tool output")
+	}
+	full := protocol.Raw(map[string]string{
+		"tool_call_id": "tool_1",
+		"stderr":       "complete stderr",
+	})
+	if !shouldProjectTerminalOutputAsToolCall(full) {
+		t.Fatal("complete terminal output should project onto tool output")
+	}
+}
+
 func TestCommandMatchesIdempotencyAcceptsEquivalentCommand(t *testing.T) {
 	existing := CommandRecord{
 		RunID:     "run_1",

@@ -147,7 +147,7 @@ func (s *Store) projectRunEvent(ctx context.Context, agentID string, event proto
 		}
 		return s.upsertToolCall(ctx, agentID, event)
 	case "terminal.output":
-		if payloadString(event.Payload, "tool_call_id", "call_id", "id") != "" {
+		if shouldProjectTerminalOutputAsToolCall(event.Payload) {
 			if err := s.upsertToolCall(ctx, agentID, event); err != nil {
 				return err
 			}
@@ -255,6 +255,13 @@ func (s *Store) upsertToolCall(ctx context.Context, agentID string, event protoc
 		ON CONFLICT (agent_id, run_id, tool_call_id) DO UPDATE SET seq_end=EXCLUDED.seq_end, tool_name=COALESCE(NULLIF(EXCLUDED.tool_name, ''), tool_calls.tool_name), arguments=COALESCE(EXCLUDED.arguments, tool_calls.arguments), output=COALESCE(EXCLUDED.output, tool_calls.output), status=EXCLUDED.status, approval_request_id=COALESCE(NULLIF(EXCLUDED.approval_request_id, ''), tool_calls.approval_request_id), finished_at=COALESCE(EXCLUDED.finished_at, tool_calls.finished_at)`,
 		id, agentID, event.RunID, event.Seq, event.Seq, toolCallID, toolName, jsonRaw(arguments), jsonRaw(output), status, approvalID, eventTime(event), finishedAt)
 	return err
+}
+
+func shouldProjectTerminalOutputAsToolCall(raw json.RawMessage) bool {
+	if payloadString(raw, "tool_call_id", "call_id", "id") == "" {
+		return false
+	}
+	return payloadObject(raw, "output", "result", "stdout", "stderr") != nil
 }
 
 func (s *Store) ListHistoryItems(ctx context.Context, agentID, sessionID string, afterIndex, limit int) ([]HistoryItem, error) {
