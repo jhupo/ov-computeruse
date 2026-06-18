@@ -27,10 +27,17 @@ type AgentConn struct {
 }
 
 type DashConn struct {
-	ID        string
-	Principal DashPrincipal
-	Conn      *websocket.Conn
-	Send      chan []byte
+	ID            string
+	Principal     DashPrincipal
+	Conn          *websocket.Conn
+	Send          chan []byte
+	mu            sync.RWMutex
+	Subscriptions map[string]DashSubscription
+}
+
+type DashSubscription struct {
+	AgentID string
+	RunID   string
 }
 
 type AgentCommandEnvelope struct {
@@ -173,11 +180,48 @@ func (h *Hub) broadcastDashLocal(userID string, data []byte) {
 		if !dash.Principal.Admin && dash.Principal.UserID != userID {
 			continue
 		}
+		if !dashAcceptsBroadcast(dash, data) {
+			continue
+		}
 		select {
 		case dash.Send <- data:
 		default:
 		}
 	}
+}
+
+func dashAcceptsBroadcast(dash *DashConn, data []byte) bool {
+	if dash == nil {
+		return true
+	}
+	dash.mu.RLock()
+	subscriptions := make([]DashSubscription, 0, len(dash.Subscriptions))
+	for _, subscription := range dash.Subscriptions {
+		subscriptions = append(subscriptions, subscription)
+	}
+	dash.mu.RUnlock()
+	if len(subscriptions) == 0 {
+		return true
+	}
+	var event struct {
+		Type    string `json:"type"`
+		AgentID string `json:"agent_id"`
+		Payload struct {
+			RunID string `json:"run_id"`
+		} `json:"payload"`
+	}
+	if json.Unmarshal(data, &event) != nil {
+		return true
+	}
+	if event.Type != "run.event" {
+		return true
+	}
+	for _, subscription := range subscriptions {
+		if subscription.AgentID == event.AgentID && subscription.RunID == event.Payload.RunID {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Hub) dispatchCommandLocal(agentID string, data []byte) bool {

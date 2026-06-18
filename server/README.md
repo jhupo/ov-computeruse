@@ -47,6 +47,23 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 
 Agent websocket envelopes encrypt `data` with AES-256-GCM derived from the per-agent secret and then sign the encrypted envelope with HMAC-SHA256. Bind requests still use the server public key because they happen before an agent secret exists.
 
+## Dash websocket
+
+Dash connects to `GET /ws/dash` with a dash bearer token. The socket is a control channel plus filtered event stream.
+
+Client messages:
+
+- `{"type":"run.subscribe","agent_id":"agt_...","run_id":"run_...","after_seq":0,"limit":300}`: authorize the agent, subscribe this socket to the run, and receive `run.snapshot`.
+- `{"type":"run.unsubscribe","agent_id":"agt_...","run_id":"run_..."}`: remove the run subscription.
+- `{"type":"ping"}`: receive `pong`.
+
+Server messages:
+
+- `run.snapshot`: projected timeline/messages/tool calls plus raw run events after `after_seq`.
+- `run.event`: live agent run event, delivered to subscribed sockets for that run.
+- `agent.*`, `index.*`, `history.*`, `command.*`, `approval.*`: account-level updates.
+- `error`: stable `{code,message}` payload for invalid socket messages.
+
 ## Tag release
 
 Push a tag like `server-v1.0.0` to build and push:
