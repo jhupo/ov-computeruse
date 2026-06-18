@@ -328,8 +328,8 @@ func validateCommandCapabilities(identity store.AgentIdentity, command protocol.
 	}
 	switch kind {
 	case "new_session", "resume", "send":
-		if !caps.SupportsSDK {
-			return errors.New("agent does not support sdk execution")
+		if !caps.SupportsRuntime {
+			return errors.New("agent does not support runtime execution")
 		}
 	case "approval_decision":
 		if !capabilityHasFeature(caps, "approval.decision") {

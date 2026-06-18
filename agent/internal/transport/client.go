@@ -233,8 +233,8 @@ func (c *Client) flushRunEventOutbox(ctx context.Context) error {
 func (c *Client) register(ctx context.Context) error {
 	cred, credErr := c.scanner.Credential()
 	features := []string{"codex.scan", "history.items", "index.runtime_sessions", "run.events", "runtime.session", "command.refresh_index"}
-	supportsSDK := credErr == nil && strings.TrimSpace(cred.Fingerprint) != ""
-	if supportsSDK {
+	supportsRuntime := credErr == nil && strings.TrimSpace(cred.Fingerprint) != ""
+	if supportsRuntime {
 		features = append(features, "approval.decision", "command.new_session", "command.resume", "command.send", "command.stop")
 	}
 	if c.manager != nil && strings.TrimSpace(c.manager.RuntimeName()) != "" {
@@ -265,7 +265,7 @@ func (c *Client) register(ctx context.Context) error {
 			Source:             cred.Source,
 		},
 		Capabilities: protocol.Capabilities{
-			SupportsSDK:       supportsSDK,
+			SupportsRuntime:   supportsRuntime,
 			SupportsHistory:   true,
 			SupportsTerminal:  c.cfg.AllowLocalShell,
 			SupportsGit:       false,

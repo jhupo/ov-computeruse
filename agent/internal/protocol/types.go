@@ -75,7 +75,7 @@ type Credential struct {
 }
 
 type Capabilities struct {
-	SupportsSDK       bool     `json:"supports_sdk"`
+	SupportsRuntime   bool     `json:"supports_runtime"`
 	SupportsHistory   bool     `json:"supports_history"`
 	SupportsTerminal  bool     `json:"supports_terminal"`
 	SupportsGit       bool     `json:"supports_git"`
