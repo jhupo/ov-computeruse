@@ -24,7 +24,7 @@ import (
 type Client struct {
 	identity      securestore.Identity
 	manager       *runs.Manager
-	scanner       codexscan.Scanner
+	scanner       scanner
 	device        device.Info
 	cfg           config.Config
 	state         *localstate.Store
@@ -44,7 +44,18 @@ type Client struct {
 	pendingHistoryAck map[string]chan protocol.HistoryItemsAck
 }
 
+type scanner interface {
+	Credential() (codexscan.Credential, error)
+	DiscoverRoots() []codexscan.Root
+	Scan(context.Context) (codexscan.Result, error)
+	ForEachHistoryChunk(context.Context, codexscan.Session, int, func(codexscan.HistoryChunk) error) error
+}
+
 func NewClient(identity securestore.Identity, manager *runs.Manager, scanner codexscan.Scanner, deviceInfo device.Info, cfg config.Config, state *localstate.Store, noScan bool, uploadHistory bool, logger *slog.Logger) *Client {
+	return newClient(identity, manager, scanner, deviceInfo, cfg, state, noScan, uploadHistory, logger)
+}
+
+func newClient(identity securestore.Identity, manager *runs.Manager, scanner scanner, deviceInfo device.Info, cfg config.Config, state *localstate.Store, noScan bool, uploadHistory bool, logger *slog.Logger) *Client {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -134,9 +145,6 @@ func (c *Client) serve(ctx context.Context, conn Conn) error {
 	if err := c.register(ctx); err != nil {
 		return err
 	}
-	if err := c.uploadIndex(ctx); err != nil {
-		return err
-	}
 
 	connCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -144,6 +152,20 @@ func (c *Client) serve(ctx context.Context, conn Conn) error {
 	go func() { errCh <- c.heartbeatLoop(connCtx) }()
 	go func() { errCh <- c.readLoop(connCtx, conn) }()
 	go c.runEventOutboxLoop(connCtx)
+
+	indexCh := make(chan error, 1)
+	go func() { indexCh <- c.uploadIndex(connCtx) }()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-errCh:
+		return err
+	case err := <-indexCh:
+		if err != nil {
+			return err
+		}
+	}
 
 	select {
 	case <-ctx.Done():
