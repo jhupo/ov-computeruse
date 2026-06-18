@@ -441,10 +441,12 @@ func (a *Adapter) emitRuntimeSession(ctx context.Context, sink runtime.Sink, com
 		_ = a.cfg.State.SaveRuntimeSession(ctx, localstate.RuntimeSession{
 			SessionID:       runtimeSession.SessionID,
 			Runtime:         runtimeSession.Runtime,
+			ProjectID:       runtimeSession.ProjectID,
 			NativeSessionID: runtimeSession.NativeSessionID,
 			LastResponseID:  runtimeSession.LastResponseID,
 			ResumeMode:      runtimeSession.ResumeMode,
 			LastRunID:       runtimeSession.LastRunID,
+			UpdatedAt:       time.Now().UTC(),
 		})
 	}
 	return emit(ctx, sink, command, kind, runtimeSession)

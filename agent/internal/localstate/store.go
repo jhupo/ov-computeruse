@@ -188,16 +188,36 @@ func (s *Store) ResolveCommandContext(ctx context.Context, command protocol.Comm
 		session, err := s.Session(ctx, command.SessionID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return resolved, errors.New("codex session is not indexed locally")
+				runtimeSession, runtimeErr := s.RuntimeSession(ctx, command.SessionID, "openai.responses")
+				if runtimeErr != nil {
+					if errors.Is(runtimeErr, sql.ErrNoRows) {
+						return resolved, errors.New("codex session is not indexed locally")
+					}
+					return resolved, runtimeErr
+				}
+				resolved.Session = SessionRecord{
+					ID:        runtimeSession.SessionID,
+					IDSource:  "runtime_session",
+					ProjectID: runtimeSession.ProjectID,
+					Title:     firstNonEmpty(runtimeSession.NativeSessionID, runtimeSession.LastResponseID, runtimeSession.SessionID),
+				}
+				if strings.TrimSpace(command.ProjectID) != "" && strings.TrimSpace(runtimeSession.ProjectID) != "" && command.ProjectID != runtimeSession.ProjectID {
+					return resolved, errors.New("command project does not match runtime session project")
+				}
+				if strings.TrimSpace(command.ProjectID) == "" {
+					command.ProjectID = runtimeSession.ProjectID
+				}
+			} else {
+				return resolved, err
 			}
-			return resolved, err
-		}
-		resolved.Session = session
-		if strings.TrimSpace(command.ProjectID) != "" && strings.TrimSpace(session.ProjectID) != "" && command.ProjectID != session.ProjectID {
-			return resolved, errors.New("command project does not match indexed session project")
-		}
-		if strings.TrimSpace(command.ProjectID) == "" {
-			command.ProjectID = session.ProjectID
+		} else {
+			resolved.Session = session
+			if strings.TrimSpace(command.ProjectID) != "" && strings.TrimSpace(session.ProjectID) != "" && command.ProjectID != session.ProjectID {
+				return resolved, errors.New("command project does not match indexed session project")
+			}
+			if strings.TrimSpace(command.ProjectID) == "" {
+				command.ProjectID = session.ProjectID
+			}
 		}
 	}
 	if strings.TrimSpace(command.ProjectID) != "" {
@@ -328,16 +348,21 @@ func (s *Store) SaveRuntimeSession(ctx context.Context, session RuntimeSession) 
 	if s == nil {
 		return nil
 	}
+	updatedAt := session.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO runtime_sessions(session_id, runtime, native_session_id, last_response_id, resume_mode, last_run_id, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO runtime_sessions(session_id, runtime, project_id, native_session_id, last_response_id, resume_mode, last_run_id, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(session_id, runtime) DO UPDATE SET
+			project_id = COALESCE(NULLIF(excluded.project_id, ''), runtime_sessions.project_id),
 			native_session_id = COALESCE(NULLIF(excluded.native_session_id, ''), runtime_sessions.native_session_id),
 			last_response_id = COALESCE(NULLIF(excluded.last_response_id, ''), runtime_sessions.last_response_id),
 			resume_mode = COALESCE(NULLIF(excluded.resume_mode, ''), runtime_sessions.resume_mode),
 			last_run_id = COALESCE(NULLIF(excluded.last_run_id, ''), runtime_sessions.last_run_id),
 			updated_at = excluded.updated_at
-	`, session.SessionID, session.Runtime, session.NativeSessionID, session.LastResponseID, session.ResumeMode, session.LastRunID, now())
+	`, session.SessionID, session.Runtime, session.ProjectID, session.NativeSessionID, session.LastResponseID, session.ResumeMode, session.LastRunID, updatedAt.UTC().Format(time.RFC3339Nano))
 	return err
 }
 
@@ -346,12 +371,44 @@ func (s *Store) RuntimeSession(ctx context.Context, sessionID, runtime string) (
 		return RuntimeSession{}, sql.ErrNoRows
 	}
 	var session RuntimeSession
+	var updatedAt string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT session_id, runtime, native_session_id, last_response_id, resume_mode, last_run_id
+		SELECT session_id, runtime, COALESCE(project_id, ''), COALESCE(native_session_id, ''), COALESCE(last_response_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''), updated_at
 		FROM runtime_sessions
 		WHERE session_id = ? AND runtime = ?
-	`, sessionID, runtime).Scan(&session.SessionID, &session.Runtime, &session.NativeSessionID, &session.LastResponseID, &session.ResumeMode, &session.LastRunID)
+	`, sessionID, runtime).Scan(&session.SessionID, &session.Runtime, &session.ProjectID, &session.NativeSessionID, &session.LastResponseID, &session.ResumeMode, &session.LastRunID, &updatedAt)
+	if parsed, parseErr := time.Parse(time.RFC3339Nano, updatedAt); parseErr == nil {
+		session.UpdatedAt = parsed.UTC()
+	}
 	return session, err
+}
+
+func (s *Store) RuntimeSessions(ctx context.Context) ([]RuntimeSession, error) {
+	if s == nil {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT session_id, runtime, COALESCE(project_id, ''), COALESCE(native_session_id, ''), COALESCE(last_response_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''), updated_at
+		FROM runtime_sessions
+		ORDER BY updated_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	sessions := []RuntimeSession{}
+	for rows.Next() {
+		var session RuntimeSession
+		var updatedAt string
+		if err := rows.Scan(&session.SessionID, &session.Runtime, &session.ProjectID, &session.NativeSessionID, &session.LastResponseID, &session.ResumeMode, &session.LastRunID, &updatedAt); err != nil {
+			return nil, err
+		}
+		if parsed, parseErr := time.Parse(time.RFC3339Nano, updatedAt); parseErr == nil {
+			session.UpdatedAt = parsed.UTC()
+		}
+		sessions = append(sessions, session)
+	}
+	return sessions, rows.Err()
 }
 
 func (s *Store) SaveCommandAck(ctx context.Context, ack protocol.Ack) error {
@@ -877,10 +934,12 @@ type SyncCursor struct {
 type RuntimeSession struct {
 	SessionID       string
 	Runtime         string
+	ProjectID       string
 	NativeSessionID string
 	LastResponseID  string
 	ResumeMode      string
 	LastRunID       string
+	UpdatedAt       time.Time
 }
 
 type CommandAck struct {
@@ -976,6 +1035,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS runtime_sessions (
 			session_id TEXT NOT NULL,
 			runtime TEXT NOT NULL,
+			project_id TEXT,
 			native_session_id TEXT,
 			last_response_id TEXT,
 			resume_mode TEXT,
@@ -983,6 +1043,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at TEXT NOT NULL,
 			PRIMARY KEY(session_id, runtime)
 		)`,
+		`ALTER TABLE runtime_sessions ADD COLUMN project_id TEXT`,
 		`CREATE TABLE IF NOT EXISTS command_acks (
 			command_id TEXT PRIMARY KEY,
 			run_id TEXT,
@@ -1158,15 +1219,20 @@ func upsertRuntimeSessions(ctx context.Context, tx txLike, sessions []codexscan.
 		if session.SessionID == "" || session.Runtime == "" {
 			continue
 		}
+		updatedAt := session.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = time.Now().UTC()
+		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO runtime_sessions(session_id, runtime, native_session_id, last_response_id, resume_mode, last_run_id, updated_at)
-			VALUES(?, ?, ?, ?, ?, '', ?)
+			INSERT INTO runtime_sessions(session_id, runtime, project_id, native_session_id, last_response_id, resume_mode, last_run_id, updated_at)
+			VALUES(?, ?, ?, ?, ?, ?, '', ?)
 			ON CONFLICT(session_id, runtime) DO UPDATE SET
+				project_id = COALESCE(NULLIF(excluded.project_id, ''), runtime_sessions.project_id),
 				native_session_id = COALESCE(NULLIF(excluded.native_session_id, ''), runtime_sessions.native_session_id),
 				last_response_id = COALESCE(NULLIF(excluded.last_response_id, ''), runtime_sessions.last_response_id),
 				resume_mode = COALESCE(NULLIF(excluded.resume_mode, ''), runtime_sessions.resume_mode),
 				updated_at = excluded.updated_at
-		`, session.SessionID, session.Runtime, session.NativeSessionID, session.LastResponseID, session.ResumeMode, now()); err != nil {
+		`, session.SessionID, session.Runtime, session.ProjectID, session.NativeSessionID, session.LastResponseID, session.ResumeMode, updatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
 	}
@@ -1307,6 +1373,15 @@ func nullableTimeString(value time.Time, valid bool) sql.NullString {
 func projectionID(parts ...string) string {
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return "prj_" + hex.EncodeToString(sum[:])[:32]
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func now() string {

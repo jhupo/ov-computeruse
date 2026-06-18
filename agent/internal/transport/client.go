@@ -328,6 +328,25 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 			UpdatedAt:       session.UpdatedAt,
 		})
 	}
+	if c.state != nil {
+		localRuntimeSessions, err := c.state.RuntimeSessions(ctx)
+		if err != nil {
+			return err
+		}
+		for _, session := range localRuntimeSessions {
+			runtimeSessions = append(runtimeSessions, protocol.RuntimeSession{
+				Runtime:         session.Runtime,
+				ProjectID:       session.ProjectID,
+				SessionID:       session.SessionID,
+				NativeSessionID: session.NativeSessionID,
+				LastResponseID:  session.LastResponseID,
+				ResumeMode:      session.ResumeMode,
+				LastRunID:       session.LastRunID,
+				UpdatedAt:       session.UpdatedAt,
+			})
+		}
+	}
+	runtimeSessions = uniqueRuntimeSessions(runtimeSessions)
 	if len(runtimeSessions) > 0 {
 		if err := c.send(ctx, "index.runtime_sessions", protocol.RuntimeSessionIndex{RuntimeSessions: runtimeSessions}); err != nil {
 			return err
@@ -403,6 +422,25 @@ func protocolDeletedRefs(items []localstate.DeletedRef) []protocol.DeletedRef {
 	out := make([]protocol.DeletedRef, 0, len(items))
 	for _, item := range items {
 		out = append(out, protocol.DeletedRef{ID: item.ID, DeletedAt: item.DeletedAt})
+	}
+	return out
+}
+
+func uniqueRuntimeSessions(sessions []protocol.RuntimeSession) []protocol.RuntimeSession {
+	seen := map[string]protocol.RuntimeSession{}
+	for _, session := range sessions {
+		if strings.TrimSpace(session.Runtime) == "" || strings.TrimSpace(session.SessionID) == "" {
+			continue
+		}
+		key := session.Runtime + "\x00" + session.SessionID
+		if existing, ok := seen[key]; ok && !session.UpdatedAt.After(existing.UpdatedAt) {
+			continue
+		}
+		seen[key] = session
+	}
+	out := make([]protocol.RuntimeSession, 0, len(seen))
+	for _, session := range seen {
+		out = append(out, session)
 	}
 	return out
 }
