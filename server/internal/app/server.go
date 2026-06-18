@@ -50,6 +50,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/admin/users/{user_id}/keys", s.handleAdminUserKeyUpsert)
 	mux.HandleFunc("POST /api/admin/users/{user_id}/keys/{key_id}/disable", s.handleAdminUserKeyDisable)
 	mux.HandleFunc("POST /api/admin/users/{user_id}/keys/{key_id}/enable", s.handleAdminUserKeyEnable)
+	mux.HandleFunc("GET /api/admin/audit-logs", s.handleAdminAuditLogs)
 	mux.HandleFunc("GET /api/dash/agents", s.handleDashAgents)
 	mux.HandleFunc("POST /api/dash/agents/{agent_id}/disable", s.handleDashAgentDisable)
 	mux.HandleFunc("POST /api/dash/agents/{agent_id}/enable", s.handleDashAgentEnable)

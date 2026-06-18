@@ -35,6 +35,7 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 - `POST /api/admin/users/{user_id}/keys`: admin-only create/update Codex key fingerprint record. Body includes `base_url`, `key_fingerprint`, optional `id`, `name`, `provider`, `model`.
 - `POST /api/admin/users/{user_id}/keys/{key_id}/disable`: admin-only disable one Codex key fingerprint.
 - `POST /api/admin/users/{user_id}/keys/{key_id}/enable`: admin-only enable one Codex key fingerprint.
+- `GET /api/admin/audit-logs`: admin-only audit log query. Supports `user_id`, `agent_id`, `action`, `since`, `until`, and `limit`.
 - `GET /api/dash/agents`: list the current user's agents and device heartbeat snapshots.
 - `POST /api/dash/agents/{agent_id}/disable`: disable one agent or its device. JSON body accepts `scope` as `agent` or `device` and optional `reason`.
 - `POST /api/dash/agents/{agent_id}/enable`: enable one agent or its device. JSON body accepts `scope` as `agent` or `device`.

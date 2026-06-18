@@ -103,6 +103,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_commands_agent_status ON commands(agent_id, status, created_at)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_commands_agent_idempotency ON commands(agent_id, idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key <> ''`,
 		`CREATE INDEX IF NOT EXISTS idx_command_attempts_command ON command_attempts(agent_id, command_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_logs_user_action ON audit_logs(user_id, action, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_logs_agent ON audit_logs(agent_id, created_at DESC)`,
 	}
 	for _, stmt := range indexes {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {

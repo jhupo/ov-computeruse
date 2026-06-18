@@ -35,6 +35,7 @@ type UserAdminRepository interface {
 	UserKeyByID(context.Context, string) (store.UserKeyRecord, bool, error)
 	UpsertUserKey(context.Context, store.UserKeyUpsert) (store.UserKeyRecord, error)
 	SetUserKeyAccess(context.Context, string, store.AccessChange) (store.UserKeyRecord, error)
+	ListAuditLogs(context.Context, store.AuditLogFilter) ([]store.AuditLogRecord, error)
 }
 
 type IndexRepository interface {

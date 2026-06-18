@@ -46,7 +46,7 @@ Postgres 是事实来源：
 - `run_events`: agent 上报的模型输出、工具调用、审批、终端输出、状态变化等稳定事件。
 - `run_steps` / `run_messages` / `tool_calls`: 从 run events 投影出来的 dash 时间线。
 - `heartbeats`: agent 运行状态快照。
-- `approval_requests` / `audit_logs`: 审批和审计扩展点。
+- `approval_requests` / `audit_logs`: 审批和管理审计事实。audit logs 记录绑定拒绝、绑定成功、用户/key 管理、agent/device 访问状态变化等控制面操作，供 admin 查询和排障；实时 Codex 输出仍走 run events。
 
 server 不做 token usage 投影、用量账本或扣费；本地 agent 实际调用的中转站负责这部分计费。server 只在绑定和命令下发前确认用户与 key 仍被允许使用。
 
