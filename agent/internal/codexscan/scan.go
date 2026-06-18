@@ -632,6 +632,7 @@ func runtimeSessionFromFile(session Session) RuntimeSession {
 	updatedAt := session.UpdatedAt
 	for scanner.Scan() {
 		var row struct {
+			ID        string          `json:"id"`
 			Timestamp time.Time       `json:"timestamp"`
 			Type      string          `json:"type"`
 			Payload   json.RawMessage `json:"payload"`
@@ -651,6 +652,12 @@ func runtimeSessionFromFile(session Session) RuntimeSession {
 			}
 		}
 		if responseID := responseIDFromPayload(row.Payload); responseID != "" {
+			lastResponseID = responseID
+		} else if len(row.Payload) == 0 {
+			if responseID := responseIDFromPayload(scanner.Bytes()); responseID != "" {
+				lastResponseID = responseID
+			}
+		} else if responseID := responseIDCandidate(row.ID); responseID != "" {
 			lastResponseID = responseID
 		}
 	}
@@ -672,22 +679,53 @@ func responseIDFromPayload(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
-	var value map[string]any
+	var value any
 	if json.Unmarshal(raw, &value) != nil {
 		return ""
 	}
-	for _, key := range []string{"response_id", "last_response_id"} {
-		if id := stringFromAny(value[key]); strings.HasPrefix(id, "resp_") {
+	return responseIDFromAny(value)
+}
+
+func responseIDFromAny(value any) string {
+	switch typed := value.(type) {
+	case string:
+		if nested := strings.TrimSpace(typed); strings.HasPrefix(nested, "{") || strings.HasPrefix(nested, "[") {
+			var nestedValue any
+			if json.Unmarshal([]byte(nested), &nestedValue) == nil {
+				if id := responseIDFromAny(nestedValue); id != "" {
+					return id
+				}
+			}
+		}
+		return responseIDCandidate(typed)
+	case []any:
+		for i := len(typed) - 1; i >= 0; i-- {
+			if id := responseIDFromAny(typed[i]); id != "" {
+				return id
+			}
+		}
+	case map[string]any:
+		for _, key := range []string{"response_id", "responseId", "last_response_id", "lastResponseId"} {
+			if id := responseIDFromAny(typed[key]); id != "" {
+				return id
+			}
+		}
+		for _, key := range []string{"response", "current_response", "currentResponse", "last_response", "lastResponse", "result", "event", "message", "item", "payload", "data", "raw"} {
+			if id := responseIDFromAny(typed[key]); id != "" {
+				return id
+			}
+		}
+		if id := responseIDFromAny(typed["id"]); id != "" {
 			return id
 		}
 	}
-	if response, ok := value["response"].(map[string]any); ok {
-		if id := stringFromAny(response["id"]); strings.HasPrefix(id, "resp_") {
-			return id
-		}
-	}
-	if id := stringFromAny(value["id"]); strings.HasPrefix(id, "resp_") {
-		return id
+	return ""
+}
+
+func responseIDCandidate(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "resp_") {
+		return value
 	}
 	return ""
 }
