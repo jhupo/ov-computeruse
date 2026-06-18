@@ -50,6 +50,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/dash/runs", s.handleDashRuns)
 	mux.HandleFunc("GET /api/dash/runs/events", s.handleDashRunEvents)
 	mux.HandleFunc("GET /api/dash/runs/timeline", s.handleDashRunTimeline)
+	mux.HandleFunc("POST /api/dash/runs/{run_id}/rebuild", s.handleDashRunRebuild)
 	mux.HandleFunc("GET /api/dash/runtime-sessions", s.handleDashRuntimeSessions)
 	mux.HandleFunc("GET /api/dash/history/items", s.handleDashHistoryItems)
 	mux.HandleFunc("GET /api/dash/approvals", s.handleDashApprovals)

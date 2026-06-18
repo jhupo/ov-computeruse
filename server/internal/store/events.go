@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"strings"
@@ -10,6 +11,15 @@ import (
 
 	"ov-computeruse/server/internal/protocol"
 )
+
+type ProjectionRebuildResult struct {
+	AgentID      string    `json:"agent_id"`
+	RunID        string    `json:"run_id"`
+	EventCount   int       `json:"event_count"`
+	LastEventSeq uint64    `json:"last_event_seq"`
+	LastEventAt  time.Time `json:"last_event_at,omitempty"`
+	RebuiltAt    time.Time `json:"rebuilt_at"`
+}
 
 func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, event protocol.RunEvent) error {
 	if event.EventID == "" {
@@ -41,6 +51,101 @@ func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, even
 		return err
 	}
 	return s.projectRunState(ctx, agentID, event)
+}
+
+func (s *Store) RebuildRunProjections(ctx context.Context, agentID, runID string) (ProjectionRebuildResult, error) {
+	result := ProjectionRebuildResult{AgentID: agentID, RunID: runID, RebuiltAt: time.Now().UTC()}
+	rows, err := s.pool.Query(ctx, `SELECT id, COALESCE(command_id, ''), COALESCE(session_id, ''), COALESCE(project_id, ''), seq, kind, payload, event_at
+		FROM run_events
+		WHERE agent_id=$1 AND run_id=$2
+		ORDER BY seq ASC, received_at ASC`, agentID, runID)
+	if err != nil {
+		return result, err
+	}
+	defer rows.Close()
+
+	events := []protocol.RunEvent{}
+	for rows.Next() {
+		var event protocol.RunEvent
+		var payload []byte
+		if err := rows.Scan(&event.EventID, &event.CommandID, &event.SessionID, &event.ProjectID, &event.Seq, &event.Kind, &payload, &event.At); err != nil {
+			return result, err
+		}
+		event.RunID = runID
+		if len(payload) > 0 {
+			event.Payload = append(json.RawMessage(nil), payload...)
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return result, err
+	}
+	if len(events) == 0 {
+		return result, sql.ErrNoRows
+	}
+	if err := s.clearRunProjections(ctx, agentID, runID); err != nil {
+		return result, err
+	}
+	expectedSeq := uint64(1)
+	for _, event := range events {
+		if event.Seq > expectedSeq {
+			if err := s.saveRunEventGap(ctx, agentID, runID, expectedSeq, event.Seq, "gap"); err != nil {
+				return result, err
+			}
+		} else if event.Seq < expectedSeq {
+			kind := "duplicate_seq"
+			if event.Seq+1 < expectedSeq {
+				kind = "seq_regression"
+			}
+			if err := s.saveRunEventGap(ctx, agentID, runID, expectedSeq, event.Seq, kind); err != nil {
+				return result, err
+			}
+		}
+		if err := s.advanceRunEventCursor(ctx, agentID, event); err != nil {
+			return result, err
+		}
+		if err := s.projectApproval(ctx, agentID, event); err != nil {
+			return result, err
+		}
+		if err := s.projectRuntimeSession(ctx, agentID, event); err != nil {
+			return result, err
+		}
+		if err := s.projectRunEvent(ctx, agentID, event); err != nil {
+			return result, err
+		}
+		if err := s.projectRunState(ctx, agentID, event); err != nil {
+			return result, err
+		}
+		result.EventCount++
+		if event.Seq > result.LastEventSeq {
+			result.LastEventSeq = event.Seq
+			result.LastEventAt = event.At
+		}
+		if event.Seq >= expectedSeq {
+			expectedSeq = event.Seq + 1
+		}
+	}
+	return result, nil
+}
+
+func (s *Store) clearRunProjections(ctx context.Context, agentID, runID string) error {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM run_steps WHERE agent_id=$1 AND run_id=$2`, agentID, runID); err != nil {
+		return err
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM run_messages WHERE agent_id=$1 AND run_id=$2`, agentID, runID); err != nil {
+		return err
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM tool_calls WHERE agent_id=$1 AND run_id=$2`, agentID, runID); err != nil {
+		return err
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM approval_requests WHERE agent_id=$1 AND run_id=$2`, agentID, runID); err != nil {
+		return err
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM run_event_gaps WHERE agent_id=$1 AND run_id=$2`, agentID, runID); err != nil {
+		return err
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE runs SET status='rebuilding', status_reason='projection rebuild requested', last_event_seq=0, last_event_at=NULL, finished_at=NULL WHERE agent_id=$1 AND id=$2`, agentID, runID)
+	return err
 }
 
 func (s *Store) recordRunEventConsistency(ctx context.Context, agentID string, event protocol.RunEvent) error {
@@ -161,7 +266,7 @@ func (s *Store) projectRunState(ctx context.Context, agentID string, event proto
 		startedAt = time.Now().UTC()
 	}
 	if finished {
-		_, err := s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at, finished_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now()) ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, status_reason=COALESCE(NULLIF(EXCLUDED.status_reason, ''), runs.status_reason), command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id), last_event_seq=GREATEST(runs.last_event_seq, EXCLUDED.last_event_seq), last_event_at=EXCLUDED.last_event_at, finished_at=now()`, event.RunID, agentID, event.CommandID, event.ProjectID, event.SessionID, status, statusReason, event.Seq, startedAt, startedAt)
+		_, err := s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at, finished_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10) ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, status_reason=COALESCE(NULLIF(EXCLUDED.status_reason, ''), runs.status_reason), command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id), last_event_seq=GREATEST(runs.last_event_seq, EXCLUDED.last_event_seq), last_event_at=EXCLUDED.last_event_at, finished_at=EXCLUDED.finished_at`, event.RunID, agentID, event.CommandID, event.ProjectID, event.SessionID, status, statusReason, event.Seq, startedAt, startedAt)
 		return err
 	}
 	_, err := s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, status_reason=COALESCE(NULLIF(EXCLUDED.status_reason, ''), runs.status_reason), command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id), last_event_seq=GREATEST(runs.last_event_seq, EXCLUDED.last_event_seq), last_event_at=EXCLUDED.last_event_at`, event.RunID, agentID, event.CommandID, event.ProjectID, event.SessionID, status, statusReason, event.Seq, startedAt, startedAt)

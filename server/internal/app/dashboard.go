@@ -1,6 +1,8 @@
 package app
 
 import (
+	"database/sql"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -124,6 +126,39 @@ func (s *Server) handleDashRunTimeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agent_id": agentID, "run_id": runID, "timeline": steps, "messages": messages, "tool_calls": tools})
+}
+
+func (s *Server) handleDashRunRebuild(w http.ResponseWriter, r *http.Request) {
+	principal, agentID, ok := s.authorizeAgentQuery(w, r)
+	if !ok {
+		return
+	}
+	runID := strings.TrimSpace(r.PathValue("run_id"))
+	if runID == "" {
+		writeError(w, http.StatusBadRequest, "missing_run_id", "run_id is required")
+		return
+	}
+	exists, err := s.store.RunExists(r.Context(), agentID, runID)
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "run rebuild lookup failed", "agent_id", agentID, "run_id", runID, "user_id", principal.UserID, "error", err)
+		writeError(w, http.StatusInternalServerError, "run_lookup_failed", "unable to load run")
+		return
+	}
+	if !exists {
+		writeError(w, http.StatusNotFound, "run_not_found", "run not found")
+		return
+	}
+	result, err := s.store.RebuildRunProjections(r.Context(), agentID, runID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "run_events_not_found", "run has no raw events")
+			return
+		}
+		s.log.ErrorContext(r.Context(), "run projection rebuild failed", "agent_id", agentID, "run_id", runID, "user_id", principal.UserID, "error", err)
+		writeError(w, http.StatusInternalServerError, "run_rebuild_failed", "unable to rebuild run projections")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"agent_id": agentID, "run_id": runID, "rebuild": result})
 }
 
 func (s *Server) handleDashRuntimeSessions(w http.ResponseWriter, r *http.Request) {
