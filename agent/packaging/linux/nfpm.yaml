@@ -18,6 +18,10 @@ contents:
     dst: /usr/local/share/ov-computeruse/agent/install.sh
     file_info:
       mode: 0755
+  - src: ./packaging/unix/ov-agent-install.sh
+    dst: /usr/local/bin/ov-agent-install
+    file_info:
+      mode: 0755
   - src: ./packaging/linux/ov-computeruse-agent.service
     dst: /usr/lib/systemd/user/ov-computeruse-agent.service
     file_info:

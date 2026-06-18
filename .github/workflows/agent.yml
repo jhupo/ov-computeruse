@@ -95,7 +95,9 @@ jobs:
             cp packaging/windows/install.ps1 dist/install.ps1
           else
             cp packaging/unix/install.sh dist/install.sh
+            cp packaging/unix/ov-agent-install.sh dist/ov-agent-install.sh
             chmod +x dist/install.sh
+            chmod +x dist/ov-agent-install.sh
           fi
 
       - name: Package archive
@@ -104,7 +106,7 @@ jobs:
           if [ "${{ matrix.archive }}" = "zip" ]; then
             zip "ov-agent-${{ matrix.goos }}-${{ matrix.goarch }}.zip" "ov-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}" install.ps1
           else
-            tar -czf "ov-agent-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" "ov-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}" install.sh
+            tar -czf "ov-agent-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" "ov-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}" install.sh ov-agent-install.sh
           fi
 
       - uses: actions/upload-artifact@v4

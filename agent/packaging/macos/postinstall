@@ -6,5 +6,5 @@ BIN_LINK="/usr/local/bin/ov-agent"
 
 mkdir -p "$(dirname "$BIN_LINK")"
 ln -sf "$INSTALL_DIR/ov-agent" "$BIN_LINK"
-echo "ov-agent installed. Run 'ov-agent install' as the desktop user to bind this device."
+echo "ov-agent installed. Run 'ov-agent-install' as the desktop user to bind and start this device."
 exit 0

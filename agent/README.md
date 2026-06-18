@@ -27,7 +27,7 @@ The script runs `ov-agent install`, prompts locally, binds the device, copies th
 macOS `.pkg` and Linux `.deb/.rpm` packages are non-interactive distribution packages. They install the binary and service template; bind as the desktop user with:
 
 ```sh
-ov-agent install
+ov-agent-install
 ```
 
 ## Local files
