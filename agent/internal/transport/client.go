@@ -175,6 +175,15 @@ func (c *Client) syncRunHistory(ctx context.Context, trigger protocol.RunEvent) 
 	if c.noScan {
 		return
 	}
+	if c.state != nil && strings.TrimSpace(trigger.EventID) != "" {
+		synced, err := c.state.CodexHistorySynced(ctx, trigger.EventID)
+		if err != nil {
+			c.logger.WarnContext(ctx, "history sync state unavailable", "event_id", trigger.EventID, "error", err)
+		}
+		if synced {
+			return
+		}
+	}
 	target, err := c.runHistoryTarget(ctx, trigger)
 	if err != nil {
 		c.logger.WarnContext(ctx, "run history target unavailable", "run_id", trigger.RunID, "session_id", trigger.SessionID, "error", err)
@@ -210,6 +219,15 @@ func (c *Client) syncRunHistory(ctx context.Context, trigger protocol.RunEvent) 
 			"error":      err.Error(),
 		})
 		return
+	}
+	if c.state != nil && strings.TrimSpace(trigger.EventID) != "" {
+		if err := c.state.MarkCodexHistorySynced(ctx, trigger.EventID, session.ID); err != nil {
+			c.emitIndexRefreshStatus(context.Background(), trigger, "history.sync.failed", map[string]any{
+				"session_id": session.ID,
+				"error":      err.Error(),
+			})
+			return
+		}
 	}
 	c.emitIndexRefreshStatus(context.Background(), trigger, "history.sync.done", map[string]any{
 		"session_id":        session.ID,

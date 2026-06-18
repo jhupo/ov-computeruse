@@ -252,6 +252,32 @@ func TestMarkRunEventAckedPrefersEventID(t *testing.T) {
 	}
 }
 
+func TestCodexHistorySyncMarker(t *testing.T) {
+	state, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer state.Close()
+	ctx := context.Background()
+	synced, err := state.CodexHistorySynced(ctx, "evt_done")
+	if err != nil {
+		t.Fatalf("check missing sync marker: %v", err)
+	}
+	if synced {
+		t.Fatal("missing sync marker reported as synced")
+	}
+	if err := state.MarkCodexHistorySynced(ctx, "evt_done", "session_1"); err != nil {
+		t.Fatalf("mark history synced: %v", err)
+	}
+	synced, err = state.CodexHistorySynced(ctx, "evt_done")
+	if err != nil {
+		t.Fatalf("check sync marker: %v", err)
+	}
+	if !synced {
+		t.Fatal("sync marker was not found")
+	}
+}
+
 func TestReconcileInterruptedRunsCreatesPendingRunEvent(t *testing.T) {
 	state, err := Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
