@@ -115,19 +115,18 @@ func (s *Server) handleDashApprovalDecision(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusConflict, "agent_disabled", err.Error())
 		return
 	}
-	saved, err := s.store.SaveCommand(r.Context(), identity.AgentID, command)
+	saved, err := s.store.QueueApprovalDecisionCommand(r.Context(), identity.AgentID, approvalID, decision, command)
 	if err != nil {
-		s.log.ErrorContext(r.Context(), "approval command save failed", "approval_id", approvalID, "agent_id", identity.AgentID, "error", err)
-		writeError(w, http.StatusInternalServerError, "approval_command_failed", "unable to queue approval decision")
-		return
-	}
-	if err := s.store.QueueApprovalDecision(r.Context(), approvalID, decision, saved.CommandID); err != nil {
 		if errors.Is(err, store.ErrApprovalDecisionAlreadyQueued) {
 			writeError(w, http.StatusConflict, "approval_decision_queued", "approval decision is already queued")
 			return
 		}
-		s.log.ErrorContext(r.Context(), "approval decision queue state failed", "approval_id", approvalID, "command_id", saved.CommandID, "error", err)
-		writeError(w, http.StatusInternalServerError, "approval_queue_failed", "unable to record approval decision")
+		if errors.Is(err, store.ErrApprovalNotPending) {
+			writeError(w, http.StatusConflict, "approval_already_decided", "approval is not pending")
+			return
+		}
+		s.log.ErrorContext(r.Context(), "approval decision command queue failed", "approval_id", approvalID, "agent_id", identity.AgentID, "error", err)
+		writeError(w, http.StatusInternalServerError, "approval_command_failed", "unable to queue approval decision")
 		return
 	}
 	record, dispatched := s.dispatchStoredCommand(r, identity, saved)

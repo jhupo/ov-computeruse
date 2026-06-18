@@ -17,6 +17,7 @@ import (
 )
 
 var ErrApprovalDecisionAlreadyQueued = errors.New("approval decision already queued")
+var ErrApprovalNotPending = errors.New("approval is not pending")
 
 type AgentSummary struct {
 	ID                   string          `json:"id"`
@@ -750,6 +751,57 @@ func (s *Store) QueueApprovalDecision(ctx context.Context, approvalID string, de
 		return ErrApprovalDecisionAlreadyQueued
 	}
 	return err
+}
+
+func (s *Store) QueueApprovalDecisionCommand(ctx context.Context, agentID, approvalID string, decision protocol.ApprovalDecision, command protocol.Command) (protocol.Command, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return protocol.Command{}, err
+	}
+	defer tx.Rollback(ctx)
+	var status string
+	var existingCommandID sql.NullString
+	if err := tx.QueryRow(ctx, `SELECT status, decision_command_id FROM approval_requests WHERE id=$1 AND agent_id=$2 FOR UPDATE`, approvalID, agentID).Scan(&status, &existingCommandID); err != nil {
+		return protocol.Command{}, err
+	}
+	if status != "pending" {
+		return protocol.Command{}, ErrApprovalNotPending
+	}
+	if existingCommandID.Valid && strings.TrimSpace(existingCommandID.String) != "" {
+		return protocol.Command{}, ErrApprovalDecisionAlreadyQueued
+	}
+	normalized := normalizeCommand(command)
+	tag, err := tx.Exec(ctx, `INSERT INTO commands (id, agent_id, run_id, session_id, project_id, kind, mode, payload, status, deadline_at, expires_at, idempotency_key)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,$10,$11)
+		ON CONFLICT (id) DO NOTHING`,
+		normalized.CommandID, agentID, normalized.RunID, normalized.SessionID, normalized.ProjectID, normalized.Kind, normalized.Mode, jsonRaw(normalized.Payload), nullTime(normalized.DeadlineAt), nullTime(normalized.ExpiresAt), nullString(normalized.IdempotencyKey))
+	if err != nil {
+		return protocol.Command{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		existing, ok, err := s.CommandByID(ctx, agentID, normalized.CommandID)
+		if err != nil {
+			return protocol.Command{}, err
+		}
+		if ok {
+			normalized = existing.ToProtocol()
+		}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE approval_requests
+		SET decision=$2, decision_reason=$3, decision_command_id=$4, decision_queued_at=$5, decided_by=$6
+		WHERE id=$1 AND status='pending' AND decision_command_id IS NULL`,
+		approvalID, decision.Decision, nullString(decision.Reason), normalized.CommandID, now(), nullString(decision.DecidedBy)); err != nil {
+		return protocol.Command{}, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO command_attempts (id, agent_id, command_id, attempt_no, phase, status, reason, payload, created_at)
+		VALUES ($1,$2,$3,1,'queued','queued','approval decision queued',NULL,now())
+		ON CONFLICT DO NOTHING`, protocol.NewID("cat"), agentID, normalized.CommandID); err != nil {
+		return protocol.Command{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return protocol.Command{}, err
+	}
+	return normalized, nil
 }
 
 func runtimeSessionID(agentID, runtime, native string) string {
