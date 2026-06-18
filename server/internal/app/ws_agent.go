@@ -197,6 +197,9 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 		event, err := protocol.Decode[protocol.RunEvent](env.Data)
 		if err == nil {
 			if err := s.store.SaveRunEvent(ctx, agent.AgentID, agent.DeviceID, event); err == nil {
+				if event.RunID != "" && event.Seq > 0 {
+					s.sendAgent(agent, "run.event.ack", protocol.Ack{RunID: event.RunID, Status: "acked", AckSeq: event.Seq, At: time.Now().UTC()})
+				}
 				s.hub.BroadcastDash(agent.UserID, dashEvent("run.event", agent, event))
 			}
 		}

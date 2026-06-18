@@ -36,7 +36,7 @@ agent 明确区分 config、data 和 cache：
 | macOS | `~/Library/Application Support/ov-computeruse/agent/config` | `~/Library/Application Support/ov-computeruse/agent/data` |
 | Linux | `${XDG_CONFIG_HOME:-~/.config}/ov-computeruse/agent` | `${XDG_DATA_HOME:-~/.local/share}/ov-computeruse/agent` |
 
-`state.db` 保存 Codex roots、项目索引、会话索引、history chunk 发送/确认状态和 server sync cursors。它不保存 Codex 原始 auth/config 副本，不保存 OpenAI API key 明文。
+`state.db` 保存 Codex roots、项目索引、会话索引、runtime session 映射、run event 本地事实源/outbox、history chunk 发送/确认状态和 server sync cursors。它不保存 Codex 原始 auth/config 副本，不保存 OpenAI API key 明文。
 
 ## 本地扫描
 

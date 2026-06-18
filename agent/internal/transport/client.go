@@ -98,7 +98,22 @@ func (c *Client) Run(ctx context.Context) error {
 }
 
 func (c *Client) Emit(ctx context.Context, event protocol.RunEvent) error {
-	return c.send(ctx, "run.event", event)
+	if c.state != nil {
+		if err := c.state.SaveRunEvent(ctx, event); err != nil {
+			return err
+		}
+	}
+	if err := c.sendRunEvent(ctx, event); err != nil {
+		if c.state != nil {
+			_ = c.state.MarkRunEventError(ctx, event, err)
+		}
+		c.logger.WarnContext(ctx, "run event queued for retry", "run_id", event.RunID, "seq", event.Seq, "kind", event.Kind, "error", err)
+		return nil
+	}
+	if c.state != nil {
+		_ = c.state.MarkRunEventSent(ctx, event)
+	}
+	return nil
 }
 
 func (c *Client) serve(ctx context.Context, conn Conn) error {
@@ -114,6 +129,7 @@ func (c *Client) serve(ctx context.Context, conn Conn) error {
 	errCh := make(chan error, 2)
 	go func() { errCh <- c.heartbeatLoop(connCtx) }()
 	go func() { errCh <- c.readLoop(connCtx, conn) }()
+	go c.runEventOutboxLoop(connCtx)
 
 	select {
 	case <-ctx.Done():
@@ -121,6 +137,44 @@ func (c *Client) serve(ctx context.Context, conn Conn) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+func (c *Client) runEventOutboxLoop(ctx context.Context) {
+	if c.state == nil {
+		return
+	}
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		if err := c.flushRunEventOutbox(ctx); err != nil {
+			c.logger.WarnContext(ctx, "run event outbox flush failed", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (c *Client) flushRunEventOutbox(ctx context.Context) error {
+	if c.state == nil {
+		return nil
+	}
+	events, err := c.state.PendingRunEvents(ctx, 200)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if err := c.sendRunEvent(ctx, event); err != nil {
+			_ = c.state.MarkRunEventError(ctx, event, err)
+			return err
+		}
+		if err := c.state.MarkRunEventSent(ctx, event); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Client) register(ctx context.Context) error {
@@ -614,6 +668,17 @@ func (c *Client) readLoop(ctx context.Context, conn Conn) error {
 				SubjectID: cursor.SubjectID,
 				Cursor:    cursor.Cursor,
 			})
+		case "run.event.ack":
+			if c.state == nil {
+				continue
+			}
+			ack, err := protocol.Decode[protocol.Ack](env.Data)
+			if err != nil {
+				continue
+			}
+			if ack.Status == "" || ack.Status == "ok" || ack.Status == "acked" {
+				_ = c.state.MarkRunEventAcked(ctx, ack)
+			}
 		}
 	}
 }
@@ -654,6 +719,10 @@ func (c *Client) send(ctx context.Context, messageType string, data any) error {
 	}
 	env.Signature = security.Sign(c.identity.AgentSecret, unsignedBytes(env))
 	return conn.WriteEnvelope(ctx, env)
+}
+
+func (c *Client) sendRunEvent(ctx context.Context, event protocol.RunEvent) error {
+	return c.send(ctx, "run.event", event)
 }
 
 func (c *Client) setConn(conn Conn) {

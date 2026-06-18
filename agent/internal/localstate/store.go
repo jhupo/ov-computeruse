@@ -305,6 +305,121 @@ func (s *Store) commandAckRecord(ctx context.Context, commandID string) (Command
 	return ack, nil
 }
 
+func (s *Store) SaveRunEvent(ctx context.Context, event protocol.RunEvent) error {
+	if s == nil || strings.TrimSpace(event.EventID) == "" {
+		return nil
+	}
+	if event.At.IsZero() {
+		event.At = time.Now().UTC()
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO run_events(event_id, run_id, command_id, project_id, session_id, seq, kind, payload, event_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, event.EventID, event.RunID, event.CommandID, event.ProjectID, event.SessionID, event.Seq, event.Kind, jsonRaw(event.Payload), event.At.UTC().Format(time.RFC3339Nano), now()); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE run_events
+		SET run_id = ?, command_id = ?, project_id = ?, session_id = ?, seq = ?, kind = ?, payload = ?, event_at = ?, updated_at = ?
+		WHERE event_id = ?
+	`, event.RunID, event.CommandID, event.ProjectID, event.SessionID, event.Seq, event.Kind, jsonRaw(event.Payload), event.At.UTC().Format(time.RFC3339Nano), now(), event.EventID)
+	return err
+}
+
+func (s *Store) PendingRunEvents(ctx context.Context, limit int) ([]protocol.RunEvent, error) {
+	if s == nil {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT event_id, run_id, command_id, project_id, session_id, seq, kind, payload, event_at
+		FROM run_events
+		WHERE acked_at IS NULL
+		ORDER BY event_at ASC, seq ASC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	events := []protocol.RunEvent{}
+	for rows.Next() {
+		var event protocol.RunEvent
+		var payload []byte
+		var eventAt string
+		if err := rows.Scan(&event.EventID, &event.RunID, &event.CommandID, &event.ProjectID, &event.SessionID, &event.Seq, &event.Kind, &payload, &eventAt); err != nil {
+			return nil, err
+		}
+		if len(payload) > 0 {
+			event.Payload = append(json.RawMessage(nil), payload...)
+		}
+		if parsed, parseErr := time.Parse(time.RFC3339Nano, eventAt); parseErr == nil {
+			event.At = parsed.UTC()
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
+func (s *Store) MarkRunEventSent(ctx context.Context, event protocol.RunEvent) error {
+	if s == nil || strings.TrimSpace(event.EventID) == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE run_events
+		SET sent_at = ?, retry_count = retry_count + 1, last_error = NULL, updated_at = ?
+		WHERE event_id = ?
+	`, now(), now(), event.EventID)
+	return err
+}
+
+func (s *Store) MarkRunEventError(ctx context.Context, event protocol.RunEvent, eventErr error) error {
+	if s == nil || strings.TrimSpace(event.EventID) == "" || eventErr == nil {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE run_events
+		SET last_error = ?, updated_at = ?
+		WHERE event_id = ?
+	`, eventErr.Error(), now(), event.EventID)
+	return err
+}
+
+func (s *Store) MarkRunEventAcked(ctx context.Context, ack protocol.Ack) error {
+	if s == nil || strings.TrimSpace(ack.RunID) == "" || ack.AckSeq == 0 {
+		return nil
+	}
+	ackedAt := ack.At
+	if ackedAt.IsZero() {
+		ackedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE run_events
+		SET acked_at = ?, updated_at = ?
+		WHERE run_id = ? AND seq <= ? AND acked_at IS NULL
+	`, ackedAt.UTC().Format(time.RFC3339Nano), now(), ack.RunID, ack.AckSeq)
+	return err
+}
+
+func (s *Store) LastRunEventSeq(ctx context.Context) (uint64, error) {
+	if s == nil {
+		return 0, nil
+	}
+	var seq uint64
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM run_events`).Scan(&seq)
+	return seq, err
+}
+
+func jsonRaw(value any) []byte {
+	if raw, ok := value.([]byte); ok {
+		return raw
+	}
+	raw, _ := json.Marshal(value)
+	return raw
+}
+
 type HistoryChunkAck struct {
 	SessionID string
 	Index     int
@@ -436,6 +551,25 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_command_acks_run ON command_acks(run_id)`,
+		`CREATE TABLE IF NOT EXISTS run_events (
+			event_id TEXT PRIMARY KEY,
+			run_id TEXT NOT NULL,
+			command_id TEXT,
+			project_id TEXT,
+			session_id TEXT,
+			seq INTEGER NOT NULL,
+			kind TEXT NOT NULL,
+			payload BLOB,
+			event_at TEXT NOT NULL,
+			sent_at TEXT,
+			acked_at TEXT,
+			retry_count INTEGER NOT NULL DEFAULT 0,
+			last_error TEXT,
+			updated_at TEXT NOT NULL,
+			UNIQUE(run_id, seq)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_run_events_pending ON run_events(acked_at, event_at, seq)`,
+		`CREATE INDEX IF NOT EXISTS idx_run_events_run_seq ON run_events(run_id, seq)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
