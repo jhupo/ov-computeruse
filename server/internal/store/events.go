@@ -104,6 +104,9 @@ func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, even
 	if err := s.projectRunState(ctx, agentID, event); err != nil {
 		return RunEventSaveResult{}, err
 	}
+	if err := s.closePendingApprovalsFromRunEvent(ctx, agentID, event); err != nil {
+		return RunEventSaveResult{}, err
+	}
 	if err := s.projectCommandStateFromRunEvent(ctx, agentID, event, true); err != nil {
 		return RunEventSaveResult{}, err
 	}
@@ -374,6 +377,9 @@ func (s *Store) RebuildRunProjections(ctx context.Context, agentID, runID string
 		if err := s.projectRunState(ctx, agentID, event); err != nil {
 			return result, err
 		}
+		if err := s.closePendingApprovalsFromRunEvent(ctx, agentID, event); err != nil {
+			return result, err
+		}
 		if err := s.projectCommandStateFromRunEvent(ctx, agentID, event, false); err != nil {
 			return result, err
 		}
@@ -581,6 +587,15 @@ func (s *Store) projectRunState(ctx context.Context, agentID string, event proto
 	return err
 }
 
+func (s *Store) closePendingApprovalsFromRunEvent(ctx context.Context, agentID string, event protocol.RunEvent) error {
+	switch event.Kind {
+	case "run.done", "run.completed", "run.error", "run.failed", "run.stopped":
+		return s.closePendingApprovalsForRun(ctx, agentID, event.RunID, "run finished: "+event.Kind)
+	default:
+		return nil
+	}
+}
+
 func (s *Store) projectCommandStateFromRunEvent(ctx context.Context, agentID string, event protocol.RunEvent, audit bool) error {
 	if event.RunID == "" {
 		return nil
@@ -745,6 +760,11 @@ func (s *Store) SaveCommand(ctx context.Context, agentID string, command protoco
 		return protocol.Command{}, err
 	}
 	if !storeCommandCreatesRun(command.Kind) {
+		if storeCommandStopsRun(command.Kind) {
+			if err := s.markStopRequestedTx(ctx, tx, agentID, command); err != nil {
+				return protocol.Command{}, err
+			}
+		}
 		return command, tx.Commit(ctx)
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, started_at) VALUES ($1,$2,$3,$4,$5,'queued','command_queued',now()) ON CONFLICT (agent_id, id) DO UPDATE SET command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id)`, command.RunID, agentID, command.CommandID, command.ProjectID, command.SessionID); err != nil {
@@ -771,7 +791,7 @@ func (s *Store) ensureSessionHasNoActiveRun(ctx context.Context, tx pgx.Tx, agen
 		WHERE agent_id=$1
 			AND session_id=$2
 			AND id<>$3
-			AND status IN ('queued','accepted','running','awaiting_approval')
+			AND status IN ('queued','accepted','running','awaiting_approval','stopping')
 		ORDER BY started_at DESC
 		LIMIT 1
 		FOR UPDATE`, agentID, command.SessionID, command.RunID).Scan(&activeRunID)
@@ -782,6 +802,47 @@ func (s *Store) ensureSessionHasNoActiveRun(ctx context.Context, tx pgx.Tx, agen
 		return err
 	}
 	return errors.Join(ErrSessionActive, errors.New(activeRunID))
+}
+
+func (s *Store) markStopRequestedTx(ctx context.Context, tx pgx.Tx, agentID string, command protocol.Command) error {
+	runID := strings.TrimSpace(command.RunID)
+	if runID == "" && strings.TrimSpace(command.SessionID) != "" {
+		err := tx.QueryRow(ctx, `SELECT id
+			FROM runs
+			WHERE agent_id=$1
+				AND session_id=$2
+				AND status IN ('queued','accepted','running','awaiting_approval','stale','stopping')
+			ORDER BY started_at DESC
+			LIMIT 1
+			FOR UPDATE`, agentID, command.SessionID).Scan(&runID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		command.RunID = runID
+		if _, err := tx.Exec(ctx, `UPDATE commands SET run_id=$3 WHERE agent_id=$1 AND id=$2`, agentID, command.CommandID, runID); err != nil {
+			return err
+		}
+	}
+	if runID == "" {
+		return nil
+	}
+	tag, err := tx.Exec(ctx, `UPDATE runs
+		SET status='stopping',
+			status_reason='stop requested',
+			finished_at=NULL
+		WHERE agent_id=$1
+			AND id=$2
+			AND status IN ('queued','accepted','running','awaiting_approval','stale','stopping')`, agentID, runID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil
+	}
+	return s.saveCommandAttemptTx(ctx, tx, agentID, command.CommandID, "stop", "stopping", "stop requested", protocol.Raw(map[string]any{"run_id": runID, "session_id": command.SessionID}))
 }
 
 func (s *Store) MarkCommandDispatched(ctx context.Context, agentID, commandID string) error {
@@ -875,6 +936,9 @@ func (s *Store) MarkCommandAck(ctx context.Context, agentID string, ack protocol
 	if !found {
 		return nil
 	}
+	if storeCommandStopsRun(command.Kind) {
+		return s.markStopCommandAck(ctx, agentID, command, ack)
+	}
 	status := commandStatusFromAck(ack)
 	accepted := isAcceptedAckStatus(status)
 	if _, err := s.pool.Exec(ctx, `UPDATE commands SET
@@ -910,6 +974,82 @@ func (s *Store) MarkCommandAck(ctx context.Context, agentID string, ack protocol
 		}
 	}
 	return nil
+}
+
+func (s *Store) markStopCommandAck(ctx context.Context, agentID string, command CommandRecord, ack protocol.Ack) error {
+	status := commandStatusFromAck(ack)
+	accepted := isAcceptedAckStatus(status)
+	commandStatus := "stop_failed"
+	reason := ack.Message
+	if accepted {
+		commandStatus = "stop_acked"
+		reason = "stop accepted by agent"
+	}
+	if reason == "" {
+		reason = commandStatus
+	}
+	runID := storeFirstNonEmpty(ack.RunID, command.RunID)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `UPDATE commands SET
+			status=$1,
+			status_reason=$2,
+			acked_at=now(),
+			dispatch_claimed_by=NULL,
+			dispatch_claimed_at=NULL,
+			dispatch_claimed_until=NULL,
+			run_id=COALESCE(NULLIF($5, ''), run_id)
+		WHERE agent_id=$3 AND id=$4
+			AND status NOT IN ('done','expired','failed','rejected','stopped')`,
+		commandStatus, reason, agentID, command.ID, runID); err != nil {
+		return err
+	}
+	if runID != "" {
+		if accepted {
+			if _, err := tx.Exec(ctx, `UPDATE runs
+				SET status='stopping',
+					status_reason='stop accepted by agent',
+					finished_at=NULL
+				WHERE agent_id=$1
+					AND id=$2
+					AND status IN ('queued','accepted','running','awaiting_approval','stale','stopping')`, agentID, runID); err != nil {
+				return err
+			}
+		} else {
+			if _, err := tx.Exec(ctx, `UPDATE runs
+				SET status='stop_failed',
+					status_reason=$3
+				WHERE agent_id=$1
+					AND id=$2
+					AND status='stopping'`, agentID, runID, reason); err != nil {
+				return err
+			}
+		}
+	}
+	if err := s.saveCommandAttemptTx(ctx, tx, agentID, command.ID, "ack", commandStatus, reason, protocol.Raw(ack)); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) closePendingApprovalsForRun(ctx context.Context, agentID, runID, reason string) error {
+	if strings.TrimSpace(runID) == "" {
+		return nil
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "run finished"
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE approval_requests
+		SET status='cancelled',
+			decision_reason=$3,
+			decided_at=COALESCE(decided_at, now())
+		WHERE agent_id=$1
+			AND run_id=$2
+			AND status='pending'`, agentID, runID, reason)
+	return err
 }
 
 func (s *Store) ExpireCommands(ctx context.Context, agentID string) error {
@@ -956,11 +1096,11 @@ func (s *Store) ReconcileHeartbeatRuns(ctx context.Context, agentID string, hear
 		}
 	}
 	for runID := range running {
-		if _, err := s.pool.Exec(ctx, `UPDATE runs SET status='running', status_reason='reported_by_agent_heartbeat', last_event_seq=GREATEST(last_event_seq, $3), last_event_at=$4 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','accepted','running','awaiting_approval','stale')`, agentID, runID, heartbeat.LastEventSeq, heartbeat.At); err != nil {
+		if _, err := s.pool.Exec(ctx, `UPDATE runs SET status='running', status_reason='reported_by_agent_heartbeat', last_event_seq=GREATEST(last_event_seq, $3), last_event_at=$4 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','accepted','running','awaiting_approval','stale') AND status <> 'stopping'`, agentID, runID, heartbeat.LastEventSeq, heartbeat.At); err != nil {
 			return err
 		}
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id FROM runs WHERE agent_id=$1 AND status IN ('running','awaiting_approval')`, agentID)
+	rows, err := s.pool.Query(ctx, `SELECT id FROM runs WHERE agent_id=$1 AND status IN ('running','awaiting_approval','stopping')`, agentID)
 	if err != nil {
 		return err
 	}
@@ -1060,4 +1200,8 @@ func storeCommandCreatesRun(kind string) bool {
 	default:
 		return false
 	}
+}
+
+func storeCommandStopsRun(kind string) bool {
+	return strings.TrimPrefix(kind, "command.") == "stop"
 }
