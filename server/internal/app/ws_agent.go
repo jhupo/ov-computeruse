@@ -34,11 +34,11 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	agent := &AgentConn{AgentID: identity.AgentID, UserID: identity.UserID, DeviceID: identity.DeviceID, Secret: identity.AgentSecret, Conn: conn, Send: make(chan []byte, 64), ConnectedAt: time.Now().UTC(), Replay: protocol.NewReplayGuard(envelopeClockSkew * 2)}
+	agent := &AgentConn{AgentID: identity.AgentID, UserID: identity.UserID, DeviceID: identity.DeviceID, Secret: identity.AgentSecret, Epoch: identity.AgentEpoch, ConnectionID: protocol.NewID("conn"), Conn: conn, Send: make(chan []byte, 64), ConnectedAt: time.Now().UTC(), Replay: protocol.NewReplayGuard(envelopeClockSkew * 2)}
 	conn.SetReadLimit(maxAgentEnvelopeBytes)
 	s.hub.AddAgent(r.Context(), agent)
 	_ = s.store.TouchAgent(r.Context(), identity.AgentID)
-	s.log.InfoContext(r.Context(), "agent connected", "agent_id", agent.AgentID, "user_id", agent.UserID, "device_id", agent.DeviceID)
+	s.log.InfoContext(r.Context(), "agent connected", "agent_id", agent.AgentID, "user_id", agent.UserID, "device_id", agent.DeviceID, "epoch", agent.Epoch, "connection_id", agent.ConnectionID)
 	go s.agentWriter(agent)
 	go s.replayPendingCommands(r, identity)
 	s.agentReader(r, agent)
@@ -57,7 +57,7 @@ func (s *Server) agentReader(r *http.Request, agent *AgentConn) {
 		s.hub.RemoveAgentConn(r.Context(), agent)
 		_ = agent.Conn.Close()
 		close(agent.Send)
-		s.log.InfoContext(r.Context(), "agent disconnected", "agent_id", agent.AgentID, "user_id", agent.UserID, "device_id", agent.DeviceID)
+		s.log.InfoContext(r.Context(), "agent disconnected", "agent_id", agent.AgentID, "user_id", agent.UserID, "device_id", agent.DeviceID, "epoch", agent.Epoch, "connection_id", agent.ConnectionID)
 	}()
 	for {
 		var env protocol.Envelope
@@ -81,6 +81,11 @@ func (s *Server) agentReader(r *http.Request, agent *AgentConn) {
 		if err := agent.Replay.Accept(env, time.Now().UTC()); err != nil {
 			s.log.WarnContext(r.Context(), "replayed agent envelope rejected", "agent_id", agent.AgentID, "type", env.Type, "message_id", env.MessageID, "error", err)
 			continue
+		}
+		matches, err := s.store.AgentEpochMatches(r.Context(), agent.AgentID, agent.Epoch)
+		if err != nil || !matches {
+			s.log.WarnContext(r.Context(), "stale agent connection fenced", "agent_id", agent.AgentID, "epoch", agent.Epoch, "connection_id", agent.ConnectionID, "error", err)
+			return
 		}
 		s.handleAgentEnvelope(r, agent, env)
 	}

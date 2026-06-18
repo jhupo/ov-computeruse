@@ -33,6 +33,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE agents ADD COLUMN IF NOT EXISTS disabled_at TIMESTAMPTZ`,
 		`ALTER TABLE agents ADD COLUMN IF NOT EXISTS disabled_reason TEXT`,
 		`ALTER TABLE agents ADD COLUMN IF NOT EXISTS disabled_by TEXT`,
+		`ALTER TABLE agents ADD COLUMN IF NOT EXISTS agent_epoch BIGINT NOT NULL DEFAULT 1`,
 		`CREATE TABLE IF NOT EXISTS codex_roots (agent_id TEXT NOT NULL REFERENCES agents(id), path TEXT NOT NULL, kind TEXT, source TEXT, exists BOOLEAN NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(agent_id, path))`,
 		`CREATE TABLE IF NOT EXISTS projects (agent_id TEXT NOT NULL REFERENCES agents(id), id TEXT NOT NULL, name TEXT, path TEXT, last_active_at TIMESTAMPTZ, has_agents_md BOOLEAN NOT NULL DEFAULT false, git_branch TEXT, deleted_at TIMESTAMPTZ, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(agent_id, id))`,
 		`ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`,

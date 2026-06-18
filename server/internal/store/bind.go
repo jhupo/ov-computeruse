@@ -110,12 +110,13 @@ func (s *Store) AuthenticateAndBind(ctx context.Context, username, password stri
 	agentID := "agt_" + randomHex(16)
 	workspaceID := "wsp_" + user.UserID
 	agentSecret := "sec_" + randomHex(32)
-	err = s.pool.QueryRow(ctx, `INSERT INTO agents (id, workspace_id, user_id, device_id, agent_secret, server_key_id, last_seen_at) VALUES ($1,$2,$3,$4,$5,$6,now()) ON CONFLICT (device_id) DO UPDATE SET agent_secret=EXCLUDED.agent_secret, server_key_id=EXCLUDED.server_key_id, last_seen_at=now() RETURNING id`, agentID, workspaceID, user.UserID, deviceID, agentSecret, serverKeyID).Scan(&agentID)
+	var agentEpoch int64
+	err = s.pool.QueryRow(ctx, `INSERT INTO agents (id, workspace_id, user_id, device_id, agent_secret, server_key_id, agent_epoch, last_seen_at) VALUES ($1,$2,$3,$4,$5,$6,1,now()) ON CONFLICT (device_id) DO UPDATE SET agent_secret=EXCLUDED.agent_secret, server_key_id=EXCLUDED.server_key_id, agent_epoch=agents.agent_epoch+1, last_seen_at=now() RETURNING id, agent_epoch`, agentID, workspaceID, user.UserID, deviceID, agentSecret, serverKeyID).Scan(&agentID, &agentEpoch)
 	if err != nil {
 		return AgentIdentity{}, err
 	}
 	_ = s.SaveAuditLog(ctx, user.UserID, agentID, "agent.bind.accepted", map[string]any{"device_id": deviceID, "key_id": keyID, "base_url": baseURL, "credential_source": credential.Source})
-	return AgentIdentity{AgentID: agentID, WorkspaceID: workspaceID, UserID: user.UserID, DeviceID: deviceID, AgentSecret: agentSecret, ServerURL: serverURL, ServerKeyID: serverKeyID}, nil
+	return AgentIdentity{AgentID: agentID, WorkspaceID: workspaceID, UserID: user.UserID, DeviceID: deviceID, AgentSecret: agentSecret, AgentEpoch: agentEpoch, ServerURL: serverURL, ServerKeyID: serverKeyID}, nil
 }
 
 func (s *Store) SaveAuditLog(ctx context.Context, userID, agentID, action string, payload any) error {

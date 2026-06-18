@@ -23,6 +23,7 @@ type AgentIdentity struct {
 	UserDisabledReason   string          `json:"user_disabled_reason,omitempty"`
 	DeviceID             string          `json:"device_id"`
 	AgentSecret          string          `json:"-"`
+	AgentEpoch           int64           `json:"agent_epoch"`
 	ServerURL            string          `json:"server_url"`
 	ServerKeyID          string          `json:"server_key_id"`
 	Capabilities         json.RawMessage `json:"capabilities,omitempty"`

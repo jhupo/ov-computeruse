@@ -248,7 +248,7 @@ func (s *Server) dispatchCommand(ctx context.Context, identity store.AgentIdenti
 		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
 		return record, false
 	}
-	message := s.agentEnvelope(&AgentConn{AgentID: identity.AgentID, UserID: identity.UserID, DeviceID: identity.DeviceID, Secret: identity.AgentSecret}, "command", command)
+	message := s.agentEnvelope(&AgentConn{AgentID: identity.AgentID, UserID: identity.UserID, DeviceID: identity.DeviceID, Secret: identity.AgentSecret, Epoch: identity.AgentEpoch}, "command", command)
 	if message == nil {
 		_ = s.store.MarkCommandFailed(ctx, identity.AgentID, command.CommandID, "unable to encode command")
 		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)

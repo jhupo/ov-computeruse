@@ -42,14 +42,14 @@ func (s *Store) agentIdentityBy(ctx context.Context, predicate string, args ...a
 	var userDisabledAt sql.NullTime
 	var agentDisabledAt sql.NullTime
 	var deviceDisabledAt sql.NullTime
-	err := s.pool.QueryRow(ctx, `SELECT a.id, a.workspace_id, a.user_id, COALESCE(u.disabled_reason, ''), u.disabled_at, a.device_id, a.agent_secret, a.server_key_id,
+	err := s.pool.QueryRow(ctx, `SELECT a.id, a.workspace_id, a.user_id, COALESCE(u.disabled_reason, ''), u.disabled_at, a.device_id, a.agent_secret, COALESCE(a.agent_epoch, 1), a.server_key_id,
 			COALESCE(a.capabilities, '{}'::jsonb), COALESCE(a.credential, '{}'::jsonb),
 			a.disabled_at, COALESCE(a.disabled_reason, ''), d.disabled_at, COALESCE(d.disabled_reason, '')
 		FROM agents a
 		JOIN users u ON u.id = a.user_id
 		JOIN devices d ON d.id = a.device_id
 		WHERE `+predicate, args...).Scan(
-		&identity.AgentID, &identity.WorkspaceID, &identity.UserID, &identity.UserDisabledReason, &userDisabledAt, &identity.DeviceID, &identity.AgentSecret, &identity.ServerKeyID,
+		&identity.AgentID, &identity.WorkspaceID, &identity.UserID, &identity.UserDisabledReason, &userDisabledAt, &identity.DeviceID, &identity.AgentSecret, &identity.AgentEpoch, &identity.ServerKeyID,
 		&capabilities, &credential, &agentDisabledAt, &identity.DisabledReason, &deviceDisabledAt, &identity.DeviceDisabledReason,
 	)
 	if len(capabilities) > 0 {
@@ -95,6 +95,12 @@ func (s *Store) SaveAgentRegister(ctx context.Context, register protocol.AgentRe
 func (s *Store) TouchAgent(ctx context.Context, agentID string) error {
 	_, err := s.pool.Exec(ctx, `UPDATE agents SET last_seen_at=now() WHERE id=$1`, agentID)
 	return err
+}
+
+func (s *Store) AgentEpochMatches(ctx context.Context, agentID string, epoch int64) (bool, error) {
+	var matches bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agents WHERE id=$1 AND agent_epoch=$2 AND disabled_at IS NULL)`, agentID, epoch).Scan(&matches)
+	return matches, err
 }
 
 func (s *Store) AgentCredentialValid(ctx context.Context, identity AgentIdentity) error {

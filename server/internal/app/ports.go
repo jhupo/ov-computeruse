@@ -14,6 +14,7 @@ type AgentRepository interface {
 	AgentByID(context.Context, string) (store.AgentIdentity, error)
 	SaveAgentRegister(context.Context, protocol.AgentRegister) error
 	TouchAgent(context.Context, string) error
+	AgentEpochMatches(context.Context, string, int64) (bool, error)
 	AgentCredentialValid(context.Context, store.AgentIdentity) error
 	SetAgentAccess(context.Context, string, store.AccessChange) (store.AgentIdentity, error)
 	SetDeviceAccess(context.Context, string, store.AccessChange) error

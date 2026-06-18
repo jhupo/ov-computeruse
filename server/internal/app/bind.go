@@ -66,7 +66,8 @@ func (s *Server) handleBind(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "bind_rejected", "agent bind rejected")
 		return
 	}
-	s.log.InfoContext(r.Context(), "agent bound", "agent_id", identity.AgentID, "device_id", identity.DeviceID, "workspace_id", identity.WorkspaceID)
+	s.hub.DisconnectAgentBeforeEpoch(r.Context(), identity.AgentID, identity.AgentEpoch-1)
+	s.log.InfoContext(r.Context(), "agent bound", "agent_id", identity.AgentID, "device_id", identity.DeviceID, "workspace_id", identity.WorkspaceID, "epoch", identity.AgentEpoch)
 	writeJSON(w, http.StatusOK, bindResponse{
 		AgentID:     identity.AgentID,
 		WorkspaceID: identity.WorkspaceID,
