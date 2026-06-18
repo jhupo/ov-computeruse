@@ -998,7 +998,7 @@ func (s *Store) markStopCommandAck(ctx context.Context, agentID string, command 
 	commandStatus := "stop_failed"
 	reason := ack.Message
 	if accepted {
-		commandStatus = "stop_acked"
+		commandStatus = "done"
 		reason = "stop accepted by agent"
 	}
 	if reason == "" {
