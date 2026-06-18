@@ -154,6 +154,10 @@ func (s *Store) projectRunEvent(ctx context.Context, agentID string, event proto
 		}
 		return s.upsertRunStep(ctx, agentID, event, event.Kind, stepTitle(event), stepStatus(event), true)
 	case "diff.created", "run.status", "session.created", "session.updated", "session.resumed":
+		kind, title, status := statusStepProjection(event)
+		if kind != "" {
+			return s.upsertRunStep(ctx, agentID, event, kind, title, status, true)
+		}
 		return s.upsertRunStep(ctx, agentID, event, event.Kind, stepTitle(event), stepStatus(event), true)
 	case "run.started":
 		return s.upsertRunStep(ctx, agentID, event, "run", "Run started", "running", false)
@@ -513,5 +517,17 @@ func toolStatus(kind string) string {
 		return "awaiting_approval"
 	default:
 		return "running"
+	}
+}
+
+func statusStepProjection(event protocol.RunEvent) (string, string, string) {
+	if event.Kind != "run.status" {
+		return "", "", ""
+	}
+	switch payloadString(event.Payload, "status") {
+	case "codex.approval.unsupported":
+		return "approval", "Approval unsupported", "unsupported"
+	default:
+		return "", "", ""
 	}
 }
