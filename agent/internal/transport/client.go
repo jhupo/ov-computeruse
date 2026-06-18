@@ -179,6 +179,7 @@ func (c *Client) serve(ctx context.Context, conn Conn) error {
 		if err != nil {
 			return err
 		}
+		go c.workspaceNotifyLoop(connCtx)
 	}
 
 	select {
@@ -204,6 +205,16 @@ func (c *Client) runEventOutboxLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
+	}
+}
+
+func (c *Client) workspaceNotifyLoop(ctx context.Context) {
+	if c.state == nil {
+		return
+	}
+	notifier := workspace.Notifier{Projects: workspaceProjectSource{state: c.state}, Sink: c, Git: workspace.GitStatus{}}
+	if err := notifier.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		c.logger.WarnContext(ctx, "workspace notifier stopped", "error", err)
 	}
 }
 
@@ -929,6 +940,10 @@ func (c *Client) send(ctx context.Context, messageType string, data any) error {
 
 func (c *Client) sendRunEvent(ctx context.Context, event protocol.RunEvent) error {
 	return c.send(ctx, "run.event", event)
+}
+
+func (c *Client) WorkspaceGitUpdated(ctx context.Context, update protocol.WorkspaceGitUpdated) error {
+	return c.send(ctx, "workspace.git.updated", update)
 }
 
 func (c *Client) setConn(conn Conn) {

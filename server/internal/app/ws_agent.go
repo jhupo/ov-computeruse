@@ -211,6 +211,11 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 		if err == nil {
 			s.workspace.Resolve(response)
 		}
+	case "workspace.git.updated":
+		update, err := protocol.Decode[protocol.WorkspaceGitUpdated](env.Data)
+		if err == nil {
+			s.hub.BroadcastDash(agent.UserID, dashEvent("workspace.git.updated", agent, update))
+		}
 	case "run.event":
 		event, err := protocol.Decode[protocol.RunEvent](env.Data)
 		if err == nil {

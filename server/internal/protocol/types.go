@@ -176,6 +176,15 @@ type WorkspaceResponse struct {
 	At        time.Time         `json:"at,omitempty"`
 }
 
+type WorkspaceGitUpdated struct {
+	ProjectID string        `json:"project_id"`
+	Status    string        `json:"status"`
+	Code      string        `json:"code,omitempty"`
+	Message   string        `json:"message,omitempty"`
+	Git       *WorkspaceGit `json:"git,omitempty"`
+	At        time.Time     `json:"at,omitempty"`
+}
+
 type WorkspaceEntry struct {
 	Name      string    `json:"name"`
 	Path      string    `json:"path"`

@@ -238,6 +238,15 @@ type WorkspaceGitDiff struct {
 	Binary    bool   `json:"binary,omitempty"`
 }
 
+type WorkspaceGitUpdated struct {
+	ProjectID string        `json:"project_id"`
+	Status    string        `json:"status"`
+	Code      string        `json:"code,omitempty"`
+	Message   string        `json:"message,omitempty"`
+	Git       *WorkspaceGit `json:"git,omitempty"`
+	At        time.Time     `json:"at,omitempty"`
+}
+
 type HistoryChunk struct {
 	SessionID string `json:"session_id"`
 	Index     int    `json:"index"`

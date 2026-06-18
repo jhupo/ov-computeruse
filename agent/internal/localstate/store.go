@@ -169,6 +169,31 @@ func (s *Store) ProjectPath(ctx context.Context, projectID string) (string, erro
 	return project.Path, nil
 }
 
+func (s *Store) Projects(ctx context.Context) ([]ProjectRecord, error) {
+	if s == nil {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, COALESCE(root_path, ''), name, path, has_agents_md, COALESCE(git_branch, '')
+		FROM projects
+		WHERE deleted_at IS NULL
+		ORDER BY updated_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	projects := []ProjectRecord{}
+	for rows.Next() {
+		var project ProjectRecord
+		if err := rows.Scan(&project.ID, &project.RootPath, &project.Name, &project.Path, &project.HasAgentsMD, &project.GitBranch); err != nil {
+			return nil, err
+		}
+		projects = append(projects, project)
+	}
+	return projects, rows.Err()
+}
+
 func (s *Store) Session(ctx context.Context, sessionID string) (SessionRecord, error) {
 	if s == nil {
 		return SessionRecord{}, sql.ErrNoRows
