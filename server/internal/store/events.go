@@ -676,7 +676,7 @@ func runEventReason(event protocol.RunEvent) string {
 
 func (s *Store) projectRuntimeSession(ctx context.Context, agentID string, event protocol.RunEvent) error {
 	switch event.Kind {
-	case "session.created", "session.resumed", "session.updated", "run.status", "run.completed", "run.done":
+	case "session.created", "session.resumed", "session.updated":
 	default:
 		return nil
 	}
@@ -684,8 +684,8 @@ func (s *Store) projectRuntimeSession(ctx context.Context, agentID string, event
 	if len(event.Payload) > 0 {
 		_ = json.Unmarshal(event.Payload, &runtime)
 	}
-	if runtime.Runtime == "" {
-		runtime.Runtime = protocol.RuntimeOpenAIResponses
+	if runtime.Runtime != protocol.RuntimeCodexCLI {
+		return nil
 	}
 	if runtime.ProjectID == "" {
 		runtime.ProjectID = event.ProjectID
@@ -699,7 +699,7 @@ func (s *Store) projectRuntimeSession(ctx context.Context, agentID string, event
 	if runtime.NativeSessionID == "" && event.SessionID != "" {
 		runtime.NativeSessionID = event.SessionID
 	}
-	if runtime.SessionID == "" && runtime.NativeSessionID == "" && runtime.LastResponseID == "" {
+	if runtime.SessionID == "" && runtime.NativeSessionID == "" {
 		return nil
 	}
 	return s.UpsertRuntimeSession(ctx, agentID, runtime)

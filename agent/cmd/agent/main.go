@@ -19,7 +19,6 @@ import (
 	"golang.org/x/term"
 
 	"ov-computeruse/agent/internal/buildinfo"
-	"ov-computeruse/agent/internal/codexhistory"
 	"ov-computeruse/agent/internal/codexscan"
 	"ov-computeruse/agent/internal/config"
 	"ov-computeruse/agent/internal/device"
@@ -28,7 +27,7 @@ import (
 	"ov-computeruse/agent/internal/logging"
 	"ov-computeruse/agent/internal/runs"
 	"ov-computeruse/agent/internal/runtime"
-	openairuntime "ov-computeruse/agent/internal/runtime/openai"
+	"ov-computeruse/agent/internal/runtime/codexcli"
 	"ov-computeruse/agent/internal/securestore"
 	"ov-computeruse/agent/internal/security"
 	"ov-computeruse/agent/internal/transport"
@@ -212,49 +211,17 @@ func runAgent(args []string) {
 	fatalIf(logger, err)
 	defer state.Close()
 	rt := runtime.Runtime(runtime.NewNoop())
-	if credential, err := scanner.Credential(); err == nil {
-		rt = openairuntime.New(openairuntime.Config{
-			BaseURL:               credential.BaseURL,
-			APIKey:                credential.APIKey,
-			Model:                 credential.Model,
-			Scanner:               scanner,
-			State:                 state,
-			AllowLocalShell:       cfg.AllowLocalShell,
-			WorkspaceRootProvider: localShellRootProvider(state, scanner),
-		})
+	if bin, err := codexcli.ResolveBin(""); err == nil {
+		rt = codexcli.New(codexcli.Config{BinPath: bin, State: state})
+		logger.Info("codex cli runtime enabled", "path", bin)
 	} else {
-		logger.Warn("codex credential not found; runtime is noop", "error", err)
+		logger.Warn("codex cli runtime unavailable; runtime is noop", "error", err)
 	}
 	manager := runs.NewManager(rt, nil, logger)
 	manager.SetMaxActive(cfg.MaxConcurrentRuns)
 	manager.SetAckStore(state)
-	client := transport.NewClient(identity, manager, scanner, deviceProfile, cfg, state, codexhistory.New(state), cfg.DisableScan, cfg.UploadHistory, logger)
+	client := transport.NewClient(identity, manager, scanner, deviceProfile, cfg, state, cfg.DisableScan, cfg.UploadHistory, logger)
 	fatalIf(logger, client.Run(ctx))
-}
-
-func localShellRootProvider(state *localstate.Store, scanner codexscan.Scanner) func(context.Context) ([]string, error) {
-	return func(ctx context.Context) ([]string, error) {
-		if state != nil {
-			roots, err := state.ProjectRoots(ctx)
-			if err == nil && len(roots) > 0 {
-				return roots, nil
-			}
-			if err != nil {
-				return nil, err
-			}
-		}
-		result, err := scanner.Scan(ctx)
-		if err != nil {
-			return nil, err
-		}
-		roots := make([]string, 0, len(result.Projects))
-		for _, project := range result.Projects {
-			if strings.TrimSpace(project.Path) != "" {
-				roots = append(roots, project.Path)
-			}
-		}
-		return roots, nil
-	}
 }
 
 func prompt(reader *bufio.Reader, label string) string {

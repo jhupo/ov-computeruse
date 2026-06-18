@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	Version                = "2026-06-17"
-	RuntimeOpenAIResponses = "openai.responses"
+	Version         = "2026-06-17"
+	RuntimeCodexCLI = "codex.cli"
 )
 
 type Envelope struct {
@@ -139,7 +139,6 @@ type RuntimeSession struct {
 	ProjectID       string    `json:"project_id,omitempty"`
 	SessionID       string    `json:"session_id,omitempty"`
 	NativeSessionID string    `json:"native_session_id,omitempty"`
-	LastResponseID  string    `json:"last_response_id,omitempty"`
 	ResumeMode      string    `json:"resume_mode,omitempty"`
 	LastRunID       string    `json:"last_run_id,omitempty"`
 	UpdatedAt       time.Time `json:"updated_at,omitempty"`

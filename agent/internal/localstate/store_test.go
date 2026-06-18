@@ -78,39 +78,38 @@ func TestResolveCommandContextAcceptsRuntimeSession(t *testing.T) {
 		t.Fatalf("save scan result: %v", err)
 	}
 	err = state.SaveRuntimeSession(context.Background(), RuntimeSession{
-		SessionID:       "resp_session",
-		Runtime:         protocol.RuntimeOpenAIResponses,
+		SessionID:       "codex_session",
+		Runtime:         protocol.RuntimeCodexCLI,
 		ProjectID:       "project_1",
-		NativeSessionID: "resp_session",
-		LastResponseID:  "resp_latest",
-		ResumeMode:      "previous_response_id",
+		NativeSessionID: "codex_native",
+		ResumeMode:      "codex_cli_exec",
 		UpdatedAt:       updatedAt,
 	})
 	if err != nil {
 		t.Fatalf("save runtime session: %v", err)
 	}
 
-	resolved, err := state.ResolveCommandContext(context.Background(), protocol.Command{SessionID: "resp_session"})
+	resolved, err := state.ResolveCommandContext(context.Background(), protocol.Command{SessionID: "codex_session"})
 	if err != nil {
 		t.Fatalf("resolve runtime command context: %v", err)
 	}
-	if resolved.Session.ID != "resp_session" || resolved.Session.IDSource != "runtime_session" {
-		t.Fatalf("runtime session = %+v, want resp_session runtime_session", resolved.Session)
+	if resolved.Session.ID != "codex_session" || resolved.Session.IDSource != "runtime_session" {
+		t.Fatalf("runtime session = %+v, want codex_session runtime_session", resolved.Session)
 	}
 	if resolved.Project.ID != "project_1" {
 		t.Fatalf("project id = %q, want project_1", resolved.Project.ID)
 	}
 
-	_, err = state.ResolveCommandContext(context.Background(), protocol.Command{SessionID: "resp_session", ProjectID: "other_project"})
+	_, err = state.ResolveCommandContext(context.Background(), protocol.Command{SessionID: "codex_session", ProjectID: "other_project"})
 	if err == nil {
 		t.Fatal("expected runtime project/session mismatch error")
 	}
-	byResponse, err := state.RuntimeSession(context.Background(), "resp_latest", protocol.RuntimeOpenAIResponses)
+	byNative, err := state.RuntimeSession(context.Background(), "codex_native", protocol.RuntimeCodexCLI)
 	if err != nil {
-		t.Fatalf("runtime session by response id: %v", err)
+		t.Fatalf("runtime session by native id: %v", err)
 	}
-	if byResponse.SessionID != "resp_session" || byResponse.LastResponseID != "resp_latest" {
-		t.Fatalf("runtime session by response id = %+v", byResponse)
+	if byNative.SessionID != "codex_session" || byNative.NativeSessionID != "codex_native" {
+		t.Fatalf("runtime session by native id = %+v", byNative)
 	}
 
 	runtimeSessions, err := state.RuntimeSessions(context.Background())

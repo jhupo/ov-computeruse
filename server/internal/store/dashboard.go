@@ -285,7 +285,7 @@ func (s *Store) ListSessions(ctx context.Context, agentID, projectID string, lim
 	}
 	query += ` GROUP BY cs.agent_id, cs.id, cs.id_source, cs.project_id, cs.title, cs.path, cs.cwd, cs.updated_at, cs.size_bytes, cs.content_sha256
 		), runtime_only AS (
-			SELECT rs.agent_id, rs.session_id AS id, 'runtime_session' AS id_source, COALESCE(rs.project_id, '') AS project_id, COALESCE(NULLIF(rs.session_id, ''), NULLIF(rs.native_session_id, ''), NULLIF(rs.last_response_id, ''), rs.id) AS title, '' AS path, '' AS cwd, rs.updated_at, 0::BIGINT AS size_bytes, '' AS content_sha256, 0::BIGINT AS message_count, NULL::TIMESTAMPTZ AS last_message_at
+			SELECT rs.agent_id, rs.session_id AS id, 'runtime_session' AS id_source, COALESCE(rs.project_id, '') AS project_id, COALESCE(NULLIF(rs.session_id, ''), NULLIF(rs.native_session_id, ''), rs.id) AS title, '' AS path, '' AS cwd, rs.updated_at, 0::BIGINT AS size_bytes, '' AS content_sha256, 0::BIGINT AS message_count, NULL::TIMESTAMPTZ AS last_message_at
 			FROM runtime_sessions rs
 			WHERE rs.agent_id=$1 AND rs.session_id IS NOT NULL AND rs.session_id <> ''
 				AND NOT EXISTS (SELECT 1 FROM codex_sessions cs WHERE cs.agent_id=rs.agent_id AND cs.id=rs.session_id AND cs.deleted_at IS NULL)`
@@ -681,14 +681,14 @@ func scanRunEvents(rows pgx.Rows) ([]RunEventRecord, error) {
 }
 
 func (s *Store) UpsertRuntimeSession(ctx context.Context, agentID string, runtime protocol.RuntimeSession) error {
-	if runtime.Runtime == "" {
-		runtime.Runtime = "codex"
+	if runtime.Runtime != protocol.RuntimeCodexCLI {
+		return nil
 	}
 	if runtime.SessionID == "" {
-		runtime.SessionID = dashboardFirstNonEmpty(runtime.NativeSessionID, runtime.LastResponseID, runtime.LastRunID)
+		runtime.SessionID = dashboardFirstNonEmpty(runtime.NativeSessionID, runtime.LastRunID)
 	}
 	if runtime.ID == "" {
-		runtime.ID = runtimeSessionID(agentID, runtime.Runtime, dashboardFirstNonEmpty(runtime.SessionID, runtime.NativeSessionID, runtime.LastResponseID, runtime.LastRunID))
+		runtime.ID = runtimeSessionID(agentID, runtime.Runtime, dashboardFirstNonEmpty(runtime.SessionID, runtime.NativeSessionID, runtime.LastRunID))
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -716,7 +716,7 @@ func (s *Store) UpsertRuntimeSession(ctx context.Context, agentID string, runtim
 				resume_mode=COALESCE(NULLIF(EXCLUDED.resume_mode, ''), runtime_sessions.resume_mode),
 				last_run_id=COALESCE(NULLIF(EXCLUDED.last_run_id, ''), runtime_sessions.last_run_id),
 				updated_at=now()`,
-		runtime.ID, agentID, runtime.Runtime, runtime.NativeSessionID, runtime.ProjectID, runtime.SessionID, runtime.LastResponseID, runtime.ResumeMode, runtime.LastRunID)
+		runtime.ID, agentID, runtime.Runtime, runtime.NativeSessionID, runtime.ProjectID, runtime.SessionID, "", runtime.ResumeMode, runtime.LastRunID)
 	if err != nil {
 		return err
 	}
@@ -744,10 +744,10 @@ func (s *Store) linkRuntimeSessionToRun(ctx context.Context, agentID string, run
 }
 
 func (s *Store) ListRuntimeSessions(ctx context.Context, agentID, sessionID string) ([]protocol.RuntimeSession, error) {
-	query := `SELECT id, runtime, COALESCE(project_id, ''), COALESCE(session_id, ''), COALESCE(native_session_id, ''), COALESCE(last_response_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''), updated_at FROM runtime_sessions WHERE agent_id=$1`
+	query := `SELECT id, runtime, COALESCE(project_id, ''), COALESCE(session_id, ''), COALESCE(native_session_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''), updated_at FROM runtime_sessions WHERE agent_id=$1`
 	args := []any{agentID}
 	if sessionID != "" {
-		query += ` AND (session_id=$2 OR native_session_id=$2 OR last_response_id=$2)`
+		query += ` AND (session_id=$2 OR native_session_id=$2)`
 		args = append(args, sessionID)
 	}
 	query += ` ORDER BY updated_at DESC`
@@ -759,7 +759,7 @@ func (s *Store) ListRuntimeSessions(ctx context.Context, agentID, sessionID stri
 	out := []protocol.RuntimeSession{}
 	for rows.Next() {
 		var item protocol.RuntimeSession
-		if err := rows.Scan(&item.ID, &item.Runtime, &item.ProjectID, &item.SessionID, &item.NativeSessionID, &item.LastResponseID, &item.ResumeMode, &item.LastRunID, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Runtime, &item.ProjectID, &item.SessionID, &item.NativeSessionID, &item.ResumeMode, &item.LastRunID, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, item)

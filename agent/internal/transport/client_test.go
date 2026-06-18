@@ -19,18 +19,18 @@ func TestUniqueRuntimeSessionsKeepsNativeOnlySessions(t *testing.T) {
 	oldAt := time.Now().UTC().Add(-time.Minute)
 	newAt := time.Now().UTC()
 	sessions := uniqueRuntimeSessions([]protocol.RuntimeSession{
-		{Runtime: "codex.native", NativeSessionID: "native_1", LastResponseID: "resp_old", UpdatedAt: oldAt},
-		{Runtime: "codex.native", NativeSessionID: "native_1", LastResponseID: "resp_new", UpdatedAt: newAt},
-		{Runtime: protocol.RuntimeOpenAIResponses, SessionID: "session_1", NativeSessionID: "responses:resp_1", LastResponseID: "resp_1", UpdatedAt: newAt},
+		{Runtime: protocol.RuntimeCodexCLI, NativeSessionID: "native_1", UpdatedAt: oldAt},
+		{Runtime: protocol.RuntimeCodexCLI, NativeSessionID: "native_1", UpdatedAt: newAt},
+		{Runtime: protocol.RuntimeCodexCLI, SessionID: "session_1", NativeSessionID: "native_2", UpdatedAt: newAt},
 	})
 	if len(sessions) != 2 {
 		t.Fatalf("session count = %d, want 2: %+v", len(sessions), sessions)
 	}
 	foundNative := false
 	for _, session := range sessions {
-		if session.Runtime == "codex.native" {
+		if session.NativeSessionID == "native_1" {
 			foundNative = true
-			if session.NativeSessionID != "native_1" || session.LastResponseID != "resp_new" {
+			if !session.UpdatedAt.Equal(newAt) {
 				t.Fatalf("native session = %+v", session)
 			}
 		}
@@ -51,7 +51,6 @@ func TestServeStartsReadLoopBeforeIndexUploadCompletes(t *testing.T) {
 		blockingScanner{},
 		protocolDevice(),
 		defaultConfig(),
-		nil,
 		nil,
 		false,
 		false,

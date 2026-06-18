@@ -269,7 +269,7 @@ func countAcceptedHistoryItems(batch protocol.HistoryItems) int {
 
 func runtimeSessionFromRunEvent(event protocol.RunEvent) (protocol.RuntimeSession, bool) {
 	switch event.Kind {
-	case "session.created", "session.resumed", "session.updated", "run.status", "run.completed", "run.done":
+	case "session.created", "session.resumed", "session.updated":
 	default:
 		return protocol.RuntimeSession{}, false
 	}
@@ -277,7 +277,10 @@ func runtimeSessionFromRunEvent(event protocol.RunEvent) (protocol.RuntimeSessio
 	if err != nil {
 		return protocol.RuntimeSession{}, false
 	}
-	if runtimeSession.SessionID == "" && runtimeSession.NativeSessionID == "" && runtimeSession.LastResponseID == "" {
+	if runtimeSession.Runtime != protocol.RuntimeCodexCLI {
+		return protocol.RuntimeSession{}, false
+	}
+	if runtimeSession.SessionID == "" && runtimeSession.NativeSessionID == "" {
 		return protocol.RuntimeSession{}, false
 	}
 	return runtimeSession, true

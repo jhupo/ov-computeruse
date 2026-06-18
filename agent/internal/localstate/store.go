@@ -253,7 +253,7 @@ func (s *Store) ResolveCommandContext(ctx context.Context, command protocol.Comm
 		session, err := s.Session(ctx, command.SessionID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				runtimeSession, runtimeErr := s.RuntimeSession(ctx, command.SessionID, protocol.RuntimeOpenAIResponses)
+				runtimeSession, runtimeErr := s.RuntimeSession(ctx, command.SessionID, protocol.RuntimeCodexCLI)
 				if runtimeErr != nil {
 					if errors.Is(runtimeErr, sql.ErrNoRows) {
 						return resolved, errors.New("codex session is not indexed locally")
@@ -264,7 +264,7 @@ func (s *Store) ResolveCommandContext(ctx context.Context, command protocol.Comm
 					ID:        runtimeSession.SessionID,
 					IDSource:  "runtime_session",
 					ProjectID: runtimeSession.ProjectID,
-					Title:     firstNonEmpty(runtimeSession.NativeSessionID, runtimeSession.LastResponseID, runtimeSession.SessionID),
+					Title:     firstNonEmpty(runtimeSession.NativeSessionID, runtimeSession.SessionID),
 				}
 				if strings.TrimSpace(command.ProjectID) != "" && strings.TrimSpace(runtimeSession.ProjectID) != "" && command.ProjectID != runtimeSession.ProjectID {
 					return resolved, errors.New("command project does not match runtime session project")
@@ -417,7 +417,7 @@ func (s *Store) SaveRuntimeSession(ctx context.Context, session RuntimeSession) 
 		return errors.New("runtime session runtime is required")
 	}
 	if strings.TrimSpace(session.SessionID) == "" {
-		session.SessionID = firstNonEmpty(session.NativeSessionID, session.LastResponseID, session.LastRunID)
+		session.SessionID = firstNonEmpty(session.NativeSessionID, session.LastRunID)
 	}
 	if strings.TrimSpace(session.SessionID) == "" {
 		return errors.New("runtime session identity is required")
@@ -436,7 +436,7 @@ func (s *Store) SaveRuntimeSession(ctx context.Context, session RuntimeSession) 
 			resume_mode = COALESCE(NULLIF(excluded.resume_mode, ''), runtime_sessions.resume_mode),
 			last_run_id = COALESCE(NULLIF(excluded.last_run_id, ''), runtime_sessions.last_run_id),
 			updated_at = excluded.updated_at
-	`, session.SessionID, session.Runtime, session.ProjectID, session.NativeSessionID, session.LastResponseID, session.ResumeMode, session.LastRunID, updatedAt.UTC().Format(time.RFC3339Nano))
+	`, session.SessionID, session.Runtime, session.ProjectID, session.NativeSessionID, "", session.ResumeMode, session.LastRunID, updatedAt.UTC().Format(time.RFC3339Nano))
 	return err
 }
 
@@ -452,13 +452,13 @@ func (s *Store) RuntimeSession(ctx context.Context, sessionID, runtime string) (
 	var session RuntimeSession
 	var updatedAt string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT session_id, runtime, COALESCE(project_id, ''), COALESCE(native_session_id, ''), COALESCE(last_response_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''), updated_at
+		SELECT session_id, runtime, COALESCE(project_id, ''), COALESCE(native_session_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''), updated_at
 		FROM runtime_sessions
 		WHERE runtime = ?
-			AND (session_id = ? OR native_session_id = ? OR last_response_id = ?)
+			AND (session_id = ? OR native_session_id = ?)
 		ORDER BY updated_at DESC
 		LIMIT 1
-	`, runtime, sessionID, sessionID, sessionID).Scan(&session.SessionID, &session.Runtime, &session.ProjectID, &session.NativeSessionID, &session.LastResponseID, &session.ResumeMode, &session.LastRunID, &updatedAt)
+	`, runtime, sessionID, sessionID).Scan(&session.SessionID, &session.Runtime, &session.ProjectID, &session.NativeSessionID, &session.ResumeMode, &session.LastRunID, &updatedAt)
 	if parsed, parseErr := time.Parse(time.RFC3339Nano, updatedAt); parseErr == nil {
 		session.UpdatedAt = parsed.UTC()
 	}
@@ -470,7 +470,7 @@ func (s *Store) RuntimeSessions(ctx context.Context) ([]RuntimeSession, error) {
 		return nil, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT session_id, runtime, COALESCE(project_id, ''), COALESCE(native_session_id, ''), COALESCE(last_response_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''), updated_at
+		SELECT session_id, runtime, COALESCE(project_id, ''), COALESCE(native_session_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''), updated_at
 		FROM runtime_sessions
 		ORDER BY updated_at DESC
 	`)
@@ -482,7 +482,7 @@ func (s *Store) RuntimeSessions(ctx context.Context) ([]RuntimeSession, error) {
 	for rows.Next() {
 		var session RuntimeSession
 		var updatedAt string
-		if err := rows.Scan(&session.SessionID, &session.Runtime, &session.ProjectID, &session.NativeSessionID, &session.LastResponseID, &session.ResumeMode, &session.LastRunID, &updatedAt); err != nil {
+		if err := rows.Scan(&session.SessionID, &session.Runtime, &session.ProjectID, &session.NativeSessionID, &session.ResumeMode, &session.LastRunID, &updatedAt); err != nil {
 			return nil, err
 		}
 		if parsed, parseErr := time.Parse(time.RFC3339Nano, updatedAt); parseErr == nil {
@@ -1066,7 +1066,6 @@ type RuntimeSession struct {
 	Runtime         string
 	ProjectID       string
 	NativeSessionID string
-	LastResponseID  string
 	ResumeMode      string
 	LastRunID       string
 	UpdatedAt       time.Time
@@ -1357,7 +1356,7 @@ func upsertRuntimeSessions(ctx context.Context, tx txLike, sessions []codexscan.
 			continue
 		}
 		if strings.TrimSpace(session.SessionID) == "" {
-			session.SessionID = firstNonEmpty(session.NativeSessionID, session.LastResponseID)
+			session.SessionID = session.NativeSessionID
 		}
 		if strings.TrimSpace(session.SessionID) == "" {
 			continue
@@ -1375,7 +1374,7 @@ func upsertRuntimeSessions(ctx context.Context, tx txLike, sessions []codexscan.
 				last_response_id = COALESCE(NULLIF(excluded.last_response_id, ''), runtime_sessions.last_response_id),
 				resume_mode = COALESCE(NULLIF(excluded.resume_mode, ''), runtime_sessions.resume_mode),
 				updated_at = excluded.updated_at
-		`, session.SessionID, session.Runtime, session.ProjectID, session.NativeSessionID, session.LastResponseID, session.ResumeMode, updatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+		`, session.SessionID, session.Runtime, session.ProjectID, session.NativeSessionID, "", session.ResumeMode, updatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
 	}

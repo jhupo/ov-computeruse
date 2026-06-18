@@ -44,7 +44,6 @@ type Client struct {
 
 	historyAckMu      sync.Mutex
 	pendingHistoryAck map[string]chan protocol.HistoryItemsAck
-	historySyncer     HistorySyncer
 }
 
 type scanner interface {
@@ -54,15 +53,11 @@ type scanner interface {
 	ForEachHistoryChunk(context.Context, codexscan.Session, int, func(codexscan.HistoryChunk) error) error
 }
 
-type HistorySyncer interface {
-	SyncRunEvent(context.Context, protocol.RunEvent) error
+func NewClient(identity securestore.Identity, manager *runs.Manager, scanner codexscan.Scanner, deviceInfo device.Info, cfg config.Config, state *localstate.Store, noScan bool, uploadHistory bool, logger *slog.Logger) *Client {
+	return newClient(identity, manager, scanner, deviceInfo, cfg, state, noScan, uploadHistory, logger)
 }
 
-func NewClient(identity securestore.Identity, manager *runs.Manager, scanner codexscan.Scanner, deviceInfo device.Info, cfg config.Config, state *localstate.Store, historySyncer HistorySyncer, noScan bool, uploadHistory bool, logger *slog.Logger) *Client {
-	return newClient(identity, manager, scanner, deviceInfo, cfg, state, historySyncer, noScan, uploadHistory, logger)
-}
-
-func newClient(identity securestore.Identity, manager *runs.Manager, scanner scanner, deviceInfo device.Info, cfg config.Config, state *localstate.Store, historySyncer HistorySyncer, noScan bool, uploadHistory bool, logger *slog.Logger) *Client {
+func newClient(identity securestore.Identity, manager *runs.Manager, scanner scanner, deviceInfo device.Info, cfg config.Config, state *localstate.Store, noScan bool, uploadHistory bool, logger *slog.Logger) *Client {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -80,7 +75,6 @@ func newClient(identity securestore.Identity, manager *runs.Manager, scanner sca
 		dialer:            WebSocketDialer{},
 		workspace:         workspace.New(state),
 		pendingHistoryAck: map[string]chan protocol.HistoryItemsAck{},
-		historySyncer:     historySyncer,
 	}
 }
 
@@ -129,11 +123,6 @@ func (c *Client) Emit(ctx context.Context, event protocol.RunEvent) error {
 		if err := c.state.SaveRunEvent(ctx, event); err != nil {
 			return err
 		}
-		if c.historySyncer != nil {
-			if err := c.historySyncer.SyncRunEvent(ctx, event); err != nil {
-				c.logger.WarnContext(ctx, "codex history sync skipped", "run_id", event.RunID, "session_id", event.SessionID, "event_id", event.EventID, "kind", event.Kind, "error", err)
-			}
-		}
 	}
 	if err := c.sendRunEvent(ctx, event); err != nil {
 		if c.state != nil {
@@ -145,7 +134,27 @@ func (c *Client) Emit(ctx context.Context, event protocol.RunEvent) error {
 	if c.state != nil {
 		_ = c.state.MarkRunEventSent(ctx, event)
 	}
+	if c.shouldRefreshIndexAfter(event) {
+		go c.refreshIndexAfterRun(event.RunID)
+	}
 	return nil
+}
+
+func (c *Client) shouldRefreshIndexAfter(event protocol.RunEvent) bool {
+	switch event.Kind {
+	case "run.done", "run.completed":
+		return !c.noScan
+	default:
+		return false
+	}
+}
+
+func (c *Client) refreshIndexAfterRun(runID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := c.uploadIndex(ctx); err != nil {
+		c.logger.WarnContext(ctx, "post-run index refresh failed", "run_id", runID, "error", err)
+	}
 }
 
 func skipRunEvent(event protocol.RunEvent) bool {
@@ -245,9 +254,13 @@ func (c *Client) flushRunEventOutbox(ctx context.Context) error {
 }
 
 func (c *Client) register(ctx context.Context) error {
-	cred, credErr := c.scanner.Credential()
+	cred, _ := c.scanner.Credential()
 	features := []string{"codex.scan", "history.items", "index.runtime_sessions", "run.events", "runtime.session", "command.refresh_index", workspace.FeatureName()}
-	supportsRuntime := credErr == nil && strings.TrimSpace(cred.Fingerprint) != ""
+	runtimeName := ""
+	if c.manager != nil {
+		runtimeName = strings.TrimSpace(c.manager.RuntimeName())
+	}
+	supportsRuntime := runtimeName != "" && runtimeName != "noop"
 	if supportsRuntime {
 		features = append(features, "approval.decision", "command.new_session", "command.resume", "command.send", "command.stop")
 	}
@@ -255,8 +268,8 @@ func (c *Client) register(ctx context.Context) error {
 	if supportsGit {
 		features = append(features, "git.status", "git.diff")
 	}
-	if c.manager != nil && strings.TrimSpace(c.manager.RuntimeName()) != "" {
-		features = append(features, "runtime."+c.manager.RuntimeName())
+	if supportsRuntime {
+		features = append(features, "runtime."+runtimeName)
 	}
 	if c.cfg.AllowLocalShell {
 		features = append(features, "tool.local_shell", "terminal.output")
@@ -380,7 +393,6 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 			ProjectID:       session.ProjectID,
 			SessionID:       session.SessionID,
 			NativeSessionID: session.NativeSessionID,
-			LastResponseID:  session.LastResponseID,
 			ResumeMode:      session.ResumeMode,
 			UpdatedAt:       session.UpdatedAt,
 		})
@@ -396,7 +408,6 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 				ProjectID:       session.ProjectID,
 				SessionID:       session.SessionID,
 				NativeSessionID: session.NativeSessionID,
-				LastResponseID:  session.LastResponseID,
 				ResumeMode:      session.ResumeMode,
 				LastRunID:       session.LastRunID,
 				UpdatedAt:       session.UpdatedAt,
@@ -489,7 +500,7 @@ func uniqueRuntimeSessions(sessions []protocol.RuntimeSession) []protocol.Runtim
 		if strings.TrimSpace(session.Runtime) == "" {
 			continue
 		}
-		identity := firstNonEmpty(session.SessionID, session.NativeSessionID, session.LastResponseID, session.ID)
+		identity := firstNonEmpty(session.SessionID, session.NativeSessionID, session.ID)
 		if identity == "" {
 			continue
 		}

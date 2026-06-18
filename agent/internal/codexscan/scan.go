@@ -88,7 +88,6 @@ type RuntimeSession struct {
 	ProjectID       string    `json:"project_id,omitempty"`
 	SessionID       string    `json:"session_id,omitempty"`
 	NativeSessionID string    `json:"native_session_id,omitempty"`
-	LastResponseID  string    `json:"last_response_id,omitempty"`
 	ResumeMode      string    `json:"resume_mode,omitempty"`
 	UpdatedAt       time.Time `json:"updated_at,omitempty"`
 }
@@ -275,7 +274,7 @@ func (s Scanner) Scan(ctx context.Context) (Result, error) {
 				session := sessionFromFile(path, info, maxBytes, sessionTitles)
 				session.Root = root
 				result.Sessions = append(result.Sessions, session)
-				if runtimeSession := runtimeSessionFromFile(session); runtimeSession.SessionID != "" || runtimeSession.LastResponseID != "" {
+				if runtimeSession := runtimeSessionFromFile(session); runtimeSession.SessionID != "" || runtimeSession.NativeSessionID != "" {
 					result.RuntimeSessions = append(result.RuntimeSessions, runtimeSession)
 				}
 				if session.CWD != "" {
@@ -629,7 +628,6 @@ func runtimeSessionFromFile(session Session) RuntimeSession {
 	}
 	defer file.Close()
 	scanner := newJSONLScanner(file)
-	lastResponseID := ""
 	nativeSessionID := session.ID
 	updatedAt := session.UpdatedAt
 	for scanner.Scan() {
@@ -653,83 +651,18 @@ func runtimeSessionFromFile(session Session) RuntimeSession {
 				nativeSessionID = strings.TrimSpace(meta.ID)
 			}
 		}
-		if responseID := responseIDFromPayload(row.Payload); responseID != "" {
-			lastResponseID = responseID
-		} else if len(row.Payload) == 0 {
-			if responseID := responseIDFromPayload(scanner.Bytes()); responseID != "" {
-				lastResponseID = responseID
-			}
-		} else if responseID := responseIDCandidate(row.ID); responseID != "" {
-			lastResponseID = responseID
-		}
 	}
-	if lastResponseID == "" && nativeSessionID == "" {
+	if nativeSessionID == "" {
 		return RuntimeSession{}
 	}
 	return RuntimeSession{
-		Runtime:         protocol.RuntimeOpenAIResponses,
+		Runtime:         protocol.RuntimeCodexCLI,
 		ProjectID:       session.ProjectID,
 		SessionID:       session.ID,
 		NativeSessionID: nativeSessionID,
-		LastResponseID:  lastResponseID,
-		ResumeMode:      "codex_history_index",
+		ResumeMode:      "codex_cli_history_index",
 		UpdatedAt:       updatedAt,
 	}
-}
-
-func responseIDFromPayload(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var value any
-	if json.Unmarshal(raw, &value) != nil {
-		return ""
-	}
-	return responseIDFromAny(value)
-}
-
-func responseIDFromAny(value any) string {
-	switch typed := value.(type) {
-	case string:
-		if nested := strings.TrimSpace(typed); strings.HasPrefix(nested, "{") || strings.HasPrefix(nested, "[") {
-			var nestedValue any
-			if json.Unmarshal([]byte(nested), &nestedValue) == nil {
-				if id := responseIDFromAny(nestedValue); id != "" {
-					return id
-				}
-			}
-		}
-		return responseIDCandidate(typed)
-	case []any:
-		for i := len(typed) - 1; i >= 0; i-- {
-			if id := responseIDFromAny(typed[i]); id != "" {
-				return id
-			}
-		}
-	case map[string]any:
-		for _, key := range []string{"response_id", "responseId", "last_response_id", "lastResponseId"} {
-			if id := responseIDFromAny(typed[key]); id != "" {
-				return id
-			}
-		}
-		for _, key := range []string{"response", "current_response", "currentResponse", "last_response", "lastResponse", "result", "event", "message", "item", "payload", "data", "raw"} {
-			if id := responseIDFromAny(typed[key]); id != "" {
-				return id
-			}
-		}
-		if id := responseIDFromAny(typed["id"]); id != "" {
-			return id
-		}
-	}
-	return ""
-}
-
-func responseIDCandidate(value string) string {
-	value = strings.TrimSpace(value)
-	if strings.HasPrefix(value, "resp_") {
-		return value
-	}
-	return ""
 }
 
 func readSessionIndex(path string) map[string]string {
