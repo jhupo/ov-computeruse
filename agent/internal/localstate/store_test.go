@@ -181,3 +181,43 @@ func TestSaveRunEventDoesNotProjectConflictingSeq(t *testing.T) {
 		t.Fatalf("projected content = %q, want first", content)
 	}
 }
+
+func TestMarkRunEventAckedPrefersEventID(t *testing.T) {
+	state, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer state.Close()
+	ctx := context.Background()
+	event := protocol.RunEvent{
+		EventID: "evt_acked",
+		RunID:   "run_ack",
+		Seq:     7,
+		Kind:    "run.started",
+		At:      time.Now().UTC(),
+	}
+	if err := state.SaveRunEvent(ctx, event); err != nil {
+		t.Fatalf("save event: %v", err)
+	}
+	if err := state.MarkRunEventAcked(ctx, protocol.Ack{EventID: "evt_missing", RunID: "run_ack", AckSeq: 7, Status: "acked", At: time.Now().UTC()}); err != nil {
+		t.Fatalf("ack missing event id: %v", err)
+	}
+	var ackedAt string
+	err = state.db.QueryRowContext(ctx, `SELECT COALESCE(acked_at, '') FROM run_events WHERE event_id = ?`, "evt_acked").Scan(&ackedAt)
+	if err != nil {
+		t.Fatalf("query acked event: %v", err)
+	}
+	if ackedAt != "" {
+		t.Fatal("event was acked through run_id+seq even though ack carried a different event_id")
+	}
+	if err := state.MarkRunEventAcked(ctx, protocol.Ack{EventID: "evt_acked", RunID: "run_ack", AckSeq: 7, Status: "acked", At: time.Now().UTC()}); err != nil {
+		t.Fatalf("ack by event id: %v", err)
+	}
+	err = state.db.QueryRowContext(ctx, `SELECT COALESCE(acked_at, '') FROM run_events WHERE event_id = ?`, "evt_acked").Scan(&ackedAt)
+	if err != nil {
+		t.Fatalf("query acked event after event ack: %v", err)
+	}
+	if ackedAt == "" {
+		t.Fatal("event was not acked by event_id")
+	}
+}

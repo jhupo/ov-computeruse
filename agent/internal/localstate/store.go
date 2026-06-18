@@ -584,12 +584,23 @@ func (s *Store) MarkRunEventError(ctx context.Context, event protocol.RunEvent, 
 }
 
 func (s *Store) MarkRunEventAcked(ctx context.Context, ack protocol.Ack) error {
-	if s == nil || strings.TrimSpace(ack.RunID) == "" || ack.AckSeq == 0 {
+	if s == nil {
 		return nil
 	}
 	ackedAt := ack.At
 	if ackedAt.IsZero() {
 		ackedAt = time.Now().UTC()
+	}
+	if strings.TrimSpace(ack.EventID) != "" {
+		_, err := s.db.ExecContext(ctx, `
+			UPDATE run_events
+			SET acked_at = ?, updated_at = ?
+			WHERE event_id = ? AND acked_at IS NULL
+		`, ackedAt.UTC().Format(time.RFC3339Nano), now(), ack.EventID)
+		return err
+	}
+	if strings.TrimSpace(ack.RunID) == "" || ack.AckSeq == 0 {
+		return nil
 	}
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE run_events

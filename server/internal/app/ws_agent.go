@@ -211,14 +211,14 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 		if err == nil {
 			if skipAgentRunEvent(event) {
 				if event.RunID != "" && event.Seq > 0 {
-					s.sendAgent(agent, "run.event.ack", protocol.Ack{RunID: event.RunID, Status: "ignored", Message: "usage event ignored", AckSeq: event.Seq, At: time.Now().UTC()})
+					s.sendAgent(agent, "run.event.ack", protocol.Ack{EventID: event.EventID, RunID: event.RunID, Status: "ignored", Message: "usage event ignored", AckSeq: event.Seq, At: time.Now().UTC()})
 				}
 				return
 			}
 			result, err := s.store.SaveRunEvent(ctx, agent.AgentID, agent.DeviceID, event)
 			if err == nil {
 				if event.RunID != "" && event.Seq > 0 {
-					s.sendAgent(agent, "run.event.ack", protocol.Ack{RunID: event.RunID, Status: result.AckStatus(), AckSeq: event.Seq, At: time.Now().UTC()})
+					s.sendAgent(agent, "run.event.ack", protocol.Ack{EventID: event.EventID, RunID: event.RunID, Status: result.AckStatus(), AckSeq: event.Seq, At: time.Now().UTC()})
 				}
 				if result.ShouldBroadcast() {
 					if runtimeSession, ok := runtimeSessionFromRunEvent(event); ok {

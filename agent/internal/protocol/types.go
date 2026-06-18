@@ -245,6 +245,7 @@ func IsUsageKind(kind string) bool {
 
 type Ack struct {
 	MessageID string    `json:"message_id,omitempty"`
+	EventID   string    `json:"event_id,omitempty"`
 	CommandID string    `json:"command_id,omitempty"`
 	RunID     string    `json:"run_id,omitempty"`
 	Status    string    `json:"status"`
