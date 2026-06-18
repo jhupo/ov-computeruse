@@ -68,11 +68,6 @@ type DashBroadcastEnvelope struct {
 	Data   []byte `json:"data"`
 }
 
-type WorkspaceResponseEnvelope struct {
-	Origin   string                     `json:"origin"`
-	Response protocol.WorkspaceResponse `json:"response"`
-}
-
 type AgentDisconnectEnvelope struct {
 	Origin   string `json:"origin"`
 	AgentID  string `json:"agent_id"`

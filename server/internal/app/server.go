@@ -6,41 +6,38 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
 	"ov-computeruse/server/internal/config"
 	"ov-computeruse/server/internal/platform/httpx"
-	"ov-computeruse/server/internal/protocol"
 	"ov-computeruse/server/internal/store"
 )
 
 type Server struct {
-	cfg      config.Config
-	store    Repository
-	postgres *pgxpool.Pool
-	redis    *redis.Client
-	hub      *Hub
-	log      *slog.Logger
-	bind     BindService
-	sessions SessionService
-
-	workspaceMu      sync.Mutex
-	workspacePending map[string]chan protocol.WorkspaceResponse
+	cfg       config.Config
+	store     Repository
+	postgres  *pgxpool.Pool
+	redis     *redis.Client
+	hub       *Hub
+	log       *slog.Logger
+	bind      BindService
+	sessions  SessionService
+	workspace WorkspaceBroker
 }
 
 func New(cfg config.Config, st Repository, postgresPool *pgxpool.Pool, redisClient *redis.Client, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{cfg: cfg, store: st, postgres: postgresPool, redis: redisClient, hub: NewHub(redisClient, st, logger), log: logger, bind: NewBindService(st, cfg.PublicURL, cfg.ServerKeyID), sessions: NewSessionService(redisClient, st, logger), workspacePending: map[string]chan protocol.WorkspaceResponse{}}
+	hub := NewHub(redisClient, st, logger)
+	return &Server{cfg: cfg, store: st, postgres: postgresPool, redis: redisClient, hub: hub, log: logger, bind: NewBindService(st, cfg.PublicURL, cfg.ServerKeyID), sessions: NewSessionService(redisClient, st, logger), workspace: NewWorkspaceBroker(redisClient, hub, logger)}
 }
 
 func (s *Server) Run(ctx context.Context) {
 	s.hub.Run(ctx)
-	go s.subscribeWorkspaceResponses(ctx)
+	go s.workspace.Run(ctx)
 	go s.runCommandDispatcher(ctx)
 }
 

@@ -209,7 +209,7 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 	case "workspace.response":
 		response, err := protocol.Decode[protocol.WorkspaceResponse](env.Data)
 		if err == nil {
-			s.resolveWorkspaceResponse(response)
+			s.workspace.Resolve(response)
 		}
 	case "run.event":
 		event, err := protocol.Decode[protocol.RunEvent](env.Data)

@@ -2,17 +2,13 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"ov-computeruse/server/internal/protocol"
 	"ov-computeruse/server/internal/store"
 )
-
-const workspaceRequestTimeout = 15 * time.Second
 
 func (s *Server) handleDashWorkspaceTree(w http.ResponseWriter, r *http.Request) {
 	_, identity, req, ok := s.workspaceRequestFromQuery(w, r, "list")
@@ -85,99 +81,11 @@ func (s *Server) workspaceRequestFromQuery(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) sendWorkspaceRequest(ctx context.Context, identity store.AgentIdentity, req protocol.WorkspaceRequest) (protocol.WorkspaceResponse, int, error) {
-	if !s.hub.AgentMayBeOnline(ctx, identity.AgentID) {
-		return protocol.WorkspaceResponse{}, http.StatusConflict, errors.New("agent is offline")
-	}
-	waitCh := s.registerWorkspaceWaiter(req.RequestID)
-	defer s.unregisterWorkspaceWaiter(req.RequestID)
 	message := s.agentEnvelope(&AgentConn{AgentID: identity.AgentID, UserID: identity.UserID, DeviceID: identity.DeviceID, Secret: identity.AgentSecret, Epoch: identity.AgentEpoch}, "workspace.request", req)
 	if message == nil {
 		return protocol.WorkspaceResponse{}, http.StatusInternalServerError, errors.New("unable to encode workspace request")
 	}
-	if status := s.hub.DispatchEnvelope(ctx, identity.AgentID, identity.UserID, message); status != CommandDispatchDelivered {
-		return protocol.WorkspaceResponse{}, http.StatusConflict, errors.New("agent is not available")
-	}
-	timer := time.NewTimer(workspaceRequestTimeout)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return protocol.WorkspaceResponse{}, http.StatusRequestTimeout, ctx.Err()
-	case <-timer.C:
-		return protocol.WorkspaceResponse{}, http.StatusGatewayTimeout, errors.New("workspace request timed out")
-	case resp := <-waitCh:
-		if resp.RequestID != req.RequestID {
-			return protocol.WorkspaceResponse{}, http.StatusBadGateway, errors.New("workspace response request_id mismatch")
-		}
-		return resp, http.StatusOK, nil
-	}
-}
-
-func (s *Server) registerWorkspaceWaiter(requestID string) chan protocol.WorkspaceResponse {
-	ch := make(chan protocol.WorkspaceResponse, 1)
-	s.workspaceMu.Lock()
-	s.workspacePending[requestID] = ch
-	s.workspaceMu.Unlock()
-	return ch
-}
-
-func (s *Server) unregisterWorkspaceWaiter(requestID string) {
-	s.workspaceMu.Lock()
-	delete(s.workspacePending, requestID)
-	s.workspaceMu.Unlock()
-}
-
-func (s *Server) resolveWorkspaceResponse(resp protocol.WorkspaceResponse) {
-	if strings.TrimSpace(resp.RequestID) == "" {
-		return
-	}
-	if s.resolveWorkspaceResponseLocal(resp) {
-		return
-	}
-	s.publishWorkspaceResponse(resp)
-}
-
-func (s *Server) resolveWorkspaceResponseLocal(resp protocol.WorkspaceResponse) bool {
-	s.workspaceMu.Lock()
-	ch := s.workspacePending[resp.RequestID]
-	s.workspaceMu.Unlock()
-	if ch == nil {
-		return false
-	}
-	select {
-	case ch <- resp:
-	default:
-	}
-	return true
-}
-
-func (s *Server) publishWorkspaceResponse(resp protocol.WorkspaceResponse) {
-	if s.redis == nil {
-		return
-	}
-	raw, err := json.Marshal(WorkspaceResponseEnvelope{Origin: s.hub.InstanceID(), Response: resp})
-	if err != nil {
-		return
-	}
-	_ = s.redis.Publish(context.Background(), "ov:workspace:responses", raw).Err()
-}
-
-func (s *Server) subscribeWorkspaceResponses(ctx context.Context) {
-	if s.redis == nil {
-		return
-	}
-	pubsub := s.redis.Subscribe(ctx, "ov:workspace:responses")
-	defer pubsub.Close()
-	for msg := range pubsub.Channel() {
-		var env WorkspaceResponseEnvelope
-		if err := json.Unmarshal([]byte(msg.Payload), &env); err != nil {
-			s.log.WarnContext(ctx, "invalid workspace response envelope", "error", err)
-			continue
-		}
-		if env.Origin == s.hub.InstanceID() {
-			continue
-		}
-		s.resolveWorkspaceResponseLocal(env.Response)
-	}
+	return s.workspace.Send(ctx, identity, req, message)
 }
 
 func workspaceErrorCode(status int) string {
