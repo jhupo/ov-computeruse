@@ -93,10 +93,10 @@ type DashboardRepository interface {
 	ListRuntimeSessions(context.Context, string, string) ([]protocol.RuntimeSession, error)
 	SaveApprovalRequest(context.Context, string, protocol.ApprovalRequest) error
 	ListApprovals(context.Context, string, bool, string, int) ([]store.ApprovalSummary, error)
-	ApprovalByID(context.Context, string) (store.ApprovalSummary, bool, error)
-	ApprovalAgent(context.Context, string) (store.AgentIdentity, error)
+	ApprovalByID(context.Context, string, string) (store.ApprovalSummary, bool, error)
+	ApprovalAgent(context.Context, string, bool, string) (store.AgentIdentity, error)
 	QueueApprovalDecisionCommand(context.Context, string, string, protocol.ApprovalDecision, protocol.Command) (protocol.Command, error)
-	DecideApproval(context.Context, string, protocol.ApprovalDecision) error
+	DecideApproval(context.Context, string, string, protocol.ApprovalDecision) error
 }
 
 type Repository interface {

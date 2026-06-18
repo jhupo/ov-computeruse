@@ -755,7 +755,7 @@ func (s *Store) SaveApprovalRequest(ctx context.Context, agentID string, request
 	}
 	_, err := s.pool.Exec(ctx, `INSERT INTO approval_requests (id, agent_id, run_id, project_id, session_id, category, action, risk_level, payload, status, requested_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10)
-		ON CONFLICT (id) DO NOTHING`, request.ID, agentID, request.RunID, request.ProjectID, request.SessionID, request.Category, request.Action, request.RiskLevel, jsonRaw(request.Payload), request.At)
+		ON CONFLICT (agent_id, id) DO NOTHING`, request.ID, agentID, request.RunID, request.ProjectID, request.SessionID, request.Category, request.Action, request.RiskLevel, jsonRaw(request.Payload), request.At)
 	return err
 }
 
@@ -810,11 +810,11 @@ func (s *Store) ListApprovals(ctx context.Context, userID string, admin bool, st
 	return out, rows.Err()
 }
 
-func (s *Store) ApprovalByID(ctx context.Context, approvalID string) (ApprovalSummary, bool, error) {
+func (s *Store) ApprovalByID(ctx context.Context, agentID, approvalID string) (ApprovalSummary, bool, error) {
 	row := s.pool.QueryRow(ctx, `SELECT id, agent_id, COALESCE(run_id, ''), COALESCE(project_id, ''), COALESCE(session_id, ''), COALESCE(category, ''), COALESCE(action, ''), COALESCE(risk_level, ''), payload, status, requested_at, decided_at,
 			COALESCE(decision, ''), COALESCE(decision_reason, ''), COALESCE(decision_command_id, ''), decision_queued_at, COALESCE(decided_by, '')
 		FROM approval_requests
-		WHERE id=$1`, approvalID)
+		WHERE agent_id=$1 AND id=$2`, agentID, approvalID)
 	var item ApprovalSummary
 	var payload []byte
 	var decidedAt sql.NullTime
@@ -837,20 +837,27 @@ func (s *Store) ApprovalByID(ctx context.Context, approvalID string) (ApprovalSu
 	return item, true, nil
 }
 
-func (s *Store) ApprovalAgent(ctx context.Context, approvalID string) (AgentIdentity, error) {
+func (s *Store) ApprovalAgent(ctx context.Context, userID string, admin bool, approvalID string) (AgentIdentity, error) {
 	var agentID string
-	err := s.pool.QueryRow(ctx, `SELECT a.id
+	query := `SELECT a.id
 		FROM approval_requests ar
 		JOIN agents a ON a.id = ar.agent_id
-		WHERE ar.id=$1`, approvalID).Scan(&agentID)
+		WHERE ar.id=$1`
+	args := []any{approvalID}
+	if !admin {
+		args = append(args, userID)
+		query += ` AND a.user_id=$2`
+	}
+	query += ` ORDER BY ar.requested_at DESC LIMIT 1`
+	err := s.pool.QueryRow(ctx, query, args...).Scan(&agentID)
 	if err != nil {
 		return AgentIdentity{}, err
 	}
 	return s.AgentByID(ctx, agentID)
 }
 
-func (s *Store) DecideApproval(ctx context.Context, approvalID string, decision protocol.ApprovalDecision) error {
-	_, err := s.pool.Exec(ctx, `UPDATE approval_requests SET status=$1, decided_at=$2, decided_by=$3, decision=$1, decision_reason=$4 WHERE id=$5 AND status='pending'`, decision.Decision, decision.DecidedAt, nullString(decision.DecidedBy), nullString(decision.Reason), approvalID)
+func (s *Store) DecideApproval(ctx context.Context, agentID, approvalID string, decision protocol.ApprovalDecision) error {
+	_, err := s.pool.Exec(ctx, `UPDATE approval_requests SET status=$1, decided_at=$2, decided_by=$3, decision=$1, decision_reason=$4 WHERE agent_id=$5 AND id=$6 AND status='pending'`, decision.Decision, decision.DecidedAt, nullString(decision.DecidedBy), nullString(decision.Reason), agentID, approvalID)
 	return err
 }
 
@@ -870,11 +877,11 @@ func (s *Store) ReleaseApprovalDecisionCommand(ctx context.Context, agentID, com
 	return err
 }
 
-func (s *Store) QueueApprovalDecision(ctx context.Context, approvalID string, decision protocol.ApprovalDecision, commandID string) error {
+func (s *Store) QueueApprovalDecision(ctx context.Context, agentID, approvalID string, decision protocol.ApprovalDecision, commandID string) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE approval_requests
 		SET decision=$2, decision_reason=$3, decision_command_id=$4, decision_queued_at=$5, decided_by=$6
-		WHERE id=$1 AND status='pending' AND decision_command_id IS NULL`,
-		approvalID, decision.Decision, nullString(decision.Reason), nullString(commandID), now(), nullString(decision.DecidedBy))
+		WHERE id=$1 AND agent_id=$7 AND status='pending' AND decision_command_id IS NULL`,
+		approvalID, decision.Decision, nullString(decision.Reason), nullString(commandID), now(), nullString(decision.DecidedBy), agentID)
 	if err != nil {
 		return err
 	}

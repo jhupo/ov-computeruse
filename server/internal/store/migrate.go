@@ -98,6 +98,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.ensureCommandsAgentScopedPrimaryKey(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureApprovalRequestsAgentScopedPrimaryKey(ctx); err != nil {
+		return err
+	}
 	if _, err := s.pool.Exec(ctx, `DROP INDEX IF EXISTS idx_runs_active_session`); err != nil {
 		return err
 	}
@@ -218,6 +221,42 @@ func (s *Store) ensureCommandsAgentScopedPrimaryKey(ctx context.Context) error {
 
 func (s *Store) commandsPrimaryKeyIsAgentScoped(ctx context.Context) (bool, error) {
 	return s.primaryKeyIs(ctx, "commands", "agent_id", "id")
+}
+
+func (s *Store) ensureApprovalRequestsAgentScopedPrimaryKey(ctx context.Context) error {
+	if ok, err := s.approvalRequestsPrimaryKeyIsAgentScoped(ctx); err != nil || ok {
+		return err
+	}
+	var duplicatePairs int
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM (SELECT agent_id, id FROM approval_requests GROUP BY agent_id, id HAVING COUNT(*) > 1) duplicated`).Scan(&duplicatePairs); err != nil {
+		return err
+	}
+	if duplicatePairs > 0 {
+		return errors.New("cannot migrate approval_requests primary key: duplicate approval ids exist within an agent")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `ALTER TABLE approval_requests RENAME TO approval_requests_legacy_id_pk`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `CREATE TABLE approval_requests (id TEXT NOT NULL, agent_id TEXT NOT NULL REFERENCES agents(id), run_id TEXT, project_id TEXT, session_id TEXT, category TEXT, action TEXT, risk_level TEXT, payload JSONB, status TEXT NOT NULL, requested_at TIMESTAMPTZ NOT NULL DEFAULT now(), decided_at TIMESTAMPTZ, decision TEXT, decision_reason TEXT, decision_command_id TEXT, decision_queued_at TIMESTAMPTZ, decided_by TEXT, PRIMARY KEY(agent_id, id))`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO approval_requests (id, agent_id, run_id, project_id, session_id, category, action, risk_level, payload, status, requested_at, decided_at, decision, decision_reason, decision_command_id, decision_queued_at, decided_by)
+		SELECT id, agent_id, run_id, project_id, session_id, category, action, risk_level, payload, status, requested_at, decided_at, decision, decision_reason, decision_command_id, decision_queued_at, decided_by FROM approval_requests_legacy_id_pk`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DROP TABLE approval_requests_legacy_id_pk`); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) approvalRequestsPrimaryKeyIsAgentScoped(ctx context.Context) (bool, error) {
+	return s.primaryKeyIs(ctx, "approval_requests", "agent_id", "id")
 }
 
 func (s *Store) primaryKeyIs(ctx context.Context, table string, expected ...string) (bool, error) {

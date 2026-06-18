@@ -970,7 +970,7 @@ func (s *Store) MarkCommandAck(ctx context.Context, agentID string, ack protocol
 			if decision.DecidedAt.IsZero() {
 				decision.DecidedAt = time.Now().UTC()
 			}
-			return s.DecideApproval(ctx, decision.ApprovalID, decision)
+			return s.DecideApproval(ctx, agentID, decision.ApprovalID, decision)
 		}
 	}
 	return nil

@@ -53,16 +53,12 @@ func (s *Server) handleDashApprovalDecision(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "invalid_decision", "decision must be approved or rejected")
 		return
 	}
-	identity, err := s.store.ApprovalAgent(r.Context(), approvalID)
+	identity, err := s.store.ApprovalAgent(r.Context(), principal.UserID, principal.Admin, approvalID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "approval_not_found", "approval not found")
 		return
 	}
-	if !principal.Admin && identity.UserID != principal.UserID {
-		writeError(w, http.StatusForbidden, "forbidden", "approval does not belong to this user")
-		return
-	}
-	approval, found, err := s.store.ApprovalByID(r.Context(), approvalID)
+	approval, found, err := s.store.ApprovalByID(r.Context(), identity.AgentID, approvalID)
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "approval load failed", "approval_id", approvalID, "user_id", principal.UserID, "error", err)
 		writeError(w, http.StatusInternalServerError, "approval_load_failed", "unable to load approval")
