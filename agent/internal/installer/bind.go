@@ -127,6 +127,9 @@ func (b Binder) Bind(ctx context.Context, username, password string, device Devi
 	if err := requireSecureServerURL(serverURL); err != nil {
 		return securestore.Identity{}, err
 	}
+	if err := validateBindResponse(bindResp, serverURL, b.ServerKeyID); err != nil {
+		return securestore.Identity{}, err
+	}
 	return securestore.Identity{
 		AgentID:     bindResp.AgentID,
 		WorkspaceID: bindResp.WorkspaceID,
@@ -135,6 +138,32 @@ func (b Binder) Bind(ctx context.Context, username, password string, device Devi
 		ServerURL:   serverURL,
 		ServerKeyID: firstNonEmpty(bindResp.ServerKeyID, b.ServerKeyID),
 	}, nil
+}
+
+func validateBindResponse(response BindResponse, serverURL, fallbackKeyID string) error {
+	missing := []string{}
+	if strings.TrimSpace(response.AgentID) == "" {
+		missing = append(missing, "agent_id")
+	}
+	if strings.TrimSpace(response.WorkspaceID) == "" {
+		missing = append(missing, "workspace_id")
+	}
+	if strings.TrimSpace(response.DeviceID) == "" {
+		missing = append(missing, "device_id")
+	}
+	if strings.TrimSpace(response.AgentSecret) == "" {
+		missing = append(missing, "agent_secret")
+	}
+	if strings.TrimSpace(serverURL) == "" {
+		missing = append(missing, "server_url")
+	}
+	if strings.TrimSpace(firstNonEmpty(response.ServerKeyID, fallbackKeyID)) == "" {
+		missing = append(missing, "server_key_id")
+	}
+	if len(missing) > 0 {
+		return errors.New("bind response missing " + strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 func requireSecureServerURL(rawURL string) error {

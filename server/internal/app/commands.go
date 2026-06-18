@@ -216,7 +216,9 @@ func (s *Server) dispatchCommand(ctx context.Context, identity store.AgentIdenti
 		return record, false
 	}
 	if !s.hub.DispatchCommand(ctx, identity.AgentID, identity.UserID, command.CommandID, message) {
-		_ = s.store.MarkCommandFailed(ctx, identity.AgentID, command.CommandID, "agent offline or send queue full")
+		if s.hub.AgentMayBeOnline(ctx, identity.AgentID) {
+			_ = s.store.MarkCommandFailed(ctx, identity.AgentID, command.CommandID, "agent send queue full")
+		}
 		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
 		return record, false
 	}

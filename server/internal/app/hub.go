@@ -93,6 +93,19 @@ func (h *Hub) Agent(agentID string) (*AgentConn, bool) {
 	return conn, ok
 }
 
+func (h *Hub) AgentMayBeOnline(ctx context.Context, agentID string) bool {
+	h.mu.RLock()
+	_, ok := h.agents[agentID]
+	h.mu.RUnlock()
+	if ok {
+		return true
+	}
+	if h.redis == nil {
+		return false
+	}
+	return h.redis.Exists(ctx, "agent:online:"+agentID).Val() > 0
+}
+
 func (h *Hub) TouchAgent(ctx context.Context, conn *AgentConn) error {
 	if h.redis == nil {
 		return nil

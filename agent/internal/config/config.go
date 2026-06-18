@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
@@ -59,11 +60,26 @@ func Load(opts Options) (Config, error) {
 	applyEnv(&cfg, lookup, explicit)
 
 	configPath := cfg.AgentConfigPath
+	configPathExplicit := false
 	if value, ok := lookup(envKey("AGENT_CONFIG_PATH")); ok {
 		configPath = value
+		configPathExplicit = true
+	}
+	if value, ok := argValue(opts.Args, "agent-config", "agent-config-path"); ok {
+		configPath = value
+		configPathExplicit = true
 	}
 	if configPath != "" {
-		_ = applyConfigFile(&cfg, configPath)
+		if !configPathExplicit {
+			if _, err := os.Stat(cleanPath(configPath)); errors.Is(err, os.ErrNotExist) {
+				configPath = ""
+			}
+		}
+	}
+	if configPath != "" {
+		if err := applyConfigFile(&cfg, configPath); err != nil {
+			return Config{}, err
+		}
 	}
 	applyEnv(&cfg, lookup, explicit)
 
@@ -126,6 +142,30 @@ func applyConfigFile(cfg *Config, path string) error {
 		applyConfigValue(cfg, key, value)
 	}
 	return nil
+}
+
+func argValue(args []string, names ...string) (string, bool) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		key, value, hasInlineValue := strings.Cut(arg, "=")
+		if !strings.HasPrefix(key, "-") {
+			continue
+		}
+		key = strings.TrimLeft(key, "-")
+		for _, name := range names {
+			if key != name {
+				continue
+			}
+			if hasInlineValue {
+				return value, true
+			}
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				return args[i+1], true
+			}
+			return "", true
+		}
+	}
+	return "", false
 }
 
 func parseConfigFile(data []byte) (map[string]string, error) {

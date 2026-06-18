@@ -107,9 +107,6 @@ func validateAgentEnvelope(agent *AgentConn, env protocol.Envelope) error {
 
 func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env protocol.Envelope) {
 	ctx := r.Context()
-	if env.Type != "history.chunk" && env.Type != "history.messages" && env.Type != "history.items" {
-		s.hub.BroadcastDash(agent.UserID, protocol.Raw(env))
-	}
 	switch env.Type {
 	case "agent.register":
 		register, err := protocol.Decode[protocol.AgentRegister](env.Data)
@@ -117,43 +114,58 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 			register.AgentID = agent.AgentID
 			register.DeviceID = agent.DeviceID
 			register.WorkspaceID = ""
-			_ = s.store.SaveAgentRegister(ctx, register)
+			if err := s.store.SaveAgentRegister(ctx, register); err == nil {
+				s.hub.BroadcastDash(agent.UserID, dashEvent("agent.registered", agent, map[string]any{"capabilities": register.Capabilities, "credential": register.Credential}))
+			}
 		} else {
 			_ = s.store.TouchAgent(ctx, agent.AgentID)
 		}
 	case "agent.heartbeat":
 		heartbeat, err := protocol.Decode[protocol.Heartbeat](env.Data)
 		if err == nil {
-			_ = s.store.SaveHeartbeat(ctx, agent.AgentID, agent.DeviceID, heartbeat)
-			_ = s.hub.TouchAgent(ctx, agent)
+			if err := s.store.SaveHeartbeat(ctx, agent.AgentID, agent.DeviceID, heartbeat); err == nil {
+				_ = s.hub.TouchAgent(ctx, agent)
+				s.hub.BroadcastDash(agent.UserID, dashEvent("agent.heartbeat", agent, heartbeat))
+			}
 		}
 	case "index.roots":
 		index, err := protocol.Decode[protocol.RootIndex](env.Data)
 		if err == nil {
-			_ = s.store.SaveRoots(ctx, agent.AgentID, index.Roots)
+			if err := s.store.SaveRoots(ctx, agent.AgentID, index.Roots); err == nil {
+				s.hub.BroadcastDash(agent.UserID, dashEvent("index.roots.updated", agent, map[string]any{"count": len(index.Roots)}))
+			}
 		}
 	case "index.projects":
 		index, err := protocol.Decode[protocol.ProjectIndex](env.Data)
 		if err == nil {
-			_ = s.store.SaveProjects(ctx, agent.AgentID, index.Projects)
+			if err := s.store.SaveProjects(ctx, agent.AgentID, index.Projects); err == nil {
+				s.hub.BroadcastDash(agent.UserID, dashEvent("index.projects.updated", agent, map[string]any{"count": len(index.Projects)}))
+			}
 		}
 	case "index.sessions":
 		index, err := protocol.Decode[protocol.SessionIndex](env.Data)
 		if err == nil {
-			_ = s.store.SaveSessions(ctx, agent.AgentID, index.Sessions)
+			if err := s.store.SaveSessions(ctx, agent.AgentID, index.Sessions); err == nil {
+				s.hub.BroadcastDash(agent.UserID, dashEvent("index.sessions.updated", agent, map[string]any{"count": len(index.Sessions)}))
+			}
 		}
 	case "index.runtime_sessions":
 		index, err := protocol.Decode[protocol.RuntimeSessionIndex](env.Data)
 		if err == nil {
+			saved := 0
 			for _, runtimeSession := range index.RuntimeSessions {
-				_ = s.store.UpsertRuntimeSession(ctx, agent.AgentID, runtimeSession)
+				if err := s.store.UpsertRuntimeSession(ctx, agent.AgentID, runtimeSession); err == nil {
+					saved++
+				}
 			}
+			s.hub.BroadcastDash(agent.UserID, dashEvent("index.runtime_sessions.updated", agent, map[string]any{"count": saved}))
 		}
 	case "index.deleted":
 		deleted, err := protocol.Decode[protocol.DeletedIndex](env.Data)
 		if err == nil {
-			_ = s.store.MarkIndexDeleted(ctx, agent.AgentID, deleted)
-			s.hub.BroadcastDash(agent.UserID, protocol.Raw(map[string]any{"type": "index.deleted", "agent_id": agent.AgentID, "projects": len(deleted.Projects), "sessions": len(deleted.Sessions)}))
+			if err := s.store.MarkIndexDeleted(ctx, agent.AgentID, deleted); err == nil {
+				s.hub.BroadcastDash(agent.UserID, dashEvent("index.deleted", agent, map[string]any{"projects": len(deleted.Projects), "sessions": len(deleted.Sessions)}))
+			}
 		}
 	case "history.chunk":
 		chunk, err := protocol.Decode[protocol.HistoryChunk](env.Data)
@@ -165,14 +177,16 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 	case "history.messages":
 		messages, err := protocol.Decode[protocol.HistoryMessages](env.Data)
 		if err == nil {
-			_ = s.store.SaveHistoryMessages(ctx, agent.AgentID, messages)
-			s.hub.BroadcastDash(agent.UserID, protocol.Raw(map[string]any{"type": "history.messages.updated", "agent_id": agent.AgentID, "session_id": messages.SessionID, "count": len(messages.Messages)}))
+			if err := s.store.SaveHistoryMessages(ctx, agent.AgentID, messages); err == nil {
+				s.hub.BroadcastDash(agent.UserID, dashEvent("history.messages.updated", agent, map[string]any{"session_id": messages.SessionID, "count": len(messages.Messages)}))
+			}
 		}
 	case "history.items":
 		items, err := protocol.Decode[protocol.HistoryItems](env.Data)
 		if err == nil {
-			_ = s.store.SaveHistoryItems(ctx, agent.AgentID, items)
-			s.hub.BroadcastDash(agent.UserID, protocol.Raw(map[string]any{"type": "history.items.updated", "agent_id": agent.AgentID, "session_id": items.SessionID, "count": len(items.Items)}))
+			if err := s.store.SaveHistoryItems(ctx, agent.AgentID, items); err == nil {
+				s.hub.BroadcastDash(agent.UserID, dashEvent("history.items.updated", agent, map[string]any{"session_id": items.SessionID, "count": len(items.Items), "cursor": items.Cursor, "reset": items.Reset}))
+			}
 		}
 	case "sync.cursor":
 		cursor, err := protocol.Decode[protocol.SyncCursor](env.Data)
@@ -182,14 +196,28 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 	case "run.event":
 		event, err := protocol.Decode[protocol.RunEvent](env.Data)
 		if err == nil {
-			_ = s.store.SaveRunEvent(ctx, agent.AgentID, agent.DeviceID, event)
+			if err := s.store.SaveRunEvent(ctx, agent.AgentID, agent.DeviceID, event); err == nil {
+				s.hub.BroadcastDash(agent.UserID, dashEvent("run.event", agent, event))
+			}
 		}
 	case "ack":
 		ack, err := protocol.Decode[protocol.Ack](env.Data)
 		if err == nil {
-			_ = s.store.MarkCommandAck(ctx, agent.AgentID, ack)
+			if err := s.store.MarkCommandAck(ctx, agent.AgentID, ack); err == nil {
+				s.hub.BroadcastDash(agent.UserID, dashEvent("command.ack", agent, ack))
+			}
 		}
 	}
+}
+
+func dashEvent(eventType string, agent *AgentConn, payload any) []byte {
+	return protocol.Raw(map[string]any{
+		"type":      eventType,
+		"agent_id":  agent.AgentID,
+		"device_id": agent.DeviceID,
+		"payload":   payload,
+		"at":        time.Now().UTC(),
+	})
 }
 
 func (s *Server) replayPendingCommands(r *http.Request, identity store.AgentIdentity) {

@@ -6,8 +6,11 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"ov-computeruse/server/internal/protocol"
 )
@@ -50,7 +53,10 @@ func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, even
 	if err := s.projectRunEvent(ctx, agentID, event); err != nil {
 		return err
 	}
-	return s.projectRunState(ctx, agentID, event)
+	if err := s.projectRunState(ctx, agentID, event); err != nil {
+		return err
+	}
+	return s.projectCommandStateFromRunEvent(ctx, agentID, event, true)
 }
 
 func (s *Store) RebuildRunProjections(ctx context.Context, agentID, runID string) (ProjectionRebuildResult, error) {
@@ -114,6 +120,9 @@ func (s *Store) RebuildRunProjections(ctx context.Context, agentID, runID string
 			return result, err
 		}
 		if err := s.projectRunState(ctx, agentID, event); err != nil {
+			return result, err
+		}
+		if err := s.projectCommandStateFromRunEvent(ctx, agentID, event, false); err != nil {
 			return result, err
 		}
 		result.EventCount++
@@ -273,6 +282,65 @@ func (s *Store) projectRunState(ctx context.Context, agentID string, event proto
 	return err
 }
 
+func (s *Store) projectCommandStateFromRunEvent(ctx context.Context, agentID string, event protocol.RunEvent, audit bool) error {
+	if event.RunID == "" {
+		return nil
+	}
+	status := ""
+	reason := ""
+	switch event.Kind {
+	case "run.started":
+		status = "running"
+		reason = "run started"
+	case "run.awaiting_approval":
+		status = "awaiting_approval"
+		reason = runEventReason(event)
+		if reason == "" {
+			reason = "run awaiting approval"
+		}
+	case "run.done", "run.completed":
+		status = "done"
+		reason = "run completed"
+	case "run.error", "run.failed":
+		status = "failed"
+		reason = runEventReason(event)
+		if reason == "" {
+			reason = "run failed"
+		}
+	case "run.stopped":
+		status = "stopped"
+		reason = "run stopped"
+	default:
+		return nil
+	}
+	commandID := strings.TrimSpace(event.CommandID)
+	if commandID == "" {
+		if err := s.pool.QueryRow(ctx, `SELECT COALESCE(command_id, '') FROM runs WHERE agent_id=$1 AND id=$2`, agentID, event.RunID).Scan(&commandID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+	}
+	if commandID == "" {
+		return nil
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE commands SET status=$1, status_reason=$2
+		WHERE agent_id=$3 AND id=$4
+			AND (run_id IS NULL OR run_id='' OR run_id=$5)
+			AND status NOT IN ('done','expired','failed','rejected','stopped')`, status, reason, agentID, commandID, event.RunID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil
+	}
+	if !audit {
+		return nil
+	}
+	return s.SaveCommandAttempt(ctx, agentID, commandID, "run", status, reason, protocol.Raw(event))
+}
+
 func runEventReason(event protocol.RunEvent) string {
 	if len(event.Payload) == 0 {
 		return ""
@@ -411,16 +479,20 @@ func (s *Store) MarkCommandAck(ctx context.Context, agentID string, ack protocol
 		return nil
 	}
 	status := commandStatusFromAck(ack)
-	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status=$1, status_reason=$2, acked_at=now()
+	accepted := isAcceptedAckStatus(status)
+	if _, err := s.pool.Exec(ctx, `UPDATE commands SET
+			status=CASE WHEN $6 AND status IN ('running','awaiting_approval') THEN status ELSE $1 END,
+			status_reason=CASE WHEN $6 AND status IN ('running','awaiting_approval') THEN status_reason ELSE $2 END,
+			acked_at=now()
 		WHERE agent_id=$3 AND id=$4
 			AND (run_id IS NULL OR run_id='' OR $5='' OR run_id=$5)
-			AND status NOT IN ('done','expired','rejected','stopped')`, status, ack.Message, agentID, ack.CommandID, ack.RunID); err != nil {
+			AND status NOT IN ('done','expired','failed','rejected','stopped')`, status, ack.Message, agentID, ack.CommandID, ack.RunID, accepted); err != nil {
 		return err
 	}
 	if err := s.SaveCommandAttempt(ctx, agentID, ack.CommandID, "ack", status, ack.Message, protocol.Raw(ack)); err != nil {
 		return err
 	}
-	if isAcceptedAckStatus(status) && strings.TrimPrefix(command.Kind, "command.") == "approval_decision" {
+	if accepted && strings.TrimPrefix(command.Kind, "command.") == "approval_decision" {
 		var decision protocol.ApprovalDecision
 		if err := json.Unmarshal(command.Payload, &decision); err == nil && decision.ApprovalID != "" {
 			if decision.DecidedAt.IsZero() {
