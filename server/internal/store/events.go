@@ -738,6 +738,9 @@ func (s *Store) SaveCommand(ctx context.Context, agentID string, command protoco
 			return protocol.Command{}, err
 		}
 		if ok {
+			if !commandMatchesIdempotency(existing, command) {
+				return protocol.Command{}, ErrCommandIdempotencyConflict
+			}
 			return existing.ToProtocol(), nil
 		}
 	}
@@ -1178,6 +1181,15 @@ func normalizeCommand(command protocol.Command) protocol.Command {
 	}
 	command.IdempotencyKey = strings.TrimSpace(command.IdempotencyKey)
 	return command
+}
+
+func commandMatchesIdempotency(existing CommandRecord, incoming protocol.Command) bool {
+	return strings.TrimSpace(existing.Kind) == strings.TrimSpace(incoming.Kind) &&
+		strings.TrimSpace(existing.RunID) == strings.TrimSpace(incoming.RunID) &&
+		strings.TrimSpace(existing.SessionID) == strings.TrimSpace(incoming.SessionID) &&
+		strings.TrimSpace(existing.ProjectID) == strings.TrimSpace(incoming.ProjectID) &&
+		strings.TrimSpace(existing.Mode) == strings.TrimSpace(incoming.Mode) &&
+		jsonEquivalent(existing.Payload, incoming.Payload)
 }
 
 func commandStatusFromAck(ack protocol.Ack) string {

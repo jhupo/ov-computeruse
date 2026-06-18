@@ -65,6 +65,10 @@ func (s *Server) handleDashCommand(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "session_busy", err.Error())
 			return
 		}
+		if errors.Is(err, store.ErrCommandIdempotencyConflict) {
+			writeError(w, http.StatusConflict, "idempotency_conflict", err.Error())
+			return
+		}
 		s.log.ErrorContext(r.Context(), "save command failed", "agent_id", req.AgentID, "command_id", req.Command.CommandID, "error", err)
 		writeError(w, http.StatusInternalServerError, "store_failed", "unable to save command")
 		return

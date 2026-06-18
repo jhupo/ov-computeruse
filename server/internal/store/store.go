@@ -14,6 +14,7 @@ type Store struct {
 }
 
 var ErrSessionActive = errors.New("session already has an active run")
+var ErrCommandIdempotencyConflict = errors.New("idempotency key conflicts with an existing command")
 
 type AgentIdentity struct {
 	AgentID              string          `json:"agent_id"`

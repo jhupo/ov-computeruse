@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"testing"
 
 	"ov-computeruse/server/internal/protocol"
@@ -61,5 +62,65 @@ func TestTerminalOutputPayloadCanProjectAsToolOutput(t *testing.T) {
 	}
 	if got := toolStatus("terminal.output"); got != "output" {
 		t.Fatalf("terminal output status = %q, want output", got)
+	}
+}
+
+func TestCommandMatchesIdempotencyAcceptsEquivalentCommand(t *testing.T) {
+	existing := CommandRecord{
+		RunID:     "run_1",
+		SessionID: "session_1",
+		ProjectID: "project_1",
+		Kind:      "command.send",
+		Payload:   json.RawMessage(`{"prompt":"hi"}`),
+	}
+	incoming := protocol.Command{
+		RunID:     "run_1",
+		SessionID: "session_1",
+		ProjectID: "project_1",
+		Kind:      "command.send",
+		Payload:   json.RawMessage(`{"prompt":"hi"}`),
+	}
+	if !commandMatchesIdempotency(existing, incoming) {
+		t.Fatal("expected equivalent command to reuse idempotency key")
+	}
+}
+
+func TestCommandMatchesIdempotencyRejectsDifferentPayload(t *testing.T) {
+	existing := CommandRecord{
+		RunID:     "run_1",
+		SessionID: "session_1",
+		ProjectID: "project_1",
+		Kind:      "command.send",
+		Payload:   json.RawMessage(`{"prompt":"hi"}`),
+	}
+	incoming := protocol.Command{
+		RunID:     "run_1",
+		SessionID: "session_1",
+		ProjectID: "project_1",
+		Kind:      "command.send",
+		Payload:   json.RawMessage(`{"prompt":"different"}`),
+	}
+	if commandMatchesIdempotency(existing, incoming) {
+		t.Fatal("expected different payload to conflict")
+	}
+}
+
+func TestCommandMatchesIdempotencyRejectsDifferentTarget(t *testing.T) {
+	existing := CommandRecord{
+		RunID:     "run_1",
+		SessionID: "session_1",
+		ProjectID: "project_1",
+		Kind:      "command.send",
+		Payload:   json.RawMessage(`{"prompt":"hi"}`),
+	}
+	incoming := protocol.Command{
+		RunID:     "run_1",
+		SessionID: "session_2",
+		ProjectID: "project_1",
+		Kind:      "command.send",
+		Payload:   json.RawMessage(`{"prompt":"hi"}`),
+	}
+	if commandMatchesIdempotency(existing, incoming) {
+		t.Fatal("expected different target to conflict")
 	}
 }
