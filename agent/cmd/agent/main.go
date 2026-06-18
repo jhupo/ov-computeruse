@@ -19,6 +19,7 @@ import (
 	"golang.org/x/term"
 
 	"ov-computeruse/agent/internal/buildinfo"
+	"ov-computeruse/agent/internal/codexhistory"
 	"ov-computeruse/agent/internal/codexscan"
 	"ov-computeruse/agent/internal/config"
 	"ov-computeruse/agent/internal/device"
@@ -227,7 +228,7 @@ func runAgent(args []string) {
 	manager := runs.NewManager(rt, nil, logger)
 	manager.SetMaxActive(cfg.MaxConcurrentRuns)
 	manager.SetAckStore(state)
-	client := transport.NewClient(identity, manager, scanner, deviceProfile, cfg, state, cfg.DisableScan, cfg.UploadHistory, logger)
+	client := transport.NewClient(identity, manager, scanner, deviceProfile, cfg, state, codexhistory.New(state), cfg.DisableScan, cfg.UploadHistory, logger)
 	fatalIf(logger, client.Run(ctx))
 }
 

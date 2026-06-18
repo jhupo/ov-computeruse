@@ -1,7 +1,10 @@
 package codexhistory
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -74,9 +77,23 @@ func TestSyncRunEventCreatesMissingCodexSession(t *testing.T) {
 	if err := state.SaveCodexRoots(ctx, []codexscan.Root{{Path: root, Kind: "codex_home", Source: "test", Exists: true}}); err != nil {
 		t.Fatalf("save root: %v", err)
 	}
+	projectPath := filepath.Join(t.TempDir(), "project")
+	_, err = state.SaveScanResult(ctx, codexscan.Result{
+		Roots: []codexscan.Root{{Path: root, Kind: "codex_home", Source: "test", Exists: true}},
+		Projects: []codexscan.Project{{
+			ID:           "project_1",
+			Name:         "project",
+			Path:         projectPath,
+			LastActiveAt: time.Now().UTC(),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("save project: %v", err)
+	}
 	writer := New(state)
 	event := protocol.RunEvent{
 		EventID:   "evt_new",
+		ProjectID: "project_1",
 		SessionID: "session_new",
 		RunID:     "run_1",
 		Kind:      "user.message",
@@ -93,11 +110,43 @@ func TestSyncRunEventCreatesMissingCodexSession(t *testing.T) {
 	if filepath.Dir(sessionPath) != filepath.Join(root, "sessions") {
 		t.Fatalf("session path = %q", sessionPath)
 	}
+	session, err := state.Session(ctx, "session_new")
+	if err != nil {
+		t.Fatalf("session record: %v", err)
+	}
+	if session.CWD != projectPath {
+		t.Fatalf("session cwd = %q, want %q", session.CWD, projectPath)
+	}
+	assertSessionMetaCWD(t, sessionPath, projectPath)
 	messages, err := codexscan.ReadSessionMessages(ctx, sessionPath, 10, 64<<10)
 	if err != nil {
 		t.Fatalf("read new session messages: %v", err)
 	}
 	if len(messages) != 1 || messages[0].Text != "new session prompt" {
 		t.Fatalf("messages = %+v", messages)
+	}
+}
+
+func assertSessionMetaCWD(t *testing.T, path string, want string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read session file: %v", err)
+	}
+	firstLine := raw
+	if index := bytes.IndexByte(raw, '\n'); index >= 0 {
+		firstLine = raw[:index]
+	}
+	var row struct {
+		Type    string `json:"type"`
+		Payload struct {
+			CWD string `json:"cwd"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(firstLine, &row); err != nil {
+		t.Fatalf("decode session meta: %v", err)
+	}
+	if row.Type != "session_meta" || row.Payload.CWD != want {
+		t.Fatalf("session meta = %+v, want cwd %q", row, want)
 	}
 }

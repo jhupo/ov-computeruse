@@ -79,7 +79,7 @@ func TestResolveCommandContextAcceptsRuntimeSession(t *testing.T) {
 	}
 	err = state.SaveRuntimeSession(context.Background(), RuntimeSession{
 		SessionID:       "resp_session",
-		Runtime:         "openai.responses",
+		Runtime:         protocol.RuntimeOpenAIResponses,
 		ProjectID:       "project_1",
 		NativeSessionID: "resp_session",
 		LastResponseID:  "resp_latest",
@@ -105,7 +105,7 @@ func TestResolveCommandContextAcceptsRuntimeSession(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected runtime project/session mismatch error")
 	}
-	byResponse, err := state.RuntimeSession(context.Background(), "resp_latest", "openai.responses")
+	byResponse, err := state.RuntimeSession(context.Background(), "resp_latest", protocol.RuntimeOpenAIResponses)
 	if err != nil {
 		t.Fatalf("runtime session by response id: %v", err)
 	}

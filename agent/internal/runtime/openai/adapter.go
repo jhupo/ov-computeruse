@@ -20,7 +20,7 @@ import (
 	agenttools "ov-computeruse/agent/internal/tools"
 )
 
-const runtimeName = "openai.responses"
+const runtimeName = protocol.RuntimeOpenAIResponses
 
 type Config struct {
 	BaseURL               string

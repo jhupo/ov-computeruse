@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"ov-computeruse/agent/internal/codexhistory"
 	"ov-computeruse/agent/internal/codexscan"
 	"ov-computeruse/agent/internal/config"
 	"ov-computeruse/agent/internal/device"
@@ -43,7 +42,7 @@ type Client struct {
 
 	historyAckMu      sync.Mutex
 	pendingHistoryAck map[string]chan protocol.HistoryItemsAck
-	historyWriter     codexhistory.Writer
+	historySyncer     HistorySyncer
 }
 
 type scanner interface {
@@ -53,11 +52,15 @@ type scanner interface {
 	ForEachHistoryChunk(context.Context, codexscan.Session, int, func(codexscan.HistoryChunk) error) error
 }
 
-func NewClient(identity securestore.Identity, manager *runs.Manager, scanner codexscan.Scanner, deviceInfo device.Info, cfg config.Config, state *localstate.Store, noScan bool, uploadHistory bool, logger *slog.Logger) *Client {
-	return newClient(identity, manager, scanner, deviceInfo, cfg, state, noScan, uploadHistory, logger)
+type HistorySyncer interface {
+	SyncRunEvent(context.Context, protocol.RunEvent) error
 }
 
-func newClient(identity securestore.Identity, manager *runs.Manager, scanner scanner, deviceInfo device.Info, cfg config.Config, state *localstate.Store, noScan bool, uploadHistory bool, logger *slog.Logger) *Client {
+func NewClient(identity securestore.Identity, manager *runs.Manager, scanner codexscan.Scanner, deviceInfo device.Info, cfg config.Config, state *localstate.Store, historySyncer HistorySyncer, noScan bool, uploadHistory bool, logger *slog.Logger) *Client {
+	return newClient(identity, manager, scanner, deviceInfo, cfg, state, historySyncer, noScan, uploadHistory, logger)
+}
+
+func newClient(identity securestore.Identity, manager *runs.Manager, scanner scanner, deviceInfo device.Info, cfg config.Config, state *localstate.Store, historySyncer HistorySyncer, noScan bool, uploadHistory bool, logger *slog.Logger) *Client {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -74,7 +77,7 @@ func newClient(identity securestore.Identity, manager *runs.Manager, scanner sca
 		logger:            logger,
 		dialer:            WebSocketDialer{},
 		pendingHistoryAck: map[string]chan protocol.HistoryItemsAck{},
-		historyWriter:     codexhistory.New(state),
+		historySyncer:     historySyncer,
 	}
 }
 
@@ -123,8 +126,10 @@ func (c *Client) Emit(ctx context.Context, event protocol.RunEvent) error {
 		if err := c.state.SaveRunEvent(ctx, event); err != nil {
 			return err
 		}
-		if err := c.historyWriter.SyncRunEvent(ctx, event); err != nil {
-			c.logger.WarnContext(ctx, "codex history sync skipped", "run_id", event.RunID, "session_id", event.SessionID, "event_id", event.EventID, "kind", event.Kind, "error", err)
+		if c.historySyncer != nil {
+			if err := c.historySyncer.SyncRunEvent(ctx, event); err != nil {
+				c.logger.WarnContext(ctx, "codex history sync skipped", "run_id", event.RunID, "session_id", event.SessionID, "event_id", event.EventID, "kind", event.Kind, "error", err)
+			}
 		}
 	}
 	if err := c.sendRunEvent(ctx, event); err != nil {

@@ -685,7 +685,7 @@ func (s *Store) projectRuntimeSession(ctx context.Context, agentID string, event
 		_ = json.Unmarshal(event.Payload, &runtime)
 	}
 	if runtime.Runtime == "" {
-		runtime.Runtime = "openai.responses"
+		runtime.Runtime = protocol.RuntimeOpenAIResponses
 	}
 	if runtime.ProjectID == "" {
 		runtime.ProjectID = event.ProjectID

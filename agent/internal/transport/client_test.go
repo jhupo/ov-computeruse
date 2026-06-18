@@ -21,7 +21,7 @@ func TestUniqueRuntimeSessionsKeepsNativeOnlySessions(t *testing.T) {
 	sessions := uniqueRuntimeSessions([]protocol.RuntimeSession{
 		{Runtime: "codex.native", NativeSessionID: "native_1", LastResponseID: "resp_old", UpdatedAt: oldAt},
 		{Runtime: "codex.native", NativeSessionID: "native_1", LastResponseID: "resp_new", UpdatedAt: newAt},
-		{Runtime: "openai.responses", SessionID: "session_1", NativeSessionID: "responses:resp_1", LastResponseID: "resp_1", UpdatedAt: newAt},
+		{Runtime: protocol.RuntimeOpenAIResponses, SessionID: "session_1", NativeSessionID: "responses:resp_1", LastResponseID: "resp_1", UpdatedAt: newAt},
 	})
 	if len(sessions) != 2 {
 		t.Fatalf("session count = %d, want 2: %+v", len(sessions), sessions)
@@ -51,6 +51,7 @@ func TestServeStartsReadLoopBeforeIndexUploadCompletes(t *testing.T) {
 		blockingScanner{},
 		protocolDevice(),
 		defaultConfig(),
+		nil,
 		nil,
 		false,
 		false,

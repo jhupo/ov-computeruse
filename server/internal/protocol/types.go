@@ -8,7 +8,10 @@ import (
 	"time"
 )
 
-const Version = "2026-06-17"
+const (
+	Version                = "2026-06-17"
+	RuntimeOpenAIResponses = "openai.responses"
+)
 
 type Envelope struct {
 	Version    string          `json:"version"`

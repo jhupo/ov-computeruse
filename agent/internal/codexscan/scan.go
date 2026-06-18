@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"ov-computeruse/agent/internal/protocol"
 )
 
 type Scanner struct {
@@ -665,7 +667,7 @@ func runtimeSessionFromFile(session Session) RuntimeSession {
 		return RuntimeSession{}
 	}
 	return RuntimeSession{
-		Runtime:         "openai.responses",
+		Runtime:         protocol.RuntimeOpenAIResponses,
 		ProjectID:       session.ProjectID,
 		SessionID:       session.ID,
 		NativeSessionID: nativeSessionID,

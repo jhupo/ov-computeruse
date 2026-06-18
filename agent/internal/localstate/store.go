@@ -161,6 +161,14 @@ func (s *Store) Project(ctx context.Context, projectID string) (ProjectRecord, e
 	return project, err
 }
 
+func (s *Store) ProjectPath(ctx context.Context, projectID string) (string, error) {
+	project, err := s.Project(ctx, projectID)
+	if err != nil {
+		return "", err
+	}
+	return project.Path, nil
+}
+
 func (s *Store) Session(ctx context.Context, sessionID string) (SessionRecord, error) {
 	if s == nil {
 		return SessionRecord{}, sql.ErrNoRows
@@ -220,7 +228,7 @@ func (s *Store) ResolveCommandContext(ctx context.Context, command protocol.Comm
 		session, err := s.Session(ctx, command.SessionID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				runtimeSession, runtimeErr := s.RuntimeSession(ctx, command.SessionID, "openai.responses")
+				runtimeSession, runtimeErr := s.RuntimeSession(ctx, command.SessionID, protocol.RuntimeOpenAIResponses)
 				if runtimeErr != nil {
 					if errors.Is(runtimeErr, sql.ErrNoRows) {
 						return resolved, errors.New("codex session is not indexed locally")

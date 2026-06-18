@@ -17,6 +17,7 @@ import (
 
 type State interface {
 	CodexRoot(context.Context) (string, error)
+	ProjectPath(context.Context, string) (string, error)
 	SessionPath(context.Context, string) (string, error)
 	SaveSessionRecord(context.Context, codexscan.Session) error
 	CodexHistorySynced(context.Context, string) (bool, error)
@@ -71,12 +72,16 @@ func (w Writer) createSession(ctx context.Context, event protocol.RunEvent) (str
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", err
 	}
+	cwd, err := w.projectPath(ctx, event.ProjectID)
+	if err != nil {
+		return "", err
+	}
 	meta := map[string]any{
 		"timestamp": eventTime(event).Format(time.RFC3339Nano),
 		"type":      "session_meta",
 		"payload": map[string]any{
 			"id":  event.SessionID,
-			"cwd": "",
+			"cwd": cwd,
 		},
 	}
 	if err := appendJSONL(path, meta); err != nil {
@@ -87,11 +92,27 @@ func (w Writer) createSession(ctx context.Context, event protocol.RunEvent) (str
 		IDSource:  "codex_session_meta",
 		ProjectID: event.ProjectID,
 		Path:      path,
+		CWD:       cwd,
 		UpdatedAt: eventTime(event),
 	}); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+func (w Writer) projectPath(ctx context.Context, projectID string) (string, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return "", nil
+	}
+	path, err := w.state.ProjectPath(ctx, projectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(path), nil
 }
 
 func syncableKind(kind string) bool {
