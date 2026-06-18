@@ -103,6 +103,9 @@ func TestReadStdoutMapsCodexExecEvents(t *testing.T) {
 	if runtimeSession.Runtime != protocol.RuntimeCodexCLI || runtimeSession.NativeSessionID == "" {
 		t.Fatalf("runtime session = %+v", runtimeSession)
 	}
+	if sink.events[0].SessionID != runtimeSession.SessionID || sink.events[0].ProjectID != runtimeSession.ProjectID {
+		t.Fatalf("session event target = project %q session %q, want project %q session %q", sink.events[0].ProjectID, sink.events[0].SessionID, runtimeSession.ProjectID, runtimeSession.SessionID)
+	}
 }
 
 func TestReadStdoutMapsCodexToolItems(t *testing.T) {

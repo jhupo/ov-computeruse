@@ -88,7 +88,18 @@ func (a *Adapter) emitRuntimeSession(ctx context.Context, command protocol.Comma
 			UpdatedAt:       runtimeSession.UpdatedAt,
 		})
 	}
-	return emit(ctx, sink, command, "session.updated", runtimeSession)
+	if sink == nil {
+		return nil
+	}
+	return sink.Emit(ctx, protocol.RunEvent{
+		EventID:   protocol.NewID("evt"),
+		RunID:     command.RunID,
+		CommandID: command.CommandID,
+		ProjectID: runtimeSession.ProjectID,
+		SessionID: runtimeSession.SessionID,
+		Kind:      "session.updated",
+		Payload:   protocol.Raw(runtimeSession),
+	})
 }
 
 func firstNonEmpty(values ...string) string {

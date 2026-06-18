@@ -679,7 +679,16 @@ func (s *Store) projectRuntimeSession(ctx context.Context, agentID string, event
 	if !ok {
 		return nil
 	}
-	_, err := s.UpsertRuntimeSession(ctx, agentID, runtime)
+	if _, err := s.UpsertRuntimeSession(ctx, agentID, runtime); err != nil {
+		return err
+	}
+	if strings.TrimSpace(event.RunID) == "" {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE runs
+		SET session_id=COALESCE(NULLIF($3, ''), session_id),
+			project_id=COALESCE(NULLIF($4, ''), project_id)
+		WHERE agent_id=$1 AND id=$2`, agentID, event.RunID, runtime.SessionID, runtime.ProjectID)
 	return err
 }
 
