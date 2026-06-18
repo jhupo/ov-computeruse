@@ -191,6 +191,8 @@ type WorkspaceSearchMatch struct {
 	Name      string    `json:"name"`
 	Kind      string    `json:"kind"`
 	Score     int       `json:"score,omitempty"`
+	Line      int       `json:"line,omitempty"`
+	Preview   string    `json:"preview,omitempty"`
 	Size      int64     `json:"size,omitempty"`
 	ModTime   time.Time `json:"mod_time,omitempty"`
 	Sensitive bool      `json:"sensitive,omitempty"`

@@ -18,6 +18,7 @@ const (
 	maxListLimit        = 2000
 	defaultReadMaxBytes = 256 << 10
 	maxReadMaxBytes     = 2 << 20
+	searchContentBytes  = 128 << 10
 	defaultListDepth    = 1
 	maxListDepth        = 8
 )
@@ -152,10 +153,6 @@ func (fs Filesystem) Search(target Target, req protocol.WorkspaceRequest) ([]pro
 			return nil
 		}
 		rel = filepath.ToSlash(rel)
-		score := searchScore(query, strings.ToLower(name), strings.ToLower(rel))
-		if score == 0 {
-			return nil
-		}
 		info, err := entry.Info()
 		if err != nil {
 			return nil
@@ -164,7 +161,8 @@ func (fs Filesystem) Search(target Target, req protocol.WorkspaceRequest) ([]pro
 		if entry.IsDir() {
 			kind = "directory"
 		}
-		matches = append(matches, protocol.WorkspaceSearchMatch{
+		score := searchScore(query, strings.ToLower(name), strings.ToLower(rel))
+		match := protocol.WorkspaceSearchMatch{
 			Path:      rel,
 			Name:      name,
 			Kind:      kind,
@@ -172,7 +170,17 @@ func (fs Filesystem) Search(target Target, req protocol.WorkspaceRequest) ([]pro
 			Size:      info.Size(),
 			ModTime:   info.ModTime().UTC(),
 			Sensitive: policy.Sensitive(path),
-		})
+		}
+		if score == 0 && kind == "file" && !match.Sensitive {
+			line, preview, contentScore := fs.contentMatch(path, query, info.Size())
+			match.Line = line
+			match.Preview = preview
+			match.Score = contentScore
+		}
+		if match.Score == 0 {
+			return nil
+		}
+		matches = append(matches, match)
 		if len(matches) >= limit {
 			return errLimitReached
 		}
@@ -191,6 +199,29 @@ func (fs Filesystem) Search(target Target, req protocol.WorkspaceRequest) ([]pro
 		return strings.ToLower(matches[i].Path) < strings.ToLower(matches[j].Path)
 	})
 	return matches, err
+}
+
+func (fs Filesystem) contentMatch(path string, query string, size int64) (int, string, int) {
+	if size <= 0 || size > searchContentBytes {
+		return 0, "", 0
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, "", 0
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, searchContentBytes+1))
+	if err != nil || int64(len(data)) > searchContentBytes || fs.policy().Binary(data) {
+		return 0, "", 0
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(strings.ToLower(trimmed), query) {
+			return i + 1, truncatePreview(trimmed, 180), 30
+		}
+	}
+	return 0, "", 0
 }
 
 func (fs Filesystem) Read(target Target, req protocol.WorkspaceRequest) (protocol.WorkspaceFile, error) {
@@ -260,6 +291,14 @@ func searchScore(query, name, rel string) int {
 	default:
 		return 0
 	}
+}
+
+func truncatePreview(text string, max int) string {
+	if max <= 0 || len([]rune(text)) <= max {
+		return text
+	}
+	runes := []rune(text)
+	return string(runes[:max])
 }
 
 func (fs Filesystem) policy() Policy {

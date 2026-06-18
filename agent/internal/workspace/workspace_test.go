@@ -76,6 +76,28 @@ func TestHandlerSearchesProjectFiles(t *testing.T) {
 	}
 }
 
+func TestHandlerSearchesProjectFileContent(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "internal", "app"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "internal", "app", "service.go"), []byte("package app\n\nfunc Run() string {\n\treturn \"needle-value\"\n}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("NEEDLE_SECRET=value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := New(fakeState{projects: map[string]string{"project_1": root}})
+	resp := handler.Handle(context.Background(), protocol.WorkspaceRequest{RequestID: "req_1", Operation: "search", ProjectID: "project_1", Query: "needle-value", Depth: 4})
+	if resp.Status != "ok" || len(resp.Matches) != 1 {
+		t.Fatalf("search response = %+v", resp)
+	}
+	match := resp.Matches[0]
+	if match.Path != "internal/app/service.go" || match.Line != 4 || match.Preview != `return "needle-value"` {
+		t.Fatalf("content match = %+v", match)
+	}
+}
+
 func TestHandlerRejectsEscapedPath(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "secret.txt")
