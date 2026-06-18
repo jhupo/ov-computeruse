@@ -38,6 +38,44 @@ func TestHandlerListsAndReadsProjectFiles(t *testing.T) {
 	}
 }
 
+func TestHandlerSearchesProjectFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "cmd", "app"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "cmd", "app", "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".hidden"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".hidden", "main_secret.go"), []byte("package hidden\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "node_modules", "pkg"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "node_modules", "pkg", "main.js"), []byte("console.log('skip')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := New(fakeState{projects: map[string]string{"project_1": root}})
+	resp := handler.Handle(context.Background(), protocol.WorkspaceRequest{RequestID: "req_1", Operation: "search", ProjectID: "project_1", Query: "main", Depth: 4})
+	if resp.Status != "ok" || len(resp.Matches) == 0 {
+		t.Fatalf("search response = %+v", resp)
+	}
+	if resp.Matches[0].Path != "cmd/app/main.go" {
+		t.Fatalf("first match = %+v", resp.Matches[0])
+	}
+	for _, match := range resp.Matches {
+		if match.Path == ".hidden/main_secret.go" {
+			t.Fatalf("hidden match leaked = %+v", match)
+		}
+		if match.Path == "node_modules/pkg/main.js" {
+			t.Fatalf("skipped directory match leaked = %+v", match)
+		}
+	}
+}
+
 func TestHandlerRejectsEscapedPath(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "secret.txt")

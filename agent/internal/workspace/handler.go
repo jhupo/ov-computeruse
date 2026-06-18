@@ -55,6 +55,16 @@ func (h Handler) Handle(ctx context.Context, req protocol.WorkspaceRequest) prot
 		}
 		resp.Status = "ok"
 		resp.Entries = entries
+	case "search":
+		matches, err := h.fs.Search(target, req)
+		if err != nil {
+			resp.Status = "failed"
+			resp.Code = workspaceErrorCode(err, "workspace_search_failed")
+			resp.Message = err.Error()
+			return resp
+		}
+		resp.Status = "ok"
+		resp.Matches = matches
 	case "read":
 		file, err := h.fs.Read(target, req)
 		if err != nil {

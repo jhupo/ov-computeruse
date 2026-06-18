@@ -154,6 +154,7 @@ type WorkspaceRequest struct {
 	Operation     string `json:"operation"`
 	ProjectID     string `json:"project_id"`
 	Path          string `json:"path,omitempty"`
+	Query         string `json:"query,omitempty"`
 	Staged        bool   `json:"staged,omitempty"`
 	Depth         int    `json:"depth,omitempty"`
 	Limit         int    `json:"limit,omitempty"`
@@ -162,24 +163,35 @@ type WorkspaceRequest struct {
 }
 
 type WorkspaceResponse struct {
-	RequestID string            `json:"request_id"`
-	Operation string            `json:"operation"`
-	ProjectID string            `json:"project_id,omitempty"`
-	Path      string            `json:"path,omitempty"`
-	Status    string            `json:"status"`
-	Code      string            `json:"code,omitempty"`
-	Message   string            `json:"message,omitempty"`
-	Entries   []WorkspaceEntry  `json:"entries,omitempty"`
-	File      *WorkspaceFile    `json:"file,omitempty"`
-	Git       *WorkspaceGit     `json:"git,omitempty"`
-	Diff      *WorkspaceGitDiff `json:"diff,omitempty"`
-	At        time.Time         `json:"at,omitempty"`
+	RequestID string                 `json:"request_id"`
+	Operation string                 `json:"operation"`
+	ProjectID string                 `json:"project_id,omitempty"`
+	Path      string                 `json:"path,omitempty"`
+	Status    string                 `json:"status"`
+	Code      string                 `json:"code,omitempty"`
+	Message   string                 `json:"message,omitempty"`
+	Entries   []WorkspaceEntry       `json:"entries,omitempty"`
+	Matches   []WorkspaceSearchMatch `json:"matches,omitempty"`
+	File      *WorkspaceFile         `json:"file,omitempty"`
+	Git       *WorkspaceGit          `json:"git,omitempty"`
+	Diff      *WorkspaceGitDiff      `json:"diff,omitempty"`
+	At        time.Time              `json:"at,omitempty"`
 }
 
 type WorkspaceEntry struct {
 	Name      string    `json:"name"`
 	Path      string    `json:"path"`
 	Kind      string    `json:"kind"`
+	Size      int64     `json:"size,omitempty"`
+	ModTime   time.Time `json:"mod_time,omitempty"`
+	Sensitive bool      `json:"sensitive,omitempty"`
+}
+
+type WorkspaceSearchMatch struct {
+	Path      string    `json:"path"`
+	Name      string    `json:"name"`
+	Kind      string    `json:"kind"`
+	Score     int       `json:"score,omitempty"`
 	Size      int64     `json:"size,omitempty"`
 	ModTime   time.Time `json:"mod_time,omitempty"`
 	Sensitive bool      `json:"sensitive,omitempty"`

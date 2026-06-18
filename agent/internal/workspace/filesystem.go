@@ -57,6 +57,9 @@ func (fs Filesystem) List(target Target, req protocol.WorkspaceRequest) ([]proto
 			return nil
 		}
 		name := entry.Name()
+		if entry.IsDir() && policy.SkipDir(name) {
+			return filepath.SkipDir
+		}
 		if !req.IncludeHidden && policy.Hidden(name) {
 			if entry.IsDir() {
 				return filepath.SkipDir
@@ -98,6 +101,96 @@ func (fs Filesystem) List(target Target, req protocol.WorkspaceRequest) ([]proto
 		return strings.ToLower(entries[i].Path) < strings.ToLower(entries[j].Path)
 	})
 	return entries, err
+}
+
+func (fs Filesystem) Search(target Target, req protocol.WorkspaceRequest) ([]protocol.WorkspaceSearchMatch, error) {
+	policy := fs.policy()
+	query := strings.ToLower(strings.TrimSpace(req.Query))
+	if query == "" {
+		return nil, errors.New("query is required")
+	}
+	info, err := os.Stat(target.Path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, errors.New("path is not a directory")
+	}
+	limit := clamp(req.Limit, 100, maxListLimit)
+	depth := clamp(req.Depth, maxListDepth, maxListDepth)
+	matches := make([]protocol.WorkspaceSearchMatch, 0)
+	err = filepath.WalkDir(target.Path, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if samePath(path, target.Path) {
+			return nil
+		}
+		relToTarget, err := filepath.Rel(target.Path, path)
+		if err != nil {
+			return nil
+		}
+		level := pathDepth(relToTarget)
+		if level > depth {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := entry.Name()
+		if entry.IsDir() && policy.SkipDir(name) {
+			return filepath.SkipDir
+		}
+		if !req.IncludeHidden && policy.Hidden(name) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(target.Root, path)
+		if err != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		score := searchScore(query, strings.ToLower(name), strings.ToLower(rel))
+		if score == 0 {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil
+		}
+		kind := "file"
+		if entry.IsDir() {
+			kind = "directory"
+		}
+		matches = append(matches, protocol.WorkspaceSearchMatch{
+			Path:      rel,
+			Name:      name,
+			Kind:      kind,
+			Score:     score,
+			Size:      info.Size(),
+			ModTime:   info.ModTime().UTC(),
+			Sensitive: policy.Sensitive(path),
+		})
+		if len(matches) >= limit {
+			return errLimitReached
+		}
+		return nil
+	})
+	if errors.Is(err, errLimitReached) {
+		err = nil
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].Score != matches[j].Score {
+			return matches[i].Score > matches[j].Score
+		}
+		if matches[i].Kind != matches[j].Kind {
+			return matches[i].Kind == "file"
+		}
+		return strings.ToLower(matches[i].Path) < strings.ToLower(matches[j].Path)
+	})
+	return matches, err
 }
 
 func (fs Filesystem) Read(target Target, req protocol.WorkspaceRequest) (protocol.WorkspaceFile, error) {
@@ -150,6 +243,23 @@ func (fs Filesystem) Read(target Target, req protocol.WorkspaceRequest) (protoco
 		Content:   string(data),
 		Truncated: truncated,
 	}, nil
+}
+
+func searchScore(query, name, rel string) int {
+	switch {
+	case name == query:
+		return 100
+	case strings.HasPrefix(name, query):
+		return 80
+	case strings.Contains(name, query):
+		return 60
+	case rel == query:
+		return 50
+	case strings.Contains(rel, query):
+		return 40
+	default:
+		return 0
+	}
 }
 
 func (fs Filesystem) policy() Policy {

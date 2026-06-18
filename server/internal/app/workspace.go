@@ -42,10 +42,37 @@ func (s *Server) handleDashWorkspaceFile(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if resp.Status != "ok" {
-		writeError(w, http.StatusBadGateway, "workspace_request_failed", firstWorkspaceMessage(resp.Message, "workspace request failed"))
+		writeError(w, http.StatusBadGateway, firstWorkspaceCode(resp.Code, "workspace_request_failed"), firstWorkspaceMessage(resp.Message, "workspace request failed"))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "path": req.Path, "file": resp.File})
+}
+
+func (s *Server) handleDashWorkspaceSearch(w http.ResponseWriter, r *http.Request) {
+	_, identity, req, ok := s.workspaceRequestFromQuery(w, r, "search")
+	if !ok {
+		return
+	}
+	req.Query = strings.TrimSpace(r.URL.Query().Get("q"))
+	if req.Query == "" {
+		req.Query = strings.TrimSpace(r.URL.Query().Get("query"))
+	}
+	if req.Query == "" {
+		writeError(w, http.StatusBadRequest, "missing_query", "q or query is required")
+		return
+	}
+	req.Limit = queryInt(r, "limit", 100)
+	req.Depth = queryInt(r, "depth", 8)
+	resp, status, err := s.sendWorkspaceRequest(r.Context(), identity, req)
+	if err != nil {
+		writeError(w, status, workspaceErrorCode(status), err.Error())
+		return
+	}
+	if resp.Status != "ok" {
+		writeError(w, http.StatusBadGateway, firstWorkspaceCode(resp.Code, "workspace_request_failed"), firstWorkspaceMessage(resp.Message, "workspace request failed"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "query": req.Query, "matches": resp.Matches})
 }
 
 func (s *Server) handleDashWorkspaceGitStatus(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +87,7 @@ func (s *Server) handleDashWorkspaceGitStatus(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if resp.Status != "ok" {
-		writeError(w, http.StatusBadGateway, "workspace_request_failed", firstWorkspaceMessage(resp.Message, "workspace request failed"))
+		writeError(w, http.StatusBadGateway, firstWorkspaceCode(resp.Code, "workspace_request_failed"), firstWorkspaceMessage(resp.Message, "workspace request failed"))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "git": resp.Git})
@@ -170,7 +197,7 @@ func validateWorkspaceCapability(identity store.AgentIdentity, operation string)
 		return errors.New("agent capabilities are invalid")
 	}
 	switch operation {
-	case "list", "read":
+	case "list", "read", "search":
 		if !capabilityHasFeature(caps, "workspace.files") {
 			return errors.New("agent does not support workspace files")
 		}

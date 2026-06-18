@@ -8,6 +8,7 @@ import (
 
 type Policy interface {
 	Hidden(name string) bool
+	SkipDir(name string) bool
 	Sensitive(path string) bool
 	Binary(data []byte) bool
 }
@@ -16,6 +17,15 @@ type DefaultPolicy struct{}
 
 func (DefaultPolicy) Hidden(name string) bool {
 	return strings.HasPrefix(name, ".")
+}
+
+func (DefaultPolicy) SkipDir(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case ".git", "node_modules", "vendor":
+		return true
+	default:
+		return false
+	}
 }
 
 func (DefaultPolicy) Sensitive(path string) bool {

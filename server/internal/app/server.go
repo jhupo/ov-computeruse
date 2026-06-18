@@ -75,6 +75,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/dash/conversation/items", s.handleDashConversationItems)
 	mux.HandleFunc("GET /api/dash/workspace/tree", s.handleDashWorkspaceTree)
 	mux.HandleFunc("GET /api/dash/workspace/file", s.handleDashWorkspaceFile)
+	mux.HandleFunc("GET /api/dash/workspace/search", s.handleDashWorkspaceSearch)
 	mux.HandleFunc("GET /api/dash/workspace/git-status", s.handleDashWorkspaceGitStatus)
 	mux.HandleFunc("GET /api/dash/workspace/git-diff", s.handleDashWorkspaceGitDiff)
 	mux.HandleFunc("GET /api/dash/approvals", s.handleDashApprovals)
