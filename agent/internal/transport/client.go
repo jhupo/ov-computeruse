@@ -220,6 +220,7 @@ func (c *Client) syncRunHistory(ctx context.Context, trigger protocol.RunEvent) 
 		})
 		return
 	}
+	c.emitHistoryRuntimeSession(ctx, trigger, runtimeSessionForHistorySession(result, target, session))
 	if c.state != nil && strings.TrimSpace(trigger.EventID) != "" {
 		if err := c.state.MarkCodexHistorySynced(ctx, trigger.EventID, session.ID); err != nil {
 			c.emitIndexRefreshStatus(context.Background(), trigger, "history.sync.failed", map[string]any{
@@ -312,6 +313,50 @@ func findHistorySession(result codexscan.Result, target protocol.RuntimeSession)
 		}
 	}
 	return codexscan.Session{}, false
+}
+
+func runtimeSessionForHistorySession(result codexscan.Result, target protocol.RuntimeSession, session codexscan.Session) protocol.RuntimeSession {
+	runtimeSession := protocol.RuntimeSession{
+		Runtime:         protocol.RuntimeCodexCLI,
+		ProjectID:       firstNonEmpty(session.ProjectID, target.ProjectID),
+		SessionID:       session.ID,
+		NativeSessionID: firstNonEmpty(target.NativeSessionID, target.SessionID, session.ID),
+		ResumeMode:      firstNonEmpty(target.ResumeMode, "codex_cli_history_index"),
+		LastRunID:       target.LastRunID,
+		UpdatedAt:       session.UpdatedAt,
+	}
+	for _, candidate := range result.RuntimeSessions {
+		if candidate.Runtime != protocol.RuntimeCodexCLI || strings.TrimSpace(candidate.SessionID) != session.ID {
+			continue
+		}
+		runtimeSession.ProjectID = firstNonEmpty(candidate.ProjectID, runtimeSession.ProjectID)
+		runtimeSession.NativeSessionID = firstNonEmpty(candidate.NativeSessionID, runtimeSession.NativeSessionID)
+		runtimeSession.ResumeMode = firstNonEmpty(candidate.ResumeMode, runtimeSession.ResumeMode)
+		if candidate.UpdatedAt.After(runtimeSession.UpdatedAt) {
+			runtimeSession.UpdatedAt = candidate.UpdatedAt
+		}
+		break
+	}
+	if runtimeSession.UpdatedAt.IsZero() {
+		runtimeSession.UpdatedAt = time.Now().UTC()
+	}
+	return runtimeSession
+}
+
+func (c *Client) emitHistoryRuntimeSession(ctx context.Context, trigger protocol.RunEvent, runtimeSession protocol.RuntimeSession) {
+	if c.manager == nil || strings.TrimSpace(runtimeSession.SessionID) == "" {
+		return
+	}
+	if err := c.manager.Emit(ctx, protocol.RunEvent{
+		RunID:     trigger.RunID,
+		CommandID: trigger.CommandID,
+		ProjectID: runtimeSession.ProjectID,
+		SessionID: runtimeSession.SessionID,
+		Kind:      "session.updated",
+		Payload:   protocol.Raw(runtimeSession),
+	}); err != nil {
+		c.logger.WarnContext(ctx, "history runtime session emit failed", "run_id", trigger.RunID, "session_id", runtimeSession.SessionID, "error", err)
+	}
 }
 
 func (c *Client) emitIndexRefreshStatus(ctx context.Context, trigger protocol.RunEvent, status string, extra map[string]any) {
@@ -414,6 +459,9 @@ func (c *Client) flushRunEventOutbox(ctx context.Context) error {
 		}
 		if err := c.state.MarkRunEventSent(ctx, event); err != nil {
 			return err
+		}
+		if c.shouldRefreshIndexAfter(event) {
+			go c.refreshIndexAfterRun(event)
 		}
 	}
 	return nil

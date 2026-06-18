@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -317,6 +319,142 @@ func TestApprovalDecisionCommandAckIsPersistedAndReplayed(t *testing.T) {
 	}
 }
 
+func TestOutboxTerminalRunEventTriggersHistorySync(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	state, err := localstate.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer state.Close()
+
+	sessionPath := filepath.Join(t.TempDir(), "session.jsonl")
+	content := "" +
+		`{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"id":"native_thread"}}` + "\n" +
+		`{"timestamp":"2026-06-18T01:01:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"web history ok"}]}}` + "\n"
+	if err := os.WriteFile(sessionPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+
+	if err := state.SaveRuntimeSession(ctx, localstate.RuntimeSession{
+		SessionID:       "native_thread",
+		Runtime:         protocol.RuntimeCodexCLI,
+		ProjectID:       "project_1",
+		NativeSessionID: "native_thread",
+		LastRunID:       "run_1",
+		UpdatedAt:       time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("save runtime session: %v", err)
+	}
+	terminal := protocol.RunEvent{
+		EventID:   "evt_done_1",
+		RunID:     "run_1",
+		CommandID: "cmd_1",
+		ProjectID: "project_1",
+		SessionID: "native_thread",
+		Seq:       3,
+		Kind:      "run.done",
+		At:        time.Now().UTC(),
+	}
+	if err := state.SaveRunEvent(ctx, terminal); err != nil {
+		t.Fatalf("save run event: %v", err)
+	}
+
+	result := codexscan.Result{
+		Sessions: []codexscan.Session{{
+			ID:            "history_session",
+			ProjectID:     "project_1",
+			Path:          sessionPath,
+			UpdatedAt:     time.Now().UTC(),
+			Size:          int64(len(content)),
+			ContentSHA256: "sha_1",
+		}},
+		RuntimeSessions: []codexscan.RuntimeSession{{
+			Runtime:         protocol.RuntimeCodexCLI,
+			ProjectID:       "project_1",
+			SessionID:       "history_session",
+			NativeSessionID: "native_thread",
+			ResumeMode:      "codex_cli_history_index",
+			UpdatedAt:       time.Now().UTC(),
+		}},
+	}
+	conn := newMemoryConn()
+	client := newClient(
+		securestore.Identity{AgentID: "agent_1", DeviceID: "device_1", AgentSecret: "secret", ServerURL: "https://server.test"},
+		nil,
+		staticScanner{result: result},
+		protocolDevice(),
+		defaultConfig(),
+		state,
+		false,
+		false,
+		nil,
+	)
+	client.setConn(conn)
+
+	done := make(chan error, 1)
+	go func() { done <- client.readLoop(ctx, conn) }()
+
+	if err := client.flushRunEventOutbox(ctx); err != nil {
+		t.Fatalf("flush outbox: %v", err)
+	}
+	waitForWrittenType(t, conn, "run.event")
+	historyEnv := waitForWrittenEnvelope(t, conn, "history.items")
+	historyBatch := decryptEnvelopeData[protocol.HistoryItems](t, historyEnv)
+	if historyBatch.SessionID != "history_session" || len(historyBatch.Items) == 0 {
+		t.Fatalf("history batch = %+v", historyBatch)
+	}
+	if err := conn.pushEncrypted("history.items.ack", "server", "server_device", 1, protocol.HistoryItemsAck{
+		SessionID: historyBatch.SessionID,
+		Cursor:    historyBatch.Cursor,
+		Status:    "ok",
+	}, "secret"); err != nil {
+		t.Fatal(err)
+	}
+	waitForWrittenType(t, conn, "sync.cursor")
+
+	waitForCodexHistorySynced(t, ctx, state, terminal.EventID)
+	byRun, err := state.RuntimeSessionByRun(ctx, "run_1", protocol.RuntimeCodexCLI)
+	if err != nil {
+		t.Fatalf("runtime session by run: %v", err)
+	}
+	if byRun.SessionID != "history_session" || byRun.NativeSessionID != "native_thread" {
+		t.Fatalf("runtime session by run = %+v", byRun)
+	}
+
+	conn.closeWith(errors.New("done"))
+	select {
+	case err := <-done:
+		if err == nil || err.Error() != "done" {
+			t.Fatalf("read loop error = %v, want done", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("read loop did not exit")
+	}
+}
+
+func waitForCodexHistorySynced(t *testing.T, ctx context.Context, state *localstate.Store, eventID string) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		synced, err := state.CodexHistorySynced(ctx, eventID)
+		if err != nil {
+			t.Fatalf("history synced state: %v", err)
+		}
+		if synced {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("terminal outbox event did not mark codex history synced")
+		case <-ticker.C:
+		}
+	}
+}
+
 type memoryConn struct {
 	readCh  chan protocol.Envelope
 	writeCh chan protocol.Envelope
@@ -398,15 +536,20 @@ func waitForWrittenEnvelope(t *testing.T, conn *memoryConn, messageType string) 
 func waitForWrittenAck(t *testing.T, conn *memoryConn) protocol.Ack {
 	t.Helper()
 	env := waitForWrittenEnvelope(t, conn, "ack")
+	return decryptEnvelopeData[protocol.Ack](t, env)
+}
+
+func decryptEnvelopeData[T any](t *testing.T, env protocol.Envelope) T {
+	t.Helper()
 	decrypted, err := protocol.DecryptEnvelopeData("secret", env)
 	if err != nil {
-		t.Fatalf("decrypt ack: %v", err)
+		t.Fatalf("decrypt envelope: %v", err)
 	}
-	var ack protocol.Ack
-	if err := json.Unmarshal(decrypted.Data, &ack); err != nil {
-		t.Fatalf("decode ack: %v", err)
+	var value T
+	if err := json.Unmarshal(decrypted.Data, &value); err != nil {
+		t.Fatalf("decode envelope: %v", err)
 	}
-	return ack
+	return value
 }
 
 func assertNoWrittenType(t *testing.T, conn *memoryConn, messageType string, wait time.Duration) {
@@ -441,6 +584,26 @@ func (blockingScanner) Scan(ctx context.Context) (codexscan.Result, error) {
 }
 
 func (blockingScanner) ForEachHistoryChunk(context.Context, codexscan.Session, int, func(codexscan.HistoryChunk) error) error {
+	return nil
+}
+
+type staticScanner struct {
+	result codexscan.Result
+}
+
+func (staticScanner) Credential() (codexscan.Credential, error) {
+	return codexscan.Credential{}, errors.New("not configured")
+}
+
+func (staticScanner) DiscoverRoots() []codexscan.Root {
+	return nil
+}
+
+func (s staticScanner) Scan(context.Context) (codexscan.Result, error) {
+	return s.result, nil
+}
+
+func (staticScanner) ForEachHistoryChunk(context.Context, codexscan.Session, int, func(codexscan.HistoryChunk) error) error {
 	return nil
 }
 

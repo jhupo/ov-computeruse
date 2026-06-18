@@ -132,6 +132,94 @@ func TestResolveCommandContextAcceptsRuntimeSession(t *testing.T) {
 	}
 }
 
+func TestRuntimeSessionScanMergesLiveNativeSession(t *testing.T) {
+	state, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer state.Close()
+
+	ctx := context.Background()
+	liveAt := time.Now().UTC().Add(-time.Minute)
+	if err := state.SaveRuntimeSession(ctx, RuntimeSession{
+		SessionID:       "native_thread",
+		Runtime:         protocol.RuntimeCodexCLI,
+		ProjectID:       "project_1",
+		NativeSessionID: "native_thread",
+		ResumeMode:      "codex_cli_exec",
+		LastRunID:       "run_1",
+		UpdatedAt:       liveAt,
+	}); err != nil {
+		t.Fatalf("save live runtime session: %v", err)
+	}
+
+	_, err = state.SaveScanResult(ctx, codexscan.Result{
+		Sessions: []codexscan.Session{{
+			ID:        "history_session",
+			ProjectID: "project_1",
+			Path:      filepath.Join(t.TempDir(), "session.jsonl"),
+			UpdatedAt: time.Now().UTC(),
+		}},
+		RuntimeSessions: []codexscan.RuntimeSession{{
+			Runtime:         protocol.RuntimeCodexCLI,
+			ProjectID:       "project_1",
+			SessionID:       "history_session",
+			NativeSessionID: "native_thread",
+			ResumeMode:      "codex_cli_history_index",
+			UpdatedAt:       time.Now().UTC(),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("save scanned runtime session: %v", err)
+	}
+
+	byRun, err := state.RuntimeSessionByRun(ctx, "run_1", protocol.RuntimeCodexCLI)
+	if err != nil {
+		t.Fatalf("runtime session by run: %v", err)
+	}
+	if byRun.SessionID != "history_session" || byRun.NativeSessionID != "native_thread" {
+		t.Fatalf("runtime session by run = %+v", byRun)
+	}
+	if byRun.LastRunID != "run_1" {
+		t.Fatalf("last run id = %q, want run_1", byRun.LastRunID)
+	}
+
+	byNative, err := state.RuntimeSession(ctx, "native_thread", protocol.RuntimeCodexCLI)
+	if err != nil {
+		t.Fatalf("runtime session by native: %v", err)
+	}
+	if byNative.SessionID != "history_session" {
+		t.Fatalf("runtime session by native = %+v", byNative)
+	}
+
+	sessions, err := state.RuntimeSessions(ctx)
+	if err != nil {
+		t.Fatalf("runtime sessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("runtime session count = %d, want 1: %+v", len(sessions), sessions)
+	}
+
+	if err := state.SaveRuntimeSession(ctx, RuntimeSession{
+		SessionID:       "native_thread",
+		Runtime:         protocol.RuntimeCodexCLI,
+		ProjectID:       "project_1",
+		NativeSessionID: "native_thread",
+		ResumeMode:      "codex_cli_exec",
+		LastRunID:       "run_2",
+		UpdatedAt:       time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("save native live runtime session after scan: %v", err)
+	}
+	byRun, err = state.RuntimeSessionByRun(ctx, "run_2", protocol.RuntimeCodexCLI)
+	if err != nil {
+		t.Fatalf("runtime session by second run: %v", err)
+	}
+	if byRun.SessionID != "history_session" || byRun.NativeSessionID != "native_thread" {
+		t.Fatalf("runtime session regressed after live update: %+v", byRun)
+	}
+}
+
 func TestSaveRunEventDoesNotProjectConflictingSeq(t *testing.T) {
 	state, err := Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {

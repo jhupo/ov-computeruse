@@ -428,6 +428,7 @@ func (s *Store) SaveRuntimeSession(ctx context.Context, session RuntimeSession) 
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()
 	}
+	session = s.mergeRuntimeSessionByNativeID(ctx, session)
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO runtime_sessions(session_id, runtime, project_id, native_session_id, resume_mode, last_run_id, updated_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?)
@@ -439,6 +440,17 @@ func (s *Store) SaveRuntimeSession(ctx context.Context, session RuntimeSession) 
 			updated_at = excluded.updated_at
 	`, session.SessionID, session.Runtime, session.ProjectID, session.NativeSessionID, session.ResumeMode, session.LastRunID, updatedAt.UTC().Format(time.RFC3339Nano))
 	return err
+}
+
+func (s *Store) mergeRuntimeSessionByNativeID(ctx context.Context, session RuntimeSession) RuntimeSession {
+	if s == nil || strings.TrimSpace(session.NativeSessionID) == "" {
+		return session
+	}
+	existing, err := runtimeSessionByNativeID(ctx, s.db, session.Runtime, session.NativeSessionID)
+	if err != nil {
+		return session
+	}
+	return mergeRuntimeSessionRecords(ctx, s.db, existing, session)
 }
 
 func (s *Store) RuntimeSession(ctx context.Context, sessionID, runtime string) (RuntimeSession, error) {
@@ -1305,6 +1317,7 @@ type txLike interface {
 
 type queryTxLike interface {
 	txLike
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
@@ -1381,7 +1394,7 @@ func upsertSessions(ctx context.Context, tx txLike, sessions []codexscan.Session
 	return nil
 }
 
-func upsertRuntimeSessions(ctx context.Context, tx txLike, sessions []codexscan.RuntimeSession) error {
+func upsertRuntimeSessions(ctx context.Context, tx queryTxLike, sessions []codexscan.RuntimeSession) error {
 	for _, session := range sessions {
 		if session.Runtime == "" {
 			continue
@@ -1396,19 +1409,80 @@ func upsertRuntimeSessions(ctx context.Context, tx txLike, sessions []codexscan.
 		if updatedAt.IsZero() {
 			updatedAt = time.Now().UTC()
 		}
+		merged := mergeRuntimeSessionRecords(ctx, tx, runtimeSessionFromCodexScan(session), runtimeSessionFromCodexScan(session))
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO runtime_sessions(session_id, runtime, project_id, native_session_id, resume_mode, last_run_id, updated_at)
-			VALUES(?, ?, ?, ?, ?, '', ?)
+			VALUES(?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(session_id, runtime) DO UPDATE SET
 				project_id = COALESCE(NULLIF(excluded.project_id, ''), runtime_sessions.project_id),
 				native_session_id = COALESCE(NULLIF(excluded.native_session_id, ''), runtime_sessions.native_session_id),
 				resume_mode = COALESCE(NULLIF(excluded.resume_mode, ''), runtime_sessions.resume_mode),
+				last_run_id = COALESCE(NULLIF(excluded.last_run_id, ''), runtime_sessions.last_run_id),
 				updated_at = excluded.updated_at
-		`, session.SessionID, session.Runtime, session.ProjectID, session.NativeSessionID, session.ResumeMode, updatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+		`, merged.SessionID, merged.Runtime, merged.ProjectID, merged.NativeSessionID, merged.ResumeMode, merged.LastRunID, updatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func runtimeSessionFromCodexScan(session codexscan.RuntimeSession) RuntimeSession {
+	return RuntimeSession{
+		SessionID:       session.SessionID,
+		Runtime:         session.Runtime,
+		ProjectID:       session.ProjectID,
+		NativeSessionID: session.NativeSessionID,
+		ResumeMode:      session.ResumeMode,
+		UpdatedAt:       session.UpdatedAt,
+	}
+}
+
+func mergeRuntimeSessionRecords(ctx context.Context, tx txLike, existing RuntimeSession, incoming RuntimeSession) RuntimeSession {
+	if strings.TrimSpace(incoming.NativeSessionID) != "" {
+		if byNative, err := runtimeSessionByNativeID(ctx, tx, incoming.Runtime, incoming.NativeSessionID); err == nil {
+			existing = byNative
+		}
+	}
+	if strings.TrimSpace(existing.SessionID) == "" {
+		return incoming
+	}
+	merged := incoming
+	merged.ProjectID = firstNonEmpty(incoming.ProjectID, existing.ProjectID)
+	merged.NativeSessionID = firstNonEmpty(incoming.NativeSessionID, existing.NativeSessionID)
+	merged.ResumeMode = firstNonEmpty(incoming.ResumeMode, existing.ResumeMode)
+	merged.LastRunID = firstNonEmpty(incoming.LastRunID, existing.LastRunID)
+	if incoming.UpdatedAt.IsZero() {
+		merged.UpdatedAt = existing.UpdatedAt
+	}
+	if strings.TrimSpace(incoming.SessionID) == "" || (incoming.SessionID == incoming.NativeSessionID && existing.SessionID != existing.NativeSessionID) {
+		merged.SessionID = existing.SessionID
+	}
+	if merged.SessionID != existing.SessionID && existing.SessionID != "" {
+		_, _ = tx.ExecContext(ctx, `DELETE FROM runtime_sessions WHERE session_id = ? AND runtime = ?`, existing.SessionID, existing.Runtime)
+	}
+	return merged
+}
+
+func runtimeSessionByNativeID(ctx context.Context, tx txLike, runtime, nativeSessionID string) (RuntimeSession, error) {
+	query, ok := tx.(interface {
+		QueryRowContext(context.Context, string, ...any) *sql.Row
+	})
+	if !ok || strings.TrimSpace(runtime) == "" || strings.TrimSpace(nativeSessionID) == "" {
+		return RuntimeSession{}, sql.ErrNoRows
+	}
+	var session RuntimeSession
+	var updatedAt string
+	err := query.QueryRowContext(ctx, `
+		SELECT session_id, runtime, COALESCE(project_id, ''), COALESCE(native_session_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''), updated_at
+		FROM runtime_sessions
+		WHERE runtime = ? AND native_session_id = ?
+		ORDER BY updated_at DESC
+		LIMIT 1
+	`, runtime, nativeSessionID).Scan(&session.SessionID, &session.Runtime, &session.ProjectID, &session.NativeSessionID, &session.ResumeMode, &session.LastRunID, &updatedAt)
+	if parsed, parseErr := time.Parse(time.RFC3339Nano, updatedAt); parseErr == nil {
+		session.UpdatedAt = parsed.UTC()
+	}
+	return session, err
 }
 
 func markMissingDeleted(ctx context.Context, tx queryTxLike, result codexscan.Result) (DeletedIndex, error) {
