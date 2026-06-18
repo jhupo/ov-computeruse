@@ -906,7 +906,7 @@ func runStatusFromEvent(event protocol.RunEvent) (string, bool) {
 	case "run.done", "run.completed":
 		return "done", true
 	case "run.error", "run.failed":
-		if strings.Contains(runEventReason(event), "interrupted") {
+		if strings.EqualFold(payloadString(event.Payload, "status"), "interrupted") || strings.Contains(runEventReason(event), "interrupted") {
 			return "interrupted", true
 		}
 		return "error", true

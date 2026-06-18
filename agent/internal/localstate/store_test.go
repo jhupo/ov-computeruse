@@ -221,3 +221,53 @@ func TestMarkRunEventAckedPrefersEventID(t *testing.T) {
 		t.Fatal("event was not acked by event_id")
 	}
 }
+
+func TestReconcileInterruptedRunsCreatesPendingRunEvent(t *testing.T) {
+	state, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer state.Close()
+	ctx := context.Background()
+	started := protocol.RunEvent{
+		EventID:   "evt_started",
+		RunID:     "run_interrupted",
+		CommandID: "cmd_1",
+		ProjectID: "project_1",
+		SessionID: "session_1",
+		Seq:       1,
+		Kind:      "run.started",
+		At:        time.Now().UTC().Add(-time.Minute),
+	}
+	if err := state.SaveRunEvent(ctx, started); err != nil {
+		t.Fatalf("save started event: %v", err)
+	}
+	if err := state.MarkRunEventAcked(ctx, protocol.Ack{EventID: started.EventID, RunID: started.RunID, AckSeq: started.Seq, Status: "acked", At: time.Now().UTC()}); err != nil {
+		t.Fatalf("ack started event: %v", err)
+	}
+	events, err := state.ReconcileInterruptedRuns(ctx)
+	if err != nil {
+		t.Fatalf("reconcile interrupted runs: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("interrupted event count = %d, want 1", len(events))
+	}
+	event := events[0]
+	if event.RunID != started.RunID || event.CommandID != started.CommandID || event.Seq != 2 || event.Kind != "run.error" {
+		t.Fatalf("interrupted event = %+v", event)
+	}
+	pending, err := state.PendingRunEvents(ctx, 10)
+	if err != nil {
+		t.Fatalf("pending events: %v", err)
+	}
+	if len(pending) != 1 || pending[0].EventID != event.EventID {
+		t.Fatalf("pending events = %+v, want interrupted event", pending)
+	}
+	var status string
+	if err := state.db.QueryRowContext(ctx, `SELECT status FROM runs WHERE id = ?`, started.RunID).Scan(&status); err != nil {
+		t.Fatalf("query run status: %v", err)
+	}
+	if status != "interrupted" {
+		t.Fatalf("run status = %q, want interrupted", status)
+	}
+}

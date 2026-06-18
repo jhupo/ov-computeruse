@@ -128,6 +128,9 @@ func skipRunEvent(event protocol.RunEvent) bool {
 }
 
 func (c *Client) serve(ctx context.Context, conn Conn) error {
+	if err := c.flushRunEventOutbox(ctx); err != nil {
+		c.logger.WarnContext(ctx, "initial run event outbox flush failed", "error", err)
+	}
 	if err := c.register(ctx); err != nil {
 		return err
 	}
