@@ -102,6 +102,27 @@ func (s *Server) handleDashRunSubscribe(r *http.Request, dash *DashConn, message
 	if limit <= 0 || limit > 1000 {
 		limit = 300
 	}
+	subscriptionKey := dashSubscriptionKey(agentID, runID)
+	dash.mu.Lock()
+	dash.Subscriptions[subscriptionKey] = DashSubscription{AgentID: agentID, RunID: runID, AfterSeq: message.AfterSeq}
+	dash.mu.Unlock()
+	removeSubscriptionOnError := true
+	defer func() {
+		if !removeSubscriptionOnError {
+			return
+		}
+		dash.mu.Lock()
+		if current := dash.Subscriptions[subscriptionKey]; current.AgentID == agentID && current.RunID == runID && current.AfterSeq == message.AfterSeq {
+			delete(dash.Subscriptions, subscriptionKey)
+		}
+		dash.mu.Unlock()
+	}()
+	throughSeq, err := s.store.RunEventHighWatermark(r.Context(), agentID, runID)
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "dash run subscribe watermark failed", "dash_id", dash.ID, "agent_id", agentID, "run_id", runID, "error", err)
+		s.sendDashError(dash, "run_snapshot_failed", "unable to load run event cursor")
+		return
+	}
 	steps, err := s.store.ListRunSteps(r.Context(), agentID, runID)
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "dash run subscribe steps failed", "dash_id", dash.ID, "agent_id", agentID, "run_id", runID, "error", err)
@@ -120,23 +141,28 @@ func (s *Server) handleDashRunSubscribe(r *http.Request, dash *DashConn, message
 		s.sendDashError(dash, "run_snapshot_failed", "unable to load tool calls")
 		return
 	}
-	events, err := s.store.ListRunEvents(r.Context(), agentID, runID, message.AfterSeq, limit)
+	events, err := s.store.ListRunEventsThrough(r.Context(), agentID, runID, message.AfterSeq, throughSeq, limit)
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "dash run subscribe events failed", "dash_id", dash.ID, "agent_id", agentID, "run_id", runID, "error", err)
 		s.sendDashError(dash, "run_snapshot_failed", "unable to load run events")
 		return
 	}
+	finalAfterSeq := maxSeq(message.AfterSeq, throughSeq)
+	removeSubscriptionOnError = false
 	dash.mu.Lock()
-	dash.Subscriptions[dashSubscriptionKey(agentID, runID)] = DashSubscription{AgentID: agentID, RunID: runID}
+	if current := dash.Subscriptions[subscriptionKey]; current.AgentID == agentID && current.RunID == runID && current.AfterSeq == message.AfterSeq {
+		dash.Subscriptions[subscriptionKey] = DashSubscription{AgentID: agentID, RunID: runID, AfterSeq: finalAfterSeq}
+	}
 	dash.mu.Unlock()
 	s.sendDash(dash, "run.snapshot", map[string]any{
-		"agent_id":   agentID,
-		"run_id":     runID,
-		"after_seq":  message.AfterSeq,
-		"events":     events,
-		"timeline":   steps,
-		"messages":   messages,
-		"tool_calls": tools,
+		"agent_id":    agentID,
+		"run_id":      runID,
+		"after_seq":   message.AfterSeq,
+		"through_seq": throughSeq,
+		"events":      events,
+		"timeline":    steps,
+		"messages":    messages,
+		"tool_calls":  tools,
 	})
 }
 
@@ -180,4 +206,11 @@ func (s *Server) sendDashError(dash *DashConn, code, message string) {
 
 func dashSubscriptionKey(agentID, runID string) string {
 	return strings.TrimSpace(agentID) + "\x00" + strings.TrimSpace(runID)
+}
+
+func maxSeq(left, right uint64) uint64 {
+	if left > right {
+		return left
+	}
+	return right
 }

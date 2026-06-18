@@ -38,8 +38,9 @@ type DashConn struct {
 }
 
 type DashSubscription struct {
-	AgentID string
-	RunID   string
+	AgentID  string
+	RunID    string
+	AfterSeq uint64
 }
 
 type AgentCommandEnvelope struct {
@@ -393,6 +394,7 @@ func dashAcceptsBroadcast(dash *DashConn, data []byte) bool {
 		AgentID string `json:"agent_id"`
 		Payload struct {
 			RunID string `json:"run_id"`
+			Seq   uint64 `json:"seq"`
 		} `json:"payload"`
 	}
 	if json.Unmarshal(data, &event) != nil {
@@ -408,7 +410,7 @@ func dashAcceptsBroadcast(dash *DashConn, data []byte) bool {
 	}
 	dash.mu.RUnlock()
 	for _, subscription := range subscriptions {
-		if subscription.AgentID == event.AgentID && subscription.RunID == event.Payload.RunID {
+		if subscription.AgentID == event.AgentID && subscription.RunID == event.Payload.RunID && event.Payload.Seq > subscription.AfterSeq {
 			return true
 		}
 	}

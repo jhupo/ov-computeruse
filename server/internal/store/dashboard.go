@@ -373,6 +373,15 @@ func (s *Store) RunExists(ctx context.Context, agentID, runID string) (bool, err
 	return exists, err
 }
 
+func (s *Store) RunEventHighWatermark(ctx context.Context, agentID, runID string) (uint64, error) {
+	if runID == "" {
+		return 0, nil
+	}
+	var seq uint64
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(MAX(seq), 0) FROM run_events WHERE agent_id=$1 AND run_id=$2 AND lower(trim(kind)) NOT IN ('usage','response.usage','token_usage','billing','cost')`, agentID, runID).Scan(&seq)
+	return seq, err
+}
+
 func (s *Store) ListCommands(ctx context.Context, agentID, status string, limit int) ([]CommandRecord, error) {
 	if limit <= 0 || limit > 300 {
 		limit = 100
@@ -636,6 +645,26 @@ func (s *Store) ListRunEvents(ctx context.Context, agentID, runID string, afterS
 		return nil, err
 	}
 	defer rows.Close()
+	return scanRunEvents(rows)
+}
+
+func (s *Store) ListRunEventsThrough(ctx context.Context, agentID, runID string, afterSeq, throughSeq uint64, limit int) ([]RunEventRecord, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 300
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id, agent_id, device_id, COALESCE(run_id, ''), COALESCE(command_id, ''), COALESCE(session_id, ''), COALESCE(project_id, ''), seq, kind, payload, event_at, received_at
+		FROM run_events
+		WHERE agent_id=$1 AND run_id=$2 AND seq>$3 AND seq<=$4 AND lower(trim(kind)) NOT IN ('usage','response.usage','token_usage','billing','cost')
+		ORDER BY seq ASC, received_at ASC
+		LIMIT $5`, agentID, runID, afterSeq, throughSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanRunEvents(rows)
+}
+
+func scanRunEvents(rows pgx.Rows) ([]RunEventRecord, error) {
 	out := []RunEventRecord{}
 	for rows.Next() {
 		var item RunEventRecord
