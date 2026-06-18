@@ -74,6 +74,8 @@ server 下发：
 
 一个 agent 可以索引多个本地项目和多个历史会话。agent 可以按 `max_concurrent_runs` 同时执行多个不同项目或不同会话的 run；同一个 `session_id` 始终串行，避免多个远程 prompt 同时续写同一条 Codex 历史上下文。
 
+server 下发的命令带 `deadline_at` 和 `expires_at`。agent 按 `deadline_at` 创建运行上下文，超时后取消 SDK 调用并上报 `run.error`，payload 标记 `deadline_exceeded`；用户主动 stop 则上报 `run.stopped`。这让“超时”和“手动停止”在 server/dash 投影里保持可区分。
+
 运行时通过 OpenAI Go SDK 调用 Responses API，使用本地 Codex credential 的 `base_url` 和 `api_key`。agent 将 SDK stream 转成稳定事件：`assistant.message.delta`、`assistant.message.done`、`tool.call`、`tool.output`、`terminal.output`、`diff.created`、`approval.requested`、`run.status`、`run.completed`、`run.failed`。dash 消费这些事件并按 Codex 桌面版体验渲染。
 
 本地 shell 工具默认关闭。启用 `allow_local_shell` 后，agent 只声明 Responses local shell tool，并且只在 server 审批通过后执行。工作目录必须位于已索引项目根内，路径解析会处理符号链接和 Windows junction，命令有超时、输出限制和进程组清理。

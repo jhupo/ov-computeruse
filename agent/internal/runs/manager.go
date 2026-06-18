@@ -17,6 +17,7 @@ var (
 	ErrRunNotFound          = errors.New("run not found")
 	ErrRunIDRequired        = errors.New("run id required")
 	ErrApprovalNotFound     = errors.New("approval request not found")
+	ErrCommandDeadline      = errors.New("command deadline exceeded")
 )
 
 type State string
@@ -56,6 +57,7 @@ type activeRun struct {
 	command   protocol.Command
 	cancel    context.CancelFunc
 	state     State
+	stopping  bool
 	approvals map[string]chan protocol.ApprovalDecision
 }
 
@@ -197,7 +199,10 @@ func (m *Manager) start(ctx context.Context, command protocol.Command) protocol.
 	if command.RunID == "" {
 		command.RunID = protocol.NewID("run")
 	}
-	runCtx, cancel := context.WithCancel(context.Background())
+	runCtx, cancel, err := commandContext(command)
+	if err != nil {
+		return m.remember(protocol.Ack{CommandID: command.CommandID, RunID: command.RunID, Status: "rejected", Message: err.Error(), At: time.Now().UTC()})
+	}
 
 	m.mu.Lock()
 	if len(m.active) >= m.maxActive {
@@ -316,6 +321,7 @@ func (m *Manager) stop(ctx context.Context, command protocol.Command) protocol.A
 		return m.remember(protocol.Ack{CommandID: command.CommandID, RunID: command.RunID, Status: "rejected", Message: ErrRunNotFound.Error(), At: time.Now().UTC()})
 	}
 	run.state = StateStopping
+	run.stopping = true
 	m.mu.Unlock()
 
 	_ = m.runtime.Stop(ctx, command)
@@ -345,9 +351,15 @@ func (m *Manager) execute(ctx context.Context, command protocol.Command) {
 
 	kind := "run.done"
 	payload := protocol.Raw(map[string]string{"status": "done"})
-	if errors.Is(ctx.Err(), context.Canceled) {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		kind = "run.error"
+		payload = protocol.Raw(map[string]string{"error": ErrCommandDeadline.Error(), "status": "deadline_exceeded"})
+	} else if errors.Is(ctx.Err(), context.Canceled) && m.wasStopping(command.RunID) {
 		kind = "run.stopped"
 		payload = protocol.Raw(map[string]string{"status": "stopped"})
+	} else if errors.Is(ctx.Err(), context.Canceled) {
+		kind = "run.error"
+		payload = protocol.Raw(map[string]string{"error": context.Canceled.Error(), "status": "canceled"})
 	} else if err != nil {
 		kind = "run.error"
 		payload = protocol.Raw(map[string]string{"error": err.Error()})
@@ -364,6 +376,26 @@ func (m *Manager) execute(ctx context.Context, command protocol.Command) {
 	m.mu.Lock()
 	delete(m.active, command.RunID)
 	m.mu.Unlock()
+}
+
+func commandContext(command protocol.Command) (context.Context, context.CancelFunc, error) {
+	if command.DeadlineAt.IsZero() {
+		ctx, cancel := context.WithCancel(context.Background())
+		return ctx, cancel, nil
+	}
+	deadline := command.DeadlineAt.UTC()
+	if !deadline.After(time.Now().UTC()) {
+		return nil, nil, ErrCommandDeadline
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	return ctx, cancel, nil
+}
+
+func (m *Manager) wasStopping(runID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run := m.active[runID]
+	return run != nil && run.stopping
 }
 
 func (m *Manager) setState(runID string, state State) {
