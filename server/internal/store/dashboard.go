@@ -16,6 +16,8 @@ import (
 	"ov-computeruse/server/internal/protocol"
 )
 
+var ErrApprovalDecisionAlreadyQueued = errors.New("approval decision already queued")
+
 type AgentSummary struct {
 	ID                   string          `json:"id"`
 	WorkspaceID          string          `json:"workspace_id"`
@@ -147,18 +149,23 @@ type RunEventRecord struct {
 }
 
 type ApprovalSummary struct {
-	ID          string          `json:"id"`
-	AgentID     string          `json:"agent_id"`
-	RunID       string          `json:"run_id,omitempty"`
-	ProjectID   string          `json:"project_id,omitempty"`
-	SessionID   string          `json:"session_id,omitempty"`
-	Category    string          `json:"category,omitempty"`
-	Action      string          `json:"action,omitempty"`
-	RiskLevel   string          `json:"risk_level,omitempty"`
-	Payload     json.RawMessage `json:"payload,omitempty"`
-	Status      string          `json:"status"`
-	RequestedAt time.Time       `json:"requested_at"`
-	DecidedAt   time.Time       `json:"decided_at,omitempty"`
+	ID                string          `json:"id"`
+	AgentID           string          `json:"agent_id"`
+	RunID             string          `json:"run_id,omitempty"`
+	ProjectID         string          `json:"project_id,omitempty"`
+	SessionID         string          `json:"session_id,omitempty"`
+	Category          string          `json:"category,omitempty"`
+	Action            string          `json:"action,omitempty"`
+	RiskLevel         string          `json:"risk_level,omitempty"`
+	Payload           json.RawMessage `json:"payload,omitempty"`
+	Status            string          `json:"status"`
+	RequestedAt       time.Time       `json:"requested_at"`
+	DecidedAt         time.Time       `json:"decided_at,omitempty"`
+	Decision          string          `json:"decision,omitempty"`
+	DecisionReason    string          `json:"decision_reason,omitempty"`
+	DecisionCommandID string          `json:"decision_command_id,omitempty"`
+	DecisionQueuedAt  time.Time       `json:"decision_queued_at,omitempty"`
+	DecidedBy         string          `json:"decided_by,omitempty"`
 }
 
 func (s *Store) ListAgents(ctx context.Context, userID string, admin bool) ([]AgentSummary, error) {
@@ -640,7 +647,8 @@ func (s *Store) ListApprovals(ctx context.Context, userID string, admin bool, st
 	if limit <= 0 || limit > 300 {
 		limit = 100
 	}
-	query := `SELECT ar.id, ar.agent_id, COALESCE(ar.run_id, ''), COALESCE(ar.project_id, ''), COALESCE(ar.session_id, ''), COALESCE(ar.category, ''), COALESCE(ar.action, ''), COALESCE(ar.risk_level, ''), ar.payload, ar.status, ar.requested_at, ar.decided_at
+	query := `SELECT ar.id, ar.agent_id, COALESCE(ar.run_id, ''), COALESCE(ar.project_id, ''), COALESCE(ar.session_id, ''), COALESCE(ar.category, ''), COALESCE(ar.action, ''), COALESCE(ar.risk_level, ''), ar.payload, ar.status, ar.requested_at, ar.decided_at,
+			COALESCE(ar.decision, ''), COALESCE(ar.decision_reason, ''), COALESCE(ar.decision_command_id, ''), ar.decision_queued_at, COALESCE(ar.decided_by, '')
 		FROM approval_requests ar
 		JOIN agents a ON a.id = ar.agent_id`
 	args := []any{}
@@ -668,7 +676,8 @@ func (s *Store) ListApprovals(ctx context.Context, userID string, admin bool, st
 		var item ApprovalSummary
 		var payload []byte
 		var decidedAt sql.NullTime
-		if err := rows.Scan(&item.ID, &item.AgentID, &item.RunID, &item.ProjectID, &item.SessionID, &item.Category, &item.Action, &item.RiskLevel, &payload, &item.Status, &item.RequestedAt, &decidedAt); err != nil {
+		var decisionQueuedAt sql.NullTime
+		if err := rows.Scan(&item.ID, &item.AgentID, &item.RunID, &item.ProjectID, &item.SessionID, &item.Category, &item.Action, &item.RiskLevel, &payload, &item.Status, &item.RequestedAt, &decidedAt, &item.Decision, &item.DecisionReason, &item.DecisionCommandID, &decisionQueuedAt, &item.DecidedBy); err != nil {
 			return nil, err
 		}
 		if len(payload) > 0 {
@@ -677,19 +686,24 @@ func (s *Store) ListApprovals(ctx context.Context, userID string, admin bool, st
 		if decidedAt.Valid {
 			item.DecidedAt = decidedAt.Time
 		}
+		if decisionQueuedAt.Valid {
+			item.DecisionQueuedAt = decisionQueuedAt.Time
+		}
 		out = append(out, item)
 	}
 	return out, rows.Err()
 }
 
 func (s *Store) ApprovalByID(ctx context.Context, approvalID string) (ApprovalSummary, bool, error) {
-	row := s.pool.QueryRow(ctx, `SELECT id, agent_id, COALESCE(run_id, ''), COALESCE(project_id, ''), COALESCE(session_id, ''), COALESCE(category, ''), COALESCE(action, ''), COALESCE(risk_level, ''), payload, status, requested_at, decided_at
+	row := s.pool.QueryRow(ctx, `SELECT id, agent_id, COALESCE(run_id, ''), COALESCE(project_id, ''), COALESCE(session_id, ''), COALESCE(category, ''), COALESCE(action, ''), COALESCE(risk_level, ''), payload, status, requested_at, decided_at,
+			COALESCE(decision, ''), COALESCE(decision_reason, ''), COALESCE(decision_command_id, ''), decision_queued_at, COALESCE(decided_by, '')
 		FROM approval_requests
 		WHERE id=$1`, approvalID)
 	var item ApprovalSummary
 	var payload []byte
 	var decidedAt sql.NullTime
-	if err := row.Scan(&item.ID, &item.AgentID, &item.RunID, &item.ProjectID, &item.SessionID, &item.Category, &item.Action, &item.RiskLevel, &payload, &item.Status, &item.RequestedAt, &decidedAt); err != nil {
+	var decisionQueuedAt sql.NullTime
+	if err := row.Scan(&item.ID, &item.AgentID, &item.RunID, &item.ProjectID, &item.SessionID, &item.Category, &item.Action, &item.RiskLevel, &payload, &item.Status, &item.RequestedAt, &decidedAt, &item.Decision, &item.DecisionReason, &item.DecisionCommandID, &decisionQueuedAt, &item.DecidedBy); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ApprovalSummary{}, false, nil
 		}
@@ -700,6 +714,9 @@ func (s *Store) ApprovalByID(ctx context.Context, approvalID string) (ApprovalSu
 	}
 	if decidedAt.Valid {
 		item.DecidedAt = decidedAt.Time
+	}
+	if decisionQueuedAt.Valid {
+		item.DecisionQueuedAt = decisionQueuedAt.Time
 	}
 	return item, true, nil
 }
@@ -717,7 +734,21 @@ func (s *Store) ApprovalAgent(ctx context.Context, approvalID string) (AgentIden
 }
 
 func (s *Store) DecideApproval(ctx context.Context, approvalID string, decision protocol.ApprovalDecision) error {
-	_, err := s.pool.Exec(ctx, `UPDATE approval_requests SET status=$1, decided_at=$2 WHERE id=$3 AND status='pending'`, decision.Decision, decision.DecidedAt, approvalID)
+	_, err := s.pool.Exec(ctx, `UPDATE approval_requests SET status=$1, decided_at=$2, decided_by=$3, decision=$1, decision_reason=$4 WHERE id=$5 AND status='pending'`, decision.Decision, decision.DecidedAt, nullString(decision.DecidedBy), nullString(decision.Reason), approvalID)
+	return err
+}
+
+func (s *Store) QueueApprovalDecision(ctx context.Context, approvalID string, decision protocol.ApprovalDecision, commandID string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE approval_requests
+		SET decision=$2, decision_reason=$3, decision_command_id=$4, decision_queued_at=$5, decided_by=$6
+		WHERE id=$1 AND status='pending' AND decision_command_id IS NULL`,
+		approvalID, decision.Decision, nullString(decision.Reason), nullString(commandID), now(), nullString(decision.DecidedBy))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrApprovalDecisionAlreadyQueued
+	}
 	return err
 }
 

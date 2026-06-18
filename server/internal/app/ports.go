@@ -88,6 +88,7 @@ type DashboardRepository interface {
 	ListApprovals(context.Context, string, bool, string, int) ([]store.ApprovalSummary, error)
 	ApprovalByID(context.Context, string) (store.ApprovalSummary, bool, error)
 	ApprovalAgent(context.Context, string) (store.AgentIdentity, error)
+	QueueApprovalDecision(context.Context, string, protocol.ApprovalDecision, string) error
 	DecideApproval(context.Context, string, protocol.ApprovalDecision) error
 }
 

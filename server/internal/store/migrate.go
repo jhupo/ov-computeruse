@@ -66,6 +66,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS command_attempts (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), command_id TEXT NOT NULL, attempt_no INTEGER NOT NULL, phase TEXT NOT NULL, status TEXT NOT NULL, reason TEXT, payload JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
 		`CREATE TABLE IF NOT EXISTS heartbeats (agent_id TEXT PRIMARY KEY REFERENCES agents(id), device_id TEXT NOT NULL, status TEXT NOT NULL, payload JSONB NOT NULL, received_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
 		`CREATE TABLE IF NOT EXISTS approval_requests (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), run_id TEXT, project_id TEXT, session_id TEXT, category TEXT, action TEXT, risk_level TEXT, payload JSONB, status TEXT NOT NULL, requested_at TIMESTAMPTZ NOT NULL DEFAULT now(), decided_at TIMESTAMPTZ)`,
+		`ALTER TABLE approval_requests ADD COLUMN IF NOT EXISTS decision TEXT`,
+		`ALTER TABLE approval_requests ADD COLUMN IF NOT EXISTS decision_reason TEXT`,
+		`ALTER TABLE approval_requests ADD COLUMN IF NOT EXISTS decision_command_id TEXT`,
+		`ALTER TABLE approval_requests ADD COLUMN IF NOT EXISTS decision_queued_at TIMESTAMPTZ`,
+		`ALTER TABLE approval_requests ADD COLUMN IF NOT EXISTS decided_by TEXT`,
 		`CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, user_id TEXT, agent_id TEXT, action TEXT NOT NULL, payload JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
 	}
 	for _, stmt := range stmts {
