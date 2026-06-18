@@ -87,7 +87,7 @@ func TestValidateCommandCapabilitiesRejectsNonCodexRuntime(t *testing.T) {
 	identity := store.AgentIdentity{
 		Capabilities: protocol.Raw(protocol.Capabilities{
 			SupportsRuntime: true,
-			Features:        []string{"command.new_session", "runtime.openai.responses"},
+			Features:        []string{"command.new_session", "runtime.other.agent"},
 		}),
 	}
 	command := protocol.Command{

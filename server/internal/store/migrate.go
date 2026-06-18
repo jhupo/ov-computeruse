@@ -30,7 +30,6 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE agents ADD COLUMN IF NOT EXISTS capabilities JSONB`,
 		`ALTER TABLE agents ADD COLUMN IF NOT EXISTS credential JSONB`,
 		`ALTER TABLE agents ADD COLUMN IF NOT EXISTS registered_at TIMESTAMPTZ`,
-		`UPDATE agents SET capabilities = jsonb_set(capabilities - 'supports_sdk', '{supports_runtime}', capabilities->'supports_sdk', true) WHERE capabilities ? 'supports_sdk' AND NOT (capabilities ? 'supports_runtime')`,
 		`ALTER TABLE agents ADD COLUMN IF NOT EXISTS disabled_at TIMESTAMPTZ`,
 		`ALTER TABLE agents ADD COLUMN IF NOT EXISTS disabled_reason TEXT`,
 		`ALTER TABLE agents ADD COLUMN IF NOT EXISTS disabled_by TEXT`,
