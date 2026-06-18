@@ -120,7 +120,7 @@ func (c *Client) Emit(ctx context.Context, event protocol.RunEvent) error {
 }
 
 func skipRunEvent(event protocol.RunEvent) bool {
-	return strings.TrimSpace(event.Kind) == "usage"
+	return protocol.IsUsageKind(event.Kind)
 }
 
 func (c *Client) serve(ctx context.Context, conn Conn) error {
@@ -472,12 +472,7 @@ func (c *Client) uploadHistoryItems(ctx context.Context, session codexscan.Sessi
 }
 
 func skipHistoryItem(item codexscan.HistoryItem) bool {
-	switch strings.ToLower(strings.TrimSpace(item.Kind)) {
-	case "usage", "response.usage", "token_usage", "billing", "cost":
-		return true
-	default:
-		return false
-	}
+	return protocol.IsUsageKind(item.Kind)
 }
 
 func historyCursor(session codexscan.Session) string {

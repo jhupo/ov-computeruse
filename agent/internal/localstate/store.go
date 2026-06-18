@@ -311,6 +311,9 @@ func (s *Store) SaveRunEvent(ctx context.Context, event protocol.RunEvent) error
 	if s == nil || strings.TrimSpace(event.EventID) == "" {
 		return nil
 	}
+	if protocol.IsUsageKind(event.Kind) {
+		return nil
+	}
 	if event.At.IsZero() {
 		event.At = time.Now().UTC()
 	}

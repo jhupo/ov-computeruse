@@ -224,7 +224,7 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 }
 
 func skipAgentRunEvent(event protocol.RunEvent) bool {
-	return strings.TrimSpace(event.Kind) == "usage"
+	return protocol.IsUsageKind(event.Kind)
 }
 
 func runtimeSessionFromRunEvent(event protocol.RunEvent) (protocol.RuntimeSession, bool) {

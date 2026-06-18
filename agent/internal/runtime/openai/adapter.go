@@ -312,6 +312,9 @@ func (a *Adapter) streamOnce(ctx context.Context, client openai.Client, params r
 			return result, errors.New(variant.Message)
 		default:
 			if raw := event.RawJSON(); raw != "" {
+				if rawUsageEvent(raw) {
+					continue
+				}
 				if err := emit(ctx, sink, command, "run.status", map[string]string{"status": "response.event", "raw": raw}); err != nil {
 					return result, err
 				}
@@ -477,6 +480,26 @@ func adapterFirstNonEmpty(values ...string) string {
 		if strings.TrimSpace(value) != "" {
 			return value
 		}
+	}
+	return ""
+}
+
+func rawUsageEvent(raw string) bool {
+	var payload map[string]any
+	if json.Unmarshal([]byte(raw), &payload) != nil {
+		return false
+	}
+	for _, key := range []string{"type", "kind", "event", "name"} {
+		if protocol.IsUsageKind(adapterString(payload[key])) {
+			return true
+		}
+	}
+	return false
+}
+
+func adapterString(value any) string {
+	if text, ok := value.(string); ok {
+		return text
 	}
 	return ""
 }

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -207,6 +208,15 @@ type RunEvent struct {
 	Kind      string          `json:"kind"`
 	Payload   json.RawMessage `json:"payload,omitempty"`
 	At        time.Time       `json:"at"`
+}
+
+func IsUsageKind(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "usage", "response.usage", "token_usage", "billing", "cost":
+		return true
+	default:
+		return false
+	}
 }
 
 type Ack struct {

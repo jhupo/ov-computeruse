@@ -109,7 +109,7 @@ func (s *Store) SaveHistoryChunk(ctx context.Context, agentID string, chunk prot
 	if chunk.SHA256 == "" || chunk.SHA256 != computed {
 		return errors.New("history chunk sha256 mismatch")
 	}
-	_, err = s.pool.Exec(ctx, `INSERT INTO history_chunks (agent_id, session_id, chunk_index, sha256, size_bytes, data, received_at) VALUES ($1,$2,$3,$4,$5,$6,now()) ON CONFLICT DO NOTHING`, agentID, chunk.SessionID, chunk.Index, computed, len(chunk.Data), chunk.Data)
+	_, err = s.pool.Exec(ctx, `INSERT INTO history_chunks (agent_id, session_id, chunk_index, sha256, size_bytes, received_at) VALUES ($1,$2,$3,$4,$5,now()) ON CONFLICT DO NOTHING`, agentID, chunk.SessionID, chunk.Index, computed, len(chunk.Data))
 	return err
 }
 
@@ -150,6 +150,9 @@ func (s *Store) SaveHistoryItems(ctx context.Context, agentID string, batch prot
 			item.SessionID = batch.SessionID
 		}
 		if item.SessionID == "" || item.Kind == "" {
+			continue
+		}
+		if protocol.IsUsageKind(item.Kind) {
 			continue
 		}
 		source := item.Source

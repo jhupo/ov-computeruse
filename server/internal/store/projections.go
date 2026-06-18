@@ -76,6 +76,9 @@ type ToolCall struct {
 }
 
 func (s *Store) SaveHistoryItem(ctx context.Context, item HistoryItem) error {
+	if protocol.IsUsageKind(item.Kind) {
+		return nil
+	}
 	if item.ID == "" {
 		item.ID = projectionID(item.AgentID, item.SessionID, strconv.Itoa(item.Index), item.Kind, item.SourceEventID)
 	}
@@ -230,7 +233,7 @@ func (s *Store) ListHistoryItems(ctx context.Context, agentID, sessionID string,
 	}
 	rows, err := s.pool.Query(ctx, `SELECT id, agent_id, session_id, item_index, COALESCE(role, ''), kind, COALESCE(text, ''), payload, COALESCE(source, ''), COALESCE(source_event_id, ''), item_at, received_at
 		FROM history_items
-		WHERE agent_id=$1 AND session_id=$2 AND item_index>$3
+		WHERE agent_id=$1 AND session_id=$2 AND item_index>$3 AND lower(trim(kind)) NOT IN ('usage','response.usage','token_usage','billing','cost')
 		ORDER BY item_index ASC
 		LIMIT $4`, agentID, sessionID, afterIndex, limit)
 	if err != nil {

@@ -120,7 +120,7 @@ func (s *Store) validateRunEventOwnership(ctx context.Context, agentID string, e
 }
 
 func skipRunEvent(event protocol.RunEvent) bool {
-	return strings.TrimSpace(event.Kind) == "usage"
+	return protocol.IsUsageKind(event.Kind)
 }
 
 func (s *Store) RebuildRunProjections(ctx context.Context, agentID, runID string) (ProjectionRebuildResult, error) {
