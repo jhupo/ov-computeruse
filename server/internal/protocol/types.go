@@ -185,6 +185,14 @@ type HistoryItems struct {
 	Items     []HistoryItem `json:"items"`
 }
 
+type HistoryItemsAck struct {
+	SessionID string    `json:"session_id"`
+	Cursor    string    `json:"cursor,omitempty"`
+	Status    string    `json:"status,omitempty"`
+	Message   string    `json:"message,omitempty"`
+	At        time.Time `json:"at,omitempty"`
+}
+
 type Command struct {
 	CommandID      string          `json:"command_id"`
 	RunID          string          `json:"run_id,omitempty"`

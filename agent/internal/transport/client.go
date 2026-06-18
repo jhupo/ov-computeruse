@@ -39,6 +39,9 @@ type Client struct {
 	mu   sync.Mutex
 	conn Conn
 	seq  uint64
+
+	historyAckMu      sync.Mutex
+	pendingHistoryAck map[string]chan protocol.HistoryItemsAck
 }
 
 func NewClient(identity securestore.Identity, manager *runs.Manager, scanner codexscan.Scanner, deviceInfo device.Info, cfg config.Config, state *localstate.Store, noScan bool, uploadHistory bool, logger *slog.Logger) *Client {
@@ -46,17 +49,18 @@ func NewClient(identity securestore.Identity, manager *runs.Manager, scanner cod
 		logger = slog.Default()
 	}
 	return &Client{
-		identity:      identity,
-		manager:       manager,
-		scanner:       scanner,
-		device:        deviceInfo,
-		cfg:           cfg,
-		state:         state,
-		noScan:        noScan,
-		uploadHistory: uploadHistory,
-		startedAt:     time.Now().UTC(),
-		logger:        logger,
-		dialer:        WebSocketDialer{},
+		identity:          identity,
+		manager:           manager,
+		scanner:           scanner,
+		device:            deviceInfo,
+		cfg:               cfg,
+		state:             state,
+		noScan:            noScan,
+		uploadHistory:     uploadHistory,
+		startedAt:         time.Now().UTC(),
+		logger:            logger,
+		dialer:            WebSocketDialer{},
+		pendingHistoryAck: map[string]chan protocol.HistoryItemsAck{},
 	}
 }
 
@@ -421,7 +425,8 @@ func (c *Client) uploadHistoryItems(ctx context.Context, session codexscan.Sessi
 		if len(out) == 0 {
 			return nil
 		}
-		if err := c.send(ctx, "history.items", protocol.HistoryItems{SessionID: session.ID, Cursor: cursor, Reset: reset, Items: out}); err != nil {
+		batch := protocol.HistoryItems{SessionID: session.ID, Cursor: cursor, Reset: reset, Items: out}
+		if err := c.sendHistoryItems(ctx, batch); err != nil {
 			return err
 		}
 		reset = false
@@ -459,7 +464,7 @@ func (c *Client) uploadHistoryItems(ctx context.Context, session codexscan.Sessi
 		return err
 	}
 	if sent == 0 {
-		if err := c.send(ctx, "history.items", protocol.HistoryItems{SessionID: session.ID, Cursor: cursor, Reset: true}); err != nil {
+		if err := c.sendHistoryItems(ctx, protocol.HistoryItems{SessionID: session.ID, Cursor: cursor, Reset: true}); err != nil {
 			return err
 		}
 	}
@@ -469,6 +474,62 @@ func (c *Client) uploadHistoryItems(ctx context.Context, session codexscan.Sessi
 		}
 	}
 	return c.send(ctx, "sync.cursor", protocol.SyncCursor{Stream: "history.items", SubjectID: session.ID, Cursor: cursor, At: time.Now().UTC()})
+}
+
+func (c *Client) sendHistoryItems(ctx context.Context, batch protocol.HistoryItems) error {
+	ackKey := historyAckKey(batch.SessionID, batch.Cursor)
+	ackCh := c.registerHistoryAck(ackKey)
+	defer c.unregisterHistoryAck(ackKey)
+	if err := c.send(ctx, "history.items", batch); err != nil {
+		return err
+	}
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return errors.New("history items ack timed out")
+	case ack := <-ackCh:
+		if ack.Status == "" || ack.Status == "ok" || ack.Status == "acked" {
+			return nil
+		}
+		if strings.TrimSpace(ack.Message) != "" {
+			return errors.New(ack.Message)
+		}
+		return errors.New("history items rejected")
+	}
+}
+
+func (c *Client) registerHistoryAck(key string) chan protocol.HistoryItemsAck {
+	c.historyAckMu.Lock()
+	defer c.historyAckMu.Unlock()
+	ch := make(chan protocol.HistoryItemsAck, 1)
+	c.pendingHistoryAck[key] = ch
+	return ch
+}
+
+func (c *Client) unregisterHistoryAck(key string) {
+	c.historyAckMu.Lock()
+	defer c.historyAckMu.Unlock()
+	delete(c.pendingHistoryAck, key)
+}
+
+func (c *Client) resolveHistoryAck(ack protocol.HistoryItemsAck) {
+	c.historyAckMu.Lock()
+	ch := c.pendingHistoryAck[historyAckKey(ack.SessionID, ack.Cursor)]
+	c.historyAckMu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- ack:
+	default:
+	}
+}
+
+func historyAckKey(sessionID, cursor string) string {
+	return sessionID + "\x00" + cursor
 }
 
 func skipHistoryItem(item codexscan.HistoryItem) bool {
@@ -690,6 +751,12 @@ func (c *Client) readLoop(ctx context.Context, conn Conn) error {
 					SHA256:    ack.SHA256,
 				})
 			}
+		case "history.items.ack":
+			ack, err := protocol.Decode[protocol.HistoryItemsAck](env.Data)
+			if err != nil {
+				continue
+			}
+			c.resolveHistoryAck(ack)
 		case "sync.cursor":
 			if c.state == nil {
 				continue

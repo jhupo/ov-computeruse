@@ -189,7 +189,11 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 		items, err := protocol.Decode[protocol.HistoryItems](env.Data)
 		if err == nil {
 			if err := s.store.SaveHistoryItems(ctx, agent.AgentID, items); err == nil {
+				s.sendAgent(agent, "history.items.ack", protocol.HistoryItemsAck{SessionID: items.SessionID, Cursor: items.Cursor, Status: "acked", At: time.Now().UTC()})
 				s.hub.BroadcastDash(agent.UserID, dashEvent("history.items.updated", agent, map[string]any{"session_id": items.SessionID, "count": len(items.Items), "cursor": items.Cursor, "reset": items.Reset}))
+			} else {
+				s.log.WarnContext(ctx, "history items rejected", "agent_id", agent.AgentID, "session_id", items.SessionID, "error", err)
+				s.sendAgent(agent, "history.items.ack", protocol.HistoryItemsAck{SessionID: items.SessionID, Cursor: items.Cursor, Status: "failed", Message: err.Error(), At: time.Now().UTC()})
 			}
 		}
 	case "sync.cursor":
