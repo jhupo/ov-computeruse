@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
+
+	"ov-computeruse/server/internal/security"
 )
 
 type BindUser struct {
@@ -53,7 +55,10 @@ func (s *Store) EnsureBindUser(ctx context.Context, user BindUser) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `INSERT INTO user_keys (id, user_id, base_url, key_fingerprint) VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO UPDATE SET base_url=EXCLUDED.base_url, key_fingerprint=EXCLUDED.key_fingerprint`, "key_"+user.ID, user.ID, baseURL, user.Fingerprint)
+	_, err = s.pool.Exec(ctx, `INSERT INTO user_keys (id, user_id, base_url, base_url_fingerprint, key_fingerprint)
+		VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (id) DO UPDATE SET base_url=EXCLUDED.base_url, base_url_fingerprint=EXCLUDED.base_url_fingerprint, key_fingerprint=EXCLUDED.key_fingerprint`,
+		"key_"+user.ID, user.ID, baseURL, security.FingerprintSecret(baseURL), user.Fingerprint)
 	return err
 }
 
@@ -97,6 +102,7 @@ func (s *Store) AuthenticateAndBind(ctx context.Context, username, password stri
 	if err != nil {
 		return AgentIdentity{}, err
 	}
+	_, _ = s.pool.Exec(ctx, `UPDATE user_keys SET base_url_fingerprint=$1 WHERE id=$2 AND (base_url_fingerprint IS NULL OR base_url_fingerprint='')`, security.FingerprintSecret(baseURL), keyID)
 	deviceID, err := s.upsertDevice(ctx, user.UserID, device)
 	if err != nil {
 		return AgentIdentity{}, err

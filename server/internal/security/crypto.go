@@ -72,3 +72,12 @@ func parsePrivateKey(privateKeyPEM string) (*rsa.PrivateKey, error) {
 	}
 	return key, nil
 }
+
+func FingerprintSecret(parts ...string) string {
+	hash := sha256.New()
+	for _, part := range parts {
+		_, _ = hash.Write([]byte(part))
+		_, _ = hash.Write([]byte{0})
+	}
+	return base64.RawURLEncoding.EncodeToString(hash.Sum(nil))
+}

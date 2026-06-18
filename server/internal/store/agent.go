@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"ov-computeruse/server/internal/protocol"
+	"ov-computeruse/server/internal/security"
 )
 
 func (s *Store) AgentBySecret(ctx context.Context, secret string) (AgentIdentity, error) {
@@ -84,16 +85,55 @@ func (s *Store) AgentCredentialValid(ctx context.Context, identity AgentIdentity
 		return errors.New("agent credential is invalid")
 	}
 	keyFingerprint := strings.TrimSpace(credential.KeyFingerprint)
-	if keyFingerprint == "" {
+	baseURLFingerprint := strings.TrimSpace(credential.BaseURLFingerprint)
+	if keyFingerprint == "" || baseURLFingerprint == "" {
 		return errors.New("agent credential is incomplete")
 	}
 	var exists bool
-	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM user_keys WHERE user_id=$1 AND key_fingerprint=$2 AND disabled_at IS NULL)`, identity.UserID, keyFingerprint).Scan(&exists)
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1
+		FROM user_keys
+		WHERE user_id=$1
+			AND key_fingerprint=$2
+			AND disabled_at IS NULL
+			AND base_url_fingerprint=$3
+	)`, identity.UserID, keyFingerprint, baseURLFingerprint).Scan(&exists)
 	if err != nil {
 		return err
 	}
 	if !exists {
+		if fallback, err := s.agentCredentialBaseURLFallback(ctx, identity.UserID, keyFingerprint, baseURLFingerprint); err != nil {
+			return err
+		} else if fallback {
+			return nil
+		}
 		return errors.New("agent credential is not assigned to user")
 	}
 	return nil
+}
+
+func (s *Store) agentCredentialBaseURLFallback(ctx context.Context, userID, keyFingerprint, baseURLFingerprint string) (bool, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, base_url FROM user_keys WHERE user_id=$1 AND key_fingerprint=$2 AND disabled_at IS NULL AND COALESCE(base_url_fingerprint, '')=''`, userID, keyFingerprint)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var baseURL string
+		if err := rows.Scan(&id, &baseURL); err != nil {
+			return false, err
+		}
+		normalized, err := normalizeBaseURL(baseURL)
+		if err != nil {
+			continue
+		}
+		computed := security.FingerprintSecret(normalized)
+		if computed != baseURLFingerprint {
+			continue
+		}
+		_, _ = s.pool.Exec(ctx, `UPDATE user_keys SET base_url_fingerprint=$1 WHERE id=$2 AND COALESCE(base_url_fingerprint, '')=''`, computed, id)
+		return true, nil
+	}
+	return false, rows.Err()
 }
