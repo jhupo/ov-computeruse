@@ -284,6 +284,12 @@ func validateCommand(command protocol.Command) error {
 	kind := strings.TrimPrefix(command.Kind, "command.")
 	switch kind {
 	case "new_session":
+		if strings.TrimSpace(command.ProjectID) == "" {
+			return errors.New("project_id is required for new_session")
+		}
+		if strings.TrimSpace(command.SessionID) != "" {
+			return errors.New("session_id must be empty for new_session")
+		}
 		if !hasPromptPayload(command.Payload) {
 			return errors.New("payload.prompt is required for new_session")
 		}
@@ -354,60 +360,131 @@ func capabilityHasFeature(caps protocol.Capabilities, feature string) bool {
 
 func (s *Server) validateCommandTargets(ctx context.Context, agentID string, command protocol.Command) error {
 	kind := strings.TrimPrefix(command.Kind, "command.")
-	if strings.TrimSpace(command.ProjectID) != "" {
-		exists, err := s.store.ProjectExists(ctx, agentID, strings.TrimSpace(command.ProjectID))
-		if err != nil {
+	projectID := strings.TrimSpace(command.ProjectID)
+	sessionID := strings.TrimSpace(command.SessionID)
+	runID := strings.TrimSpace(command.RunID)
+	if projectID != "" {
+		if err := s.ensureCommandProject(ctx, agentID, projectID); err != nil {
 			return err
-		}
-		if !exists {
-			return errors.New("project_id does not belong to this agent")
 		}
 	}
 	switch kind {
+	case "new_session":
+		return nil
 	case "resume", "send":
-		exists, err := s.store.SessionExists(ctx, agentID, strings.TrimSpace(command.SessionID))
+		session, err := s.commandSessionTarget(ctx, agentID, sessionID)
 		if err != nil {
 			return err
 		}
-		if !exists {
-			return errors.New("session_id does not belong to this agent")
-		}
+		return ensureCommandProjectMatchesSession(projectID, session)
 	case "stop":
-		if strings.TrimSpace(command.RunID) != "" {
-			exists, err := s.store.RunExists(ctx, agentID, strings.TrimSpace(command.RunID))
+		var run store.RunTarget
+		if runID != "" {
+			target, err := s.commandRunTarget(ctx, agentID, runID)
 			if err != nil {
 				return err
 			}
-			if !exists {
-				return errors.New("run_id does not belong to this agent")
-			}
+			run = target
 		}
-		if strings.TrimSpace(command.SessionID) != "" {
-			exists, err := s.store.SessionExists(ctx, agentID, strings.TrimSpace(command.SessionID))
+		var session store.SessionTarget
+		if sessionID != "" {
+			target, err := s.commandSessionTarget(ctx, agentID, sessionID)
 			if err != nil {
 				return err
 			}
-			if !exists {
-				return errors.New("session_id does not belong to this agent")
-			}
+			session = target
 		}
+		return ensureStopTargetsMatch(projectID, sessionID, run, session)
 	case "approval_decision":
-		runExists, err := s.store.RunExists(ctx, agentID, strings.TrimSpace(command.RunID))
+		run, err := s.commandRunTarget(ctx, agentID, runID)
 		if err != nil {
 			return err
 		}
-		if !runExists {
-			return errors.New("run_id does not belong to this agent")
-		}
-		if strings.TrimSpace(command.SessionID) != "" {
-			sessionExists, err := s.store.SessionExists(ctx, agentID, strings.TrimSpace(command.SessionID))
+		var session store.SessionTarget
+		if sessionID != "" {
+			target, err := s.commandSessionTarget(ctx, agentID, sessionID)
 			if err != nil {
 				return err
 			}
-			if !sessionExists {
-				return errors.New("session_id does not belong to this agent")
-			}
+			session = target
 		}
+		return ensureApprovalTargetsMatch(projectID, sessionID, run, session)
+	}
+	return nil
+}
+
+func (s *Server) ensureCommandProject(ctx context.Context, agentID, projectID string) error {
+	exists, err := s.store.ProjectExists(ctx, agentID, projectID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return errors.New("project_id does not belong to this agent")
+	}
+	return nil
+}
+
+func (s *Server) commandSessionTarget(ctx context.Context, agentID, sessionID string) (store.SessionTarget, error) {
+	target, found, err := s.store.SessionTarget(ctx, agentID, sessionID)
+	if err != nil {
+		return store.SessionTarget{}, err
+	}
+	if !found {
+		return store.SessionTarget{}, errors.New("session_id does not belong to this agent")
+	}
+	return target, nil
+}
+
+func (s *Server) commandRunTarget(ctx context.Context, agentID, runID string) (store.RunTarget, error) {
+	target, found, err := s.store.RunTarget(ctx, agentID, runID)
+	if err != nil {
+		return store.RunTarget{}, err
+	}
+	if !found {
+		return store.RunTarget{}, errors.New("run_id does not belong to this agent")
+	}
+	return target, nil
+}
+
+func ensureCommandProjectMatchesSession(projectID string, session store.SessionTarget) error {
+	if projectID != "" && session.ProjectID != "" && projectID != session.ProjectID {
+		return errors.New("project_id does not match session_id")
+	}
+	return nil
+}
+
+func ensureStopTargetsMatch(projectID, sessionID string, run store.RunTarget, session store.SessionTarget) error {
+	if run.ID != "" {
+		if sessionID != "" && run.SessionID != "" && run.SessionID != sessionID {
+			return errors.New("run_id does not match session_id")
+		}
+		if projectID != "" && run.ProjectID != "" && run.ProjectID != projectID {
+			return errors.New("run_id does not match project_id")
+		}
+	}
+	if session.ID != "" {
+		if projectID != "" && session.ProjectID != "" && session.ProjectID != projectID {
+			return errors.New("session_id does not match project_id")
+		}
+		if run.ID != "" && run.ProjectID != "" && session.ProjectID != "" && run.ProjectID != session.ProjectID {
+			return errors.New("run_id project does not match session_id")
+		}
+	}
+	return nil
+}
+
+func ensureApprovalTargetsMatch(projectID, sessionID string, run store.RunTarget, session store.SessionTarget) error {
+	if sessionID != "" && run.SessionID != "" && run.SessionID != sessionID {
+		return errors.New("run_id does not match session_id")
+	}
+	if projectID != "" && run.ProjectID != "" && run.ProjectID != projectID {
+		return errors.New("run_id does not match project_id")
+	}
+	if session.ID != "" && projectID != "" && session.ProjectID != "" && session.ProjectID != projectID {
+		return errors.New("session_id does not match project_id")
+	}
+	if session.ID != "" && run.ProjectID != "" && session.ProjectID != "" && run.ProjectID != session.ProjectID {
+		return errors.New("run_id project does not match session_id")
 	}
 	return nil
 }

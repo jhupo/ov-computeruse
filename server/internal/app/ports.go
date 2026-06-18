@@ -83,6 +83,8 @@ type DashboardRepository interface {
 	ListSessions(context.Context, string, string, int) ([]store.SessionSummary, error)
 	ListRuns(context.Context, string, string, int) ([]store.RunSummary, error)
 	RunExists(context.Context, string, string) (bool, error)
+	SessionTarget(context.Context, string, string) (store.SessionTarget, bool, error)
+	RunTarget(context.Context, string, string) (store.RunTarget, bool, error)
 	RunEventHighWatermark(context.Context, string, string) (uint64, error)
 	ListRunEvents(context.Context, string, string, uint64, int) ([]store.RunEventRecord, error)
 	ListRunEventsThrough(context.Context, string, string, uint64, uint64, int) ([]store.RunEventRecord, error)

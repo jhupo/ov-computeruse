@@ -88,6 +88,18 @@ type RunSummary struct {
 	EventGapCount int       `json:"event_gap_count"`
 }
 
+type SessionTarget struct {
+	ID        string `json:"id"`
+	ProjectID string `json:"project_id,omitempty"`
+}
+
+type RunTarget struct {
+	ID        string `json:"id"`
+	SessionID string `json:"session_id,omitempty"`
+	ProjectID string `json:"project_id,omitempty"`
+	Status    string `json:"status,omitempty"`
+}
+
 type CommandRecord struct {
 	ID             string          `json:"id"`
 	AgentID        string          `json:"agent_id"`
@@ -371,6 +383,54 @@ func (s *Store) RunExists(ctx context.Context, agentID, runID string) (bool, err
 	var exists bool
 	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM runs WHERE agent_id=$1 AND id=$2)`, agentID, runID).Scan(&exists)
 	return exists, err
+}
+
+func (s *Store) SessionTarget(ctx context.Context, agentID, sessionID string) (SessionTarget, bool, error) {
+	if sessionID == "" {
+		return SessionTarget{}, false, nil
+	}
+	row := s.pool.QueryRow(ctx, `WITH target AS (
+			SELECT id, COALESCE(project_id, '') AS project_id, 1 AS priority
+			FROM codex_sessions
+			WHERE agent_id=$1 AND id=$2 AND deleted_at IS NULL
+			UNION ALL
+			SELECT session_id AS id, COALESCE(project_id, '') AS project_id, 2 AS priority
+			FROM runtime_sessions
+			WHERE agent_id=$1 AND session_id=$2 AND session_id IS NOT NULL AND session_id <> ''
+			UNION ALL
+			SELECT native_session_id AS id, COALESCE(project_id, '') AS project_id, 3 AS priority
+			FROM runtime_sessions
+			WHERE agent_id=$1 AND native_session_id=$2 AND native_session_id IS NOT NULL AND native_session_id <> ''
+		)
+		SELECT id, project_id
+		FROM target
+		ORDER BY priority
+		LIMIT 1`, agentID, sessionID)
+	var target SessionTarget
+	if err := row.Scan(&target.ID, &target.ProjectID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return SessionTarget{}, false, nil
+		}
+		return SessionTarget{}, false, err
+	}
+	return target, true, nil
+}
+
+func (s *Store) RunTarget(ctx context.Context, agentID, runID string) (RunTarget, bool, error) {
+	if runID == "" {
+		return RunTarget{}, false, nil
+	}
+	row := s.pool.QueryRow(ctx, `SELECT id, COALESCE(session_id, ''), COALESCE(project_id, ''), status
+		FROM runs
+		WHERE agent_id=$1 AND id=$2`, agentID, runID)
+	var target RunTarget
+	if err := row.Scan(&target.ID, &target.SessionID, &target.ProjectID, &target.Status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return RunTarget{}, false, nil
+		}
+		return RunTarget{}, false, err
+	}
+	return target, true, nil
 }
 
 func (s *Store) RunEventHighWatermark(ctx context.Context, agentID, runID string) (uint64, error) {
