@@ -195,7 +195,7 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 		if err == nil {
 			if err := s.store.SaveHistoryItems(ctx, agent.AgentID, items); err == nil {
 				s.sendAgent(agent, "history.items.ack", protocol.HistoryItemsAck{SessionID: items.SessionID, Cursor: items.Cursor, Status: "acked", At: time.Now().UTC()})
-				s.hub.BroadcastDash(agent.UserID, dashEvent("history.items.updated", agent, map[string]any{"session_id": items.SessionID, "count": len(items.Items), "cursor": items.Cursor, "reset": items.Reset}))
+				s.hub.BroadcastDash(agent.UserID, dashEvent("history.items.updated", agent, map[string]any{"session_id": items.SessionID, "count": countAcceptedHistoryItems(items), "cursor": items.Cursor, "reset": items.Reset}))
 			} else {
 				s.log.WarnContext(ctx, "history items rejected", "agent_id", agent.AgentID, "session_id", items.SessionID, "error", err)
 				s.sendAgent(agent, "history.items.ack", protocol.HistoryItemsAck{SessionID: items.SessionID, Cursor: items.Cursor, Status: "failed", Message: err.Error(), At: time.Now().UTC()})
@@ -210,6 +210,9 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 		event, err := protocol.Decode[protocol.RunEvent](env.Data)
 		if err == nil {
 			if skipAgentRunEvent(event) {
+				if event.RunID != "" && event.Seq > 0 {
+					s.sendAgent(agent, "run.event.ack", protocol.Ack{RunID: event.RunID, Status: "ignored", Message: "usage event ignored", AckSeq: event.Seq, At: time.Now().UTC()})
+				}
 				return
 			}
 			if err := s.store.SaveRunEvent(ctx, agent.AgentID, agent.DeviceID, event); err == nil {
@@ -234,6 +237,21 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 
 func skipAgentRunEvent(event protocol.RunEvent) bool {
 	return protocol.IsUsageKind(event.Kind)
+}
+
+func countAcceptedHistoryItems(batch protocol.HistoryItems) int {
+	count := 0
+	for _, item := range batch.Items {
+		sessionID := item.SessionID
+		if sessionID == "" {
+			sessionID = batch.SessionID
+		}
+		if sessionID == "" || item.Kind == "" || protocol.IsUsageKind(item.Kind) {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func runtimeSessionFromRunEvent(event protocol.RunEvent) (protocol.RuntimeSession, bool) {

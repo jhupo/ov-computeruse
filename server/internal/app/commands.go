@@ -254,15 +254,21 @@ func (s *Server) dispatchCommand(ctx context.Context, identity store.AgentIdenti
 		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
 		return record, false
 	}
-	if !s.hub.DispatchCommand(ctx, identity.AgentID, identity.UserID, command.CommandID, message) {
-		if s.hub.AgentMayBeOnline(ctx, identity.AgentID) {
-			_ = s.store.MarkCommandFailed(ctx, identity.AgentID, command.CommandID, "agent send queue full")
-		}
+	switch status := s.hub.DispatchCommand(ctx, identity.AgentID, identity.UserID, command.CommandID, message); status {
+	case CommandDispatchDelivered:
+		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
+		return record, true
+	case CommandDispatchDelegated:
+		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
+		return record, false
+	case CommandDispatchQueueFull:
+		_ = s.store.MarkCommandDispatchFailed(ctx, identity.AgentID, command.CommandID, "agent send queue full")
+		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
+		return record, false
+	default:
 		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
 		return record, false
 	}
-	record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
-	return record, true
 }
 
 func (s *Server) validateExecutionCredential(ctx context.Context, identity store.AgentIdentity, command protocol.Command) error {

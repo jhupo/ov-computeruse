@@ -52,6 +52,15 @@ type AgentCommandEnvelope struct {
 	Data         []byte `json:"data"`
 }
 
+type CommandDispatchStatus string
+
+const (
+	CommandDispatchDelivered   CommandDispatchStatus = "delivered"
+	CommandDispatchDelegated   CommandDispatchStatus = "delegated"
+	CommandDispatchUnavailable CommandDispatchStatus = "unavailable"
+	CommandDispatchQueueFull   CommandDispatchStatus = "queue_full"
+)
+
 type DashBroadcastEnvelope struct {
 	Origin string `json:"origin"`
 	UserID string `json:"user_id"`
@@ -292,39 +301,44 @@ func (h *Hub) BroadcastDash(userID string, data []byte) {
 	_ = h.redis.Publish(context.Background(), "ov:dash:broadcast", raw).Err()
 }
 
-func (h *Hub) DispatchCommand(ctx context.Context, agentID, userID, commandID string, data []byte) bool {
+func (h *Hub) DispatchCommand(ctx context.Context, agentID, userID, commandID string, data []byte) CommandDispatchStatus {
 	h.mu.RLock()
 	agent := h.agents[agentID]
 	h.mu.RUnlock()
 	if agent != nil {
 		if agent.UserID != userID {
-			return false
+			return CommandDispatchUnavailable
 		}
 		if h.connOwnsLease(ctx, agent) {
-			select {
-			case agent.Send <- data:
+			status := h.dispatchCommandLocal(agentID, userID, agent.ConnectionID, agent.Epoch, data)
+			if status == CommandDispatchDelivered {
 				h.markCommandDispatched(ctx, agentID, commandID)
-				return true
-			default:
-				return false
 			}
+			return status
 		}
 	}
 	if h.redis == nil {
-		return false
-	}
-	if h.redis.Exists(ctx, "agent:online:"+agentID).Val() == 0 {
-		return false
+		return CommandDispatchUnavailable
 	}
 	lease, ok := h.agentLease(ctx, agentID)
 	if !ok || lease.UserID != userID {
-		return false
+		return CommandDispatchUnavailable
+	}
+	if lease.InstanceID == h.instanceID {
+		status := h.dispatchCommandLocal(agentID, userID, lease.ConnectionID, lease.Epoch, data)
+		if status == CommandDispatchDelivered {
+			h.markCommandDispatched(ctx, agentID, commandID)
+		}
+		return status
 	}
 	raw, err := json.Marshal(AgentCommandEnvelope{Origin: h.instanceID, AgentID: agentID, UserID: userID, CommandID: commandID, ConnectionID: lease.ConnectionID, Epoch: lease.Epoch, Data: data})
 	if err != nil {
-		return false
+		return CommandDispatchUnavailable
 	}
-	return h.redis.Publish(ctx, "ov:agent:commands", raw).Err() == nil
+	if err := h.redis.Publish(ctx, "ov:agent:commands", raw).Err(); err != nil {
+		return CommandDispatchUnavailable
+	}
+	return CommandDispatchDelegated
 }
 
 func (h *Hub) connOwnsLease(ctx context.Context, conn *AgentConn) bool {
@@ -401,24 +415,27 @@ func dashAcceptsBroadcast(dash *DashConn, data []byte) bool {
 	return false
 }
 
-func (h *Hub) dispatchCommandLocal(agentID, connectionID string, epoch int64, data []byte) bool {
+func (h *Hub) dispatchCommandLocal(agentID, userID, connectionID string, epoch int64, data []byte) CommandDispatchStatus {
 	h.mu.RLock()
 	agent := h.agents[agentID]
 	h.mu.RUnlock()
 	if agent == nil {
-		return false
+		return CommandDispatchUnavailable
+	}
+	if agent.UserID != userID {
+		return CommandDispatchUnavailable
 	}
 	if connectionID != "" && agent.ConnectionID != connectionID {
-		return false
+		return CommandDispatchUnavailable
 	}
 	if epoch > 0 && agent.Epoch != epoch {
-		return false
+		return CommandDispatchUnavailable
 	}
 	select {
 	case agent.Send <- data:
-		return true
+		return CommandDispatchDelivered
 	default:
-		return false
+		return CommandDispatchQueueFull
 	}
 }
 
@@ -456,13 +473,7 @@ func (h *Hub) subscribeCommands(ctx context.Context) {
 		if env.Origin == h.instanceID {
 			continue
 		}
-		h.mu.RLock()
-		agent := h.agents[env.AgentID]
-		h.mu.RUnlock()
-		if agent == nil || agent.UserID != env.UserID {
-			continue
-		}
-		if h.dispatchCommandLocal(env.AgentID, env.ConnectionID, env.Epoch, env.Data) {
+		if h.dispatchCommandLocal(env.AgentID, env.UserID, env.ConnectionID, env.Epoch, env.Data) == CommandDispatchDelivered {
 			h.markCommandDispatched(ctx, env.AgentID, env.CommandID)
 		}
 	}

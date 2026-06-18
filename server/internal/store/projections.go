@@ -113,6 +113,9 @@ func (s *Store) projectRunEvent(ctx context.Context, agentID string, event proto
 	if event.RunID == "" {
 		return nil
 	}
+	if protocol.IsUsageKind(event.Kind) {
+		return nil
+	}
 	switch event.Kind {
 	case "assistant.message.delta":
 		return s.appendAssistantRunMessage(ctx, agentID, event)

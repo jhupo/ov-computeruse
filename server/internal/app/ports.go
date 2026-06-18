@@ -61,6 +61,7 @@ type EventRepository interface {
 	SaveCommand(context.Context, string, protocol.Command) (protocol.Command, error)
 	SaveCommandAttempt(context.Context, string, string, string, string, string, json.RawMessage) error
 	MarkCommandDispatched(context.Context, string, string) error
+	MarkCommandDispatchFailed(context.Context, string, string, string) error
 	MarkCommandFailed(context.Context, string, string, string) error
 	MarkCommandExpired(context.Context, string, string, string) error
 	ReleaseApprovalDecisionCommand(context.Context, string, string, string) error

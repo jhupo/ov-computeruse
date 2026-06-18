@@ -141,6 +141,9 @@ func (s *Store) RebuildRunProjections(ctx context.Context, agentID, runID string
 		if err := rows.Scan(&event.EventID, &event.CommandID, &event.SessionID, &event.ProjectID, &event.Seq, &event.Kind, &payload, &event.At); err != nil {
 			return result, err
 		}
+		if skipRunEvent(event) {
+			continue
+		}
 		event.RunID = runID
 		if len(payload) > 0 {
 			event.Payload = append(json.RawMessage(nil), payload...)
@@ -567,6 +570,13 @@ func (s *Store) MarkCommandDispatched(ctx context.Context, agentID, commandID st
 		return err
 	}
 	return s.SaveCommandAttempt(ctx, agentID, commandID, "dispatch", "dispatched", "command written to agent transport", nil)
+}
+
+func (s *Store) MarkCommandDispatchFailed(ctx context.Context, agentID, commandID, reason string) error {
+	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status='dispatch_failed', status_reason=$3, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, reason); err != nil {
+		return err
+	}
+	return s.SaveCommandAttempt(ctx, agentID, commandID, "dispatch", "failed", reason, nil)
 }
 
 func (s *Store) MarkCommandFailed(ctx context.Context, agentID, commandID, reason string) error {
