@@ -2,7 +2,9 @@ package localstate
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -326,7 +328,10 @@ func (s *Store) SaveRunEvent(ctx context.Context, event protocol.RunEvent) error
 	if err != nil {
 		return err
 	}
-	return s.projectRunEvent(ctx, event)
+	if err := s.projectRunState(ctx, event); err != nil {
+		return err
+	}
+	return s.projectRunView(ctx, event)
 }
 
 func (s *Store) PendingRunEvents(ctx context.Context, limit int) ([]protocol.RunEvent, error) {
@@ -475,7 +480,7 @@ func (s *Store) ReconcileInterruptedRuns(ctx context.Context) ([]protocol.RunEve
 	return events, nil
 }
 
-func (s *Store) projectRunEvent(ctx context.Context, event protocol.RunEvent) error {
+func (s *Store) projectRunState(ctx context.Context, event protocol.RunEvent) error {
 	if strings.TrimSpace(event.RunID) == "" {
 		return nil
 	}
@@ -509,6 +514,188 @@ func (s *Store) projectRunEvent(ctx context.Context, event protocol.RunEvent) er
 		return err
 	}
 	return nil
+}
+
+func (s *Store) projectRunView(ctx context.Context, event protocol.RunEvent) error {
+	if strings.TrimSpace(event.RunID) == "" {
+		return nil
+	}
+	switch event.Kind {
+	case "assistant.message.delta":
+		return s.appendRunMessage(ctx, event, "assistant", "streaming", false)
+	case "assistant.message.done":
+		return s.finishRunMessage(ctx, event, "assistant")
+	case "user.message":
+		return s.upsertRunMessage(ctx, event, "user", "done", true)
+	case "tool.call.started", "tool.call.delta", "tool.call.done", "tool.output", "approval.requested":
+		return s.upsertToolCall(ctx, event)
+	default:
+		return nil
+	}
+}
+
+func (s *Store) appendRunMessage(ctx context.Context, event protocol.RunEvent, role, status string, finished bool) error {
+	content := payloadText(event.Payload)
+	if content == "" {
+		return nil
+	}
+	id, existing, ok, err := s.lastRunMessage(ctx, event.RunID, role)
+	if err != nil {
+		return err
+	}
+	if ok {
+		_, err := s.db.ExecContext(ctx, `
+			UPDATE run_messages
+			SET seq_end = ?, content = ?, payload = ?, status = ?, updated_at = ?
+			WHERE id = ?
+		`, event.Seq, existing+content, jsonRaw(event.Payload), status, now(), id)
+		return err
+	}
+	return s.upsertRunMessage(ctx, event, role, status, finished)
+}
+
+func (s *Store) finishRunMessage(ctx context.Context, event protocol.RunEvent, role string) error {
+	content := payloadText(event.Payload)
+	id, _, ok, err := s.lastRunMessage(ctx, event.RunID, role)
+	if err != nil {
+		return err
+	}
+	if ok {
+		_, err := s.db.ExecContext(ctx, `
+			UPDATE run_messages
+			SET seq_end = ?, content = COALESCE(NULLIF(?, ''), content), payload = ?, status = 'done', finished_at = ?, updated_at = ?
+			WHERE id = ?
+		`, event.Seq, content, jsonRaw(event.Payload), nullableTimeString(event.At, true), now(), id)
+		return err
+	}
+	return s.upsertRunMessage(ctx, event, role, "done", true)
+}
+
+func (s *Store) lastRunMessage(ctx context.Context, runID, role string) (string, string, bool, error) {
+	var id string
+	var content string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, COALESCE(content, '')
+		FROM run_messages
+		WHERE run_id = ? AND role = ?
+		ORDER BY seq_start DESC
+		LIMIT 1
+	`, runID, role).Scan(&id, &content)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, err
+	}
+	return id, content, true, nil
+}
+
+func (s *Store) upsertRunMessage(ctx context.Context, event protocol.RunEvent, role, status string, finished bool) error {
+	content := payloadText(event.Payload)
+	id := projectionID(event.RunID, strconv.FormatUint(event.Seq, 10), "message", role)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO run_messages(id, run_id, seq_start, seq_end, role, content, payload, status, started_at, finished_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(run_id, seq_start, role) DO UPDATE SET
+			seq_end = excluded.seq_end,
+			content = COALESCE(NULLIF(excluded.content, ''), run_messages.content),
+			payload = excluded.payload,
+			status = excluded.status,
+			finished_at = excluded.finished_at,
+			updated_at = excluded.updated_at
+	`, id, event.RunID, event.Seq, event.Seq, role, content, jsonRaw(event.Payload), status, timeString(event.At), nullableTimeString(event.At, finished), now())
+	return err
+}
+
+func (s *Store) upsertToolCall(ctx context.Context, event protocol.RunEvent) error {
+	toolCallID := payloadString(event.Payload, "tool_call_id", "call_id", "id")
+	if toolCallID == "" {
+		toolCallID = projectionID(event.RunID, strconv.FormatUint(event.Seq, 10), "tool", event.Kind)
+	}
+	toolName := payloadString(event.Payload, "tool_name", "name", "tool")
+	status := toolStatus(event.Kind)
+	arguments := payloadObject(event.Payload, "arguments", "args")
+	output := payloadObject(event.Payload, "output", "result")
+	approvalID := payloadString(event.Payload, "approval_id")
+	id := projectionID(event.RunID, toolCallID, "tool_call")
+	finished := status == "done" || status == "output"
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO tool_calls(id, run_id, seq_start, seq_end, tool_call_id, tool_name, arguments, output, status, approval_request_id, started_at, finished_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(run_id, tool_call_id) DO UPDATE SET
+			seq_end = excluded.seq_end,
+			tool_name = COALESCE(NULLIF(excluded.tool_name, ''), tool_calls.tool_name),
+			arguments = COALESCE(excluded.arguments, tool_calls.arguments),
+			output = COALESCE(excluded.output, tool_calls.output),
+			status = excluded.status,
+			approval_request_id = COALESCE(NULLIF(excluded.approval_request_id, ''), tool_calls.approval_request_id),
+			finished_at = COALESCE(excluded.finished_at, tool_calls.finished_at),
+			updated_at = excluded.updated_at
+	`, id, event.RunID, event.Seq, event.Seq, toolCallID, toolName, jsonRaw(arguments), jsonRaw(output), status, approvalID, timeString(event.At), nullableTimeString(event.At, finished), now())
+	return err
+}
+
+func payloadText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var value map[string]any
+	if json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	for _, key := range []string{"text", "delta", "content", "message"} {
+		if text, ok := value[key].(string); ok {
+			return text
+		}
+	}
+	return ""
+}
+
+func payloadString(raw json.RawMessage, keys ...string) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var value map[string]any
+	if json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	for _, key := range keys {
+		if text, ok := value[key].(string); ok {
+			return text
+		}
+	}
+	return ""
+}
+
+func payloadObject(raw json.RawMessage, keys ...string) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var value map[string]any
+	if json.Unmarshal(raw, &value) != nil {
+		return nil
+	}
+	for _, key := range keys {
+		if item, ok := value[key]; ok {
+			return protocol.Raw(item)
+		}
+	}
+	return nil
+}
+
+func toolStatus(kind string) string {
+	switch kind {
+	case "tool.call.started", "tool.call.delta":
+		return "running"
+	case "tool.call.done":
+		return "done"
+	case "tool.output":
+		return "output"
+	case "approval.requested":
+		return "awaiting_approval"
+	default:
+		return "running"
+	}
 }
 
 func runStatusFromEvent(event protocol.RunEvent) (string, bool) {
@@ -720,6 +907,38 @@ func (s *Store) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status, updated_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id, updated_at)`,
+		`CREATE TABLE IF NOT EXISTS run_messages (
+			id TEXT PRIMARY KEY,
+			run_id TEXT NOT NULL,
+			seq_start INTEGER NOT NULL,
+			seq_end INTEGER,
+			role TEXT NOT NULL,
+			content TEXT,
+			payload BLOB,
+			status TEXT NOT NULL,
+			started_at TEXT,
+			finished_at TEXT,
+			updated_at TEXT NOT NULL,
+			UNIQUE(run_id, seq_start, role)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_run_messages_run ON run_messages(run_id, seq_start)`,
+		`CREATE TABLE IF NOT EXISTS tool_calls (
+			id TEXT PRIMARY KEY,
+			run_id TEXT NOT NULL,
+			seq_start INTEGER NOT NULL,
+			seq_end INTEGER,
+			tool_call_id TEXT NOT NULL,
+			tool_name TEXT,
+			arguments BLOB,
+			output BLOB,
+			status TEXT NOT NULL,
+			approval_request_id TEXT,
+			started_at TEXT,
+			finished_at TEXT,
+			updated_at TEXT NOT NULL,
+			UNIQUE(run_id, tool_call_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tool_calls_run ON tool_calls(run_id, seq_start)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -958,6 +1177,11 @@ func nullableTimeString(value time.Time, valid bool) sql.NullString {
 		return sql.NullString{}
 	}
 	return timeString(value)
+}
+
+func projectionID(parts ...string) string {
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return "prj_" + hex.EncodeToString(sum[:])[:32]
 }
 
 func now() string {
