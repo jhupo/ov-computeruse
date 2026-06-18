@@ -406,7 +406,7 @@ func (s *Store) MarkRunEventAcked(ctx context.Context, ack protocol.Ack) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE run_events
 		SET acked_at = ?, updated_at = ?
-		WHERE run_id = ? AND seq <= ? AND acked_at IS NULL
+		WHERE run_id = ? AND seq = ? AND acked_at IS NULL
 	`, ackedAt.UTC().Format(time.RFC3339Nano), now(), ack.RunID, ack.AckSeq)
 	return err
 }

@@ -31,7 +31,9 @@ func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, even
 	if event.At.IsZero() {
 		event.At = time.Now().UTC()
 	}
-	tag, err := s.pool.Exec(ctx, `INSERT INTO run_events (id, agent_id, device_id, run_id, command_id, session_id, project_id, seq, kind, payload, event_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO NOTHING`, event.EventID, agentID, deviceID, event.RunID, event.CommandID, event.SessionID, event.ProjectID, event.Seq, event.Kind, jsonRaw(event.Payload), event.At)
+	tag, err := s.pool.Exec(ctx, `INSERT INTO run_events (id, agent_id, device_id, run_id, command_id, session_id, project_id, seq, kind, payload, event_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+		ON CONFLICT DO NOTHING`, event.EventID, agentID, deviceID, event.RunID, event.CommandID, event.SessionID, event.ProjectID, event.Seq, event.Kind, jsonRaw(event.Payload), event.At)
 	if err != nil {
 		return err
 	}
@@ -161,21 +163,26 @@ func (s *Store) recordRunEventConsistency(ctx context.Context, agentID string, e
 	if event.RunID == "" || event.Seq == 0 {
 		return nil
 	}
-	lastSeq := uint64(0)
-	_ = s.pool.QueryRow(ctx, `SELECT COALESCE(last_event_seq, 0) FROM runs WHERE agent_id=$1 AND id=$2`, agentID, event.RunID).Scan(&lastSeq)
-	expected := lastSeq + 1
-	switch {
-	case event.Seq == expected:
-		return nil
-	case event.Seq > expected:
-		return s.saveRunEventGap(ctx, agentID, event.RunID, expected, event.Seq, "gap")
-	default:
-		kind := "duplicate_seq"
-		if event.Seq < lastSeq {
-			kind = "seq_regression"
-		}
-		return s.saveRunEventGap(ctx, agentID, event.RunID, expected, event.Seq, kind)
+	if err := s.resolveRunEventGaps(ctx, agentID, event.RunID, event.Seq); err != nil {
+		return err
 	}
+	var previous uint64
+	if err := s.pool.QueryRow(ctx, `SELECT COALESCE(MAX(seq), 0) FROM run_events WHERE agent_id=$1 AND run_id=$2 AND seq<$3`, agentID, event.RunID, event.Seq).Scan(&previous); err != nil {
+		return err
+	}
+	if previous > 0 && event.Seq > previous+1 {
+		if err := s.saveRunEventGap(ctx, agentID, event.RunID, previous+1, event.Seq, "gap"); err != nil {
+			return err
+		}
+	}
+	var next uint64
+	if err := s.pool.QueryRow(ctx, `SELECT COALESCE(MIN(seq), 0) FROM run_events WHERE agent_id=$1 AND run_id=$2 AND seq>$3`, agentID, event.RunID, event.Seq).Scan(&next); err != nil {
+		return err
+	}
+	if next > 0 && next > event.Seq+1 {
+		return s.saveRunEventGap(ctx, agentID, event.RunID, event.Seq+1, next, "gap")
+	}
+	return nil
 }
 
 func (s *Store) advanceRunEventCursor(ctx context.Context, agentID string, event protocol.RunEvent) error {
@@ -199,6 +206,14 @@ func (s *Store) saveRunEventGap(ctx context.Context, agentID, runID string, expe
 	_, err := s.pool.Exec(ctx, `INSERT INTO run_event_gaps (id, agent_id, run_id, expected_seq, observed_seq, kind, status, detected_at)
 		VALUES ($1,$2,$3,$4,$5,$6,'open',now())
 		ON CONFLICT (id) DO NOTHING`, id, agentID, runID, expected, observed, kind)
+	return err
+}
+
+func (s *Store) resolveRunEventGaps(ctx context.Context, agentID, runID string, seq uint64) error {
+	_, err := s.pool.Exec(ctx, `UPDATE run_event_gaps
+		SET status='resolved', resolved_at=now()
+		WHERE agent_id=$1 AND run_id=$2 AND status='open' AND expected_seq <= $3 AND observed_seq > $3`,
+		agentID, runID, seq)
 	return err
 }
 

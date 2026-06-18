@@ -69,6 +69,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_sync_cursors_agent ON sync_cursors(agent_id, stream, updated_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_runtime_sessions_agent ON runtime_sessions(agent_id, updated_at DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_sessions_native ON runtime_sessions(agent_id, runtime, native_session_id) WHERE native_session_id IS NOT NULL AND native_session_id <> ''`,
+		`DELETE FROM run_events a USING run_events b WHERE a.agent_id=b.agent_id AND a.run_id=b.run_id AND a.seq=b.seq AND a.run_id IS NOT NULL AND a.run_id <> '' AND a.seq > 0 AND (a.received_at, a.id) > (b.received_at, b.id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_unique_seq ON run_events(agent_id, run_id, seq) WHERE run_id IS NOT NULL AND run_id <> '' AND seq > 0`,
 		`CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(agent_id, run_id, seq, received_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_run_events_agent ON run_events(agent_id, received_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_run_event_gaps_run ON run_event_gaps(agent_id, run_id, status, detected_at)`,
