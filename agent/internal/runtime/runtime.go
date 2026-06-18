@@ -15,6 +15,7 @@ type ApprovalWaiter interface {
 }
 
 type Runtime interface {
+	Name() string
 	NewSession(context.Context, protocol.Command, Sink) error
 	Resume(context.Context, protocol.Command, Sink) error
 	Send(context.Context, protocol.Command, Sink) error
@@ -25,6 +26,10 @@ type Noop struct{}
 
 func NewNoop() Noop {
 	return Noop{}
+}
+
+func (Noop) Name() string {
+	return "noop"
 }
 
 func (Noop) NewSession(ctx context.Context, command protocol.Command, sink Sink) error {

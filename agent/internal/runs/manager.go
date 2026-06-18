@@ -93,6 +93,15 @@ func (m *Manager) MaxActive() int {
 	return m.maxActive
 }
 
+func (m *Manager) RuntimeName() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.runtime == nil {
+		return ""
+	}
+	return m.runtime.Name()
+}
+
 func (m *Manager) SetSink(sink EventSink) {
 	m.mu.Lock()
 	m.sink = sink

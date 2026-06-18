@@ -67,6 +67,10 @@ func New(cfg Config) *Adapter {
 	return &Adapter{cfg: cfg, executor: agenttools.NewExecutor(agenttools.Config{AllowLocalShell: cfg.AllowLocalShell, WorkspaceRootProvider: cfg.WorkspaceRootProvider})}
 }
 
+func (a *Adapter) Name() string {
+	return runtimeName
+}
+
 func (a *Adapter) NewSession(ctx context.Context, command protocol.Command, sink runtime.Sink) error {
 	return a.send(ctx, command, sink, false)
 }
@@ -428,11 +432,12 @@ func (a *Adapter) emitRuntimeSession(ctx context.Context, sink runtime.Sink, com
 	if sessionID == "" {
 		sessionID = responseID
 	}
+	nativeSessionID := "responses:" + responseID
 	runtimeSession := protocol.RuntimeSession{
 		Runtime:         runtimeName,
 		ProjectID:       command.ProjectID,
 		SessionID:       sessionID,
-		NativeSessionID: sessionID,
+		NativeSessionID: nativeSessionID,
 		LastResponseID:  responseID,
 		ResumeMode:      resumeMode,
 		LastRunID:       command.RunID,

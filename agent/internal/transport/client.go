@@ -204,6 +204,9 @@ func (c *Client) register(ctx context.Context) error {
 	if supportsSDK {
 		features = append(features, "approval.decision", "command.new_session", "command.resume", "command.send", "command.stop")
 	}
+	if c.manager != nil && strings.TrimSpace(c.manager.RuntimeName()) != "" {
+		features = append(features, "runtime."+c.manager.RuntimeName())
+	}
 	if c.cfg.AllowLocalShell {
 		features = append(features, "tool.local_shell", "terminal.output")
 	}
@@ -432,10 +435,14 @@ func protocolDeletedRefs(items []localstate.DeletedRef) []protocol.DeletedRef {
 func uniqueRuntimeSessions(sessions []protocol.RuntimeSession) []protocol.RuntimeSession {
 	seen := map[string]protocol.RuntimeSession{}
 	for _, session := range sessions {
-		if strings.TrimSpace(session.Runtime) == "" || strings.TrimSpace(session.SessionID) == "" {
+		if strings.TrimSpace(session.Runtime) == "" {
 			continue
 		}
-		key := session.Runtime + "\x00" + session.SessionID
+		identity := firstNonEmpty(session.SessionID, session.NativeSessionID, session.LastResponseID, session.ID)
+		if identity == "" {
+			continue
+		}
+		key := session.Runtime + "\x00" + identity
 		if existing, ok := seen[key]; ok && !session.UpdatedAt.After(existing.UpdatedAt) {
 			continue
 		}
