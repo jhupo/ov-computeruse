@@ -135,7 +135,7 @@ func (c *Client) Emit(ctx context.Context, event protocol.RunEvent) error {
 		_ = c.state.MarkRunEventSent(ctx, event)
 	}
 	if c.shouldRefreshIndexAfter(event) {
-		go c.refreshIndexAfterRun(event.RunID)
+		go c.refreshIndexAfterRun(event)
 	}
 	return nil
 }
@@ -149,11 +149,32 @@ func (c *Client) shouldRefreshIndexAfter(event protocol.RunEvent) bool {
 	}
 }
 
-func (c *Client) refreshIndexAfterRun(runID string) {
+func (c *Client) refreshIndexAfterRun(trigger protocol.RunEvent) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
+	startedAt := time.Now().UTC()
+	c.emitIndexRefreshStatus(ctx, trigger, "index.refresh.started", map[string]any{"trigger_kind": trigger.Kind})
 	if err := c.uploadIndex(ctx); err != nil {
-		c.logger.WarnContext(ctx, "post-run index refresh failed", "run_id", runID, "error", err)
+		c.logger.WarnContext(ctx, "post-run index refresh failed", "run_id", trigger.RunID, "error", err)
+		c.emitIndexRefreshStatus(context.Background(), trigger, "index.refresh.failed", map[string]any{
+			"trigger_kind":    trigger.Kind,
+			"error":           err.Error(),
+			"duration_millis": time.Since(startedAt).Milliseconds(),
+		})
+		return
+	}
+	c.emitIndexRefreshStatus(context.Background(), trigger, "index.refresh.done", map[string]any{
+		"trigger_kind":    trigger.Kind,
+		"duration_millis": time.Since(startedAt).Milliseconds(),
+	})
+}
+
+func (c *Client) emitIndexRefreshStatus(ctx context.Context, trigger protocol.RunEvent, status string, extra map[string]any) {
+	if c.manager == nil {
+		return
+	}
+	if err := c.manager.EmitStatus(ctx, trigger, status, extra); err != nil {
+		c.logger.WarnContext(ctx, "index refresh status emit failed", "run_id", trigger.RunID, "status", status, "error", err)
 	}
 }
 

@@ -205,6 +205,21 @@ func (m *Manager) Emit(ctx context.Context, event protocol.RunEvent) error {
 	return sink.Emit(ctx, event)
 }
 
+func (m *Manager) EmitStatus(ctx context.Context, trigger protocol.RunEvent, status string, payload map[string]any) error {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["status"] = status
+	return m.Emit(ctx, protocol.RunEvent{
+		RunID:     trigger.RunID,
+		CommandID: trigger.CommandID,
+		ProjectID: trigger.ProjectID,
+		SessionID: trigger.SessionID,
+		Kind:      "run.status",
+		Payload:   protocol.Raw(payload),
+	})
+}
+
 func (m *Manager) start(ctx context.Context, command protocol.Command) protocol.Ack {
 	if command.RunID == "" {
 		command.RunID = protocol.NewID("run")
