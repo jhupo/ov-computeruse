@@ -73,6 +73,20 @@ func TestBuildArgsForResumePrefersRuntimeNativeSessionID(t *testing.T) {
 	}
 }
 
+func TestBuildArgsForResumeUsesNativeSessionForIndexedHistorySession(t *testing.T) {
+	adapter := New(Config{})
+	args, _, err := adapter.buildArgs(protocol.Command{SessionID: "history_session"}, localstate.CommandContext{
+		Session:        localstate.SessionRecord{ID: "history_session"},
+		RuntimeSession: localstate.RuntimeSession{SessionID: "history_session", NativeSessionID: "native_thread"},
+	}, true)
+	if err != nil {
+		t.Fatalf("build resume args: %v", err)
+	}
+	if got := args[len(args)-2]; got != "native_thread" {
+		t.Fatalf("resume session arg = %q, want native_thread; args=%#v", got, args)
+	}
+}
+
 func TestBuildArgsForResumeKeepsExecRootFlagsBeforeSubcommand(t *testing.T) {
 	adapter := New(Config{Profile: "work"})
 	args, cwd, err := adapter.buildArgs(protocol.Command{SessionID: "thread_1"}, localstate.CommandContext{

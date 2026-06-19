@@ -147,6 +147,60 @@ func TestResolveCommandContextAcceptsRuntimeSession(t *testing.T) {
 	}
 }
 
+func TestResolveCommandContextLoadsRuntimeSessionForIndexedSession(t *testing.T) {
+	state, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer state.Close()
+	root := t.TempDir()
+	projectPath := filepath.Join(root, "repo")
+	updatedAt := time.Now().UTC().Add(-time.Minute)
+
+	_, err = state.SaveScanResult(context.Background(), codexscan.Result{
+		Projects: []codexscan.Project{{
+			ID:           "project_1",
+			Name:         "repo",
+			Path:         projectPath,
+			LastActiveAt: updatedAt,
+		}},
+		Sessions: []codexscan.Session{{
+			ID:        "history_session",
+			IDSource:  "codex.history",
+			ProjectID: "project_1",
+			Path:      filepath.Join(root, "history.jsonl"),
+			CWD:       projectPath,
+			UpdatedAt: updatedAt,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("save scan result: %v", err)
+	}
+	if err := state.SaveRuntimeSession(context.Background(), RuntimeSession{
+		SessionID:       "history_session",
+		Runtime:         protocol.RuntimeCodexCLI,
+		ProjectID:       "project_1",
+		NativeSessionID: "native_thread",
+		ResumeMode:      "codex_cli_history_index",
+		LastRunID:       "run_1",
+		CWD:             projectPath,
+		UpdatedAt:       updatedAt,
+	}); err != nil {
+		t.Fatalf("save runtime session: %v", err)
+	}
+
+	resolved, err := state.ResolveCommandContext(context.Background(), protocol.Command{SessionID: "history_session"})
+	if err != nil {
+		t.Fatalf("resolve command context: %v", err)
+	}
+	if resolved.Session.ID != "history_session" {
+		t.Fatalf("session id = %q, want history_session", resolved.Session.ID)
+	}
+	if resolved.RuntimeSession.NativeSessionID != "native_thread" {
+		t.Fatalf("runtime session = %+v, want native_thread binding", resolved.RuntimeSession)
+	}
+}
+
 func TestRuntimeSessionScanMergesLiveNativeSession(t *testing.T) {
 	state, err := Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {

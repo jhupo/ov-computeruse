@@ -280,6 +280,11 @@ func (s *Store) ResolveCommandContext(ctx context.Context, command protocol.Comm
 			}
 		} else {
 			resolved.Session = session
+			if runtimeSession, ok, err := s.runtimeSessionForIndexedSession(ctx, command, session); err != nil {
+				return resolved, err
+			} else if ok {
+				resolved.RuntimeSession = runtimeSession
+			}
 			if strings.TrimSpace(command.ProjectID) != "" && strings.TrimSpace(session.ProjectID) != "" && command.ProjectID != session.ProjectID {
 				return resolved, errors.New("command project does not match indexed session project")
 			}
@@ -306,6 +311,23 @@ func (s *Store) ResolveCommandContext(ctx context.Context, command protocol.Comm
 		}
 	}
 	return resolved, nil
+}
+
+func (s *Store) runtimeSessionForIndexedSession(ctx context.Context, command protocol.Command, session SessionRecord) (RuntimeSession, bool, error) {
+	runtimeSession, err := s.RuntimeSession(ctx, session.ID, protocol.RuntimeCodexCLI)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return RuntimeSession{}, false, nil
+		}
+		return RuntimeSession{}, false, err
+	}
+	if strings.TrimSpace(command.ProjectID) != "" && strings.TrimSpace(runtimeSession.ProjectID) != "" && command.ProjectID != runtimeSession.ProjectID {
+		return RuntimeSession{}, false, errors.New("command project does not match runtime session project")
+	}
+	if strings.TrimSpace(session.ProjectID) != "" && strings.TrimSpace(runtimeSession.ProjectID) != "" && session.ProjectID != runtimeSession.ProjectID {
+		return RuntimeSession{}, false, errors.New("indexed session project does not match runtime session project")
+	}
+	return runtimeSession, true, nil
 }
 
 func (s *Store) SaveHistoryChunk(ctx context.Context, chunk codexscan.HistoryChunk) error {
