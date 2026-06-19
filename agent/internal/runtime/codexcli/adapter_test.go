@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"ov-computeruse/agent/internal/codexscan"
 	"ov-computeruse/agent/internal/localstate"
 	"ov-computeruse/agent/internal/protocol"
 )
@@ -19,6 +22,12 @@ type captureSink struct {
 func (s *captureSink) Emit(_ context.Context, event protocol.RunEvent) error {
 	s.events = append(s.events, event)
 	return nil
+}
+
+type refreshFunc func(context.Context) error
+
+func (f refreshFunc) RefreshCodexIndex(ctx context.Context) error {
+	return f(ctx)
 }
 
 func TestBuildArgsForNewSession(t *testing.T) {
@@ -61,6 +70,50 @@ func TestBuildArgsForResumePrefersRuntimeNativeSessionID(t *testing.T) {
 	}
 	if got := args[len(args)-2]; got != "native_thread" {
 		t.Fatalf("resume session arg = %q, want native_thread; args=%#v", got, args)
+	}
+}
+
+func TestResolveRefreshesMissingLocalIndex(t *testing.T) {
+	state, err := localstate.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer state.Close()
+
+	root := t.TempDir()
+	projectPath := filepath.Join(root, "repo")
+	refreshed := false
+	adapter := New(Config{
+		State: state,
+		IndexRefresher: refreshFunc(func(ctx context.Context) error {
+			refreshed = true
+			_, err := state.SaveScanResult(ctx, codexscan.Result{
+				Projects: []codexscan.Project{{
+					ID:           "project_1",
+					Name:         "repo",
+					Path:         projectPath,
+					LastActiveAt: time.Now().UTC(),
+				}},
+				Sessions: []codexscan.Session{{
+					ID:        "session_1",
+					ProjectID: "project_1",
+					Path:      filepath.Join(root, "history.jsonl"),
+					CWD:       projectPath,
+					UpdatedAt: time.Now().UTC(),
+				}},
+			})
+			return err
+		}),
+	})
+	resolved, err := adapter.resolve(context.Background(), protocol.Command{SessionID: "session_1"})
+	if err != nil {
+		t.Fatalf("resolve command context: %v", err)
+	}
+	if !refreshed {
+		t.Fatal("expected missing local index to trigger refresh")
+	}
+	if resolved.Session.ID != "session_1" || resolved.Project.ID != "project_1" {
+		t.Fatalf("resolved context = %+v", resolved)
 	}
 }
 

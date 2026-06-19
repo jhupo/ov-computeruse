@@ -212,7 +212,13 @@ func runAgent(args []string) {
 	defer state.Close()
 	rt := runtime.Runtime(runtime.NewNoop())
 	if bin, err := codexcli.ResolveBin(""); err == nil {
-		rt = codexcli.New(codexcli.Config{BinPath: bin, Model: cfg.CodexModel, Profile: cfg.CodexProfile, State: state})
+		rt = codexcli.New(codexcli.Config{
+			BinPath:        bin,
+			Model:          cfg.CodexModel,
+			Profile:        cfg.CodexProfile,
+			State:          state,
+			IndexRefresher: codexIndexRefresher{scanner: scanner, state: state},
+		})
 		logger.Info("codex cli runtime enabled", "path", bin, "model", cfg.CodexModel, "profile", cfg.CodexProfile)
 	} else {
 		logger.Warn("codex cli runtime unavailable; runtime is noop", "error", err)
@@ -222,6 +228,23 @@ func runAgent(args []string) {
 	manager.SetAckStore(state)
 	client := transport.NewClient(identity, manager, scanner, deviceProfile, cfg, state, cfg.DisableScan, cfg.UploadHistory, logger)
 	fatalIf(logger, client.Run(ctx))
+}
+
+type codexIndexRefresher struct {
+	scanner codexscan.Scanner
+	state   *localstate.Store
+}
+
+func (r codexIndexRefresher) RefreshCodexIndex(ctx context.Context) error {
+	if r.state == nil {
+		return nil
+	}
+	result, err := r.scanner.Scan(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.state.SaveScanResult(ctx, result)
+	return err
 }
 
 func prompt(reader *bufio.Reader, label string) string {

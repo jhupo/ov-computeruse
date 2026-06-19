@@ -2,6 +2,7 @@ package codexcli
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -13,10 +14,15 @@ import (
 const runtimeName = protocol.RuntimeCodexCLI
 
 type Config struct {
-	BinPath string
-	Model   string
-	Profile string
-	State   *localstate.Store
+	BinPath        string
+	Model          string
+	Profile        string
+	State          *localstate.Store
+	IndexRefresher IndexRefresher
+}
+
+type IndexRefresher interface {
+	RefreshCodexIndex(context.Context) error
 }
 
 type Adapter struct {
@@ -58,7 +64,22 @@ func (a *Adapter) resolve(ctx context.Context, command protocol.Command) (locals
 	if strings.TrimSpace(command.ProjectID) == "" && strings.TrimSpace(command.SessionID) == "" {
 		return localstate.CommandContext{}, nil
 	}
+	resolved, err := a.cfg.State.ResolveCommandContext(ctx, command)
+	if err == nil || a.cfg.IndexRefresher == nil || !isMissingLocalIndex(err) {
+		return resolved, err
+	}
+	if refreshErr := a.cfg.IndexRefresher.RefreshCodexIndex(ctx); refreshErr != nil {
+		return resolved, errors.Join(err, refreshErr)
+	}
 	return a.cfg.State.ResolveCommandContext(ctx, command)
+}
+
+func isMissingLocalIndex(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "not indexed locally")
 }
 
 func (a *Adapter) emitRuntimeSession(ctx context.Context, command protocol.Command, resolved localstate.CommandContext, threadID string, sink agentruntime.Sink) error {
