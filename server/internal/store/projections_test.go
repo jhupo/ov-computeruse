@@ -118,7 +118,7 @@ func TestRuntimeTimelineSkipsNonRuntimeEvents(t *testing.T) {
 
 func TestRuntimeTimelineSessionQueryAcceptsSessionOrThreadID(t *testing.T) {
 	query := runtimeTimelineSessionQuery()
-	for _, want := range []string{"session_id=$2 OR thread_id=$2", "ORDER BY event_at ASC"} {
+	for _, want := range []string{"session_id=$2 OR thread_id=$2", "history AS", "FROM history_items hi", "LEFT JOIN LATERAL", "LIMIT 1", "NOT EXISTS (SELECT 1 FROM live)", "WHEN hi.kind='message' AND COALESCE(hi.role, '')='user' THEN 'user.message'", "ORDER BY event_at ASC"} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("runtime timeline session query missing %q:\n%s", want, query)
 		}
