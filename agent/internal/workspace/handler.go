@@ -46,7 +46,7 @@ func (h Handler) Handle(ctx context.Context, req protocol.WorkspaceRequest) prot
 	}
 	switch resp.Operation {
 	case "list":
-		entries, err := h.fs.List(ctx, target, req)
+		result, err := h.fs.List(ctx, target, req)
 		if err != nil {
 			resp.Status = "failed"
 			resp.Code = workspaceErrorCode(err, "workspace_list_failed")
@@ -54,9 +54,11 @@ func (h Handler) Handle(ctx context.Context, req protocol.WorkspaceRequest) prot
 			return resp
 		}
 		resp.Status = "ok"
-		resp.Entries = entries
+		resp.Entries = result.Entries
+		resp.Warnings = result.Warnings
+		resp.Partial = len(result.Warnings) > 0
 	case "search":
-		matches, err := h.fs.Search(ctx, target, req)
+		result, err := h.fs.Search(ctx, target, req)
 		if err != nil {
 			resp.Status = "failed"
 			resp.Code = workspaceErrorCode(err, "workspace_search_failed")
@@ -64,7 +66,9 @@ func (h Handler) Handle(ctx context.Context, req protocol.WorkspaceRequest) prot
 			return resp
 		}
 		resp.Status = "ok"
-		resp.Matches = matches
+		resp.Matches = result.Matches
+		resp.Warnings = result.Warnings
+		resp.Partial = len(result.Warnings) > 0
 	case "read":
 		file, err := h.fs.Read(target, req)
 		if err != nil {

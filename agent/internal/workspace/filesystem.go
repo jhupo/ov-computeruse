@@ -28,23 +28,46 @@ type Filesystem struct {
 	Policy Policy
 }
 
-func (fs Filesystem) List(ctx context.Context, target Target, req protocol.WorkspaceRequest) ([]protocol.WorkspaceEntry, error) {
+type ListResult struct {
+	Entries  []protocol.WorkspaceEntry
+	Warnings []string
+}
+
+type SearchResult struct {
+	Matches  []protocol.WorkspaceSearchMatch
+	Warnings []string
+}
+
+func (r *ListResult) addWarning(message string) {
+	if message != "" && len(r.Warnings) < 20 {
+		r.Warnings = append(r.Warnings, message)
+	}
+}
+
+func (r *SearchResult) addWarning(message string) {
+	if message != "" && len(r.Warnings) < 20 {
+		r.Warnings = append(r.Warnings, message)
+	}
+}
+
+func (fs Filesystem) List(ctx context.Context, target Target, req protocol.WorkspaceRequest) (ListResult, error) {
 	policy := fs.policy()
 	info, err := os.Stat(target.Path)
 	if err != nil {
-		return nil, err
+		return ListResult{}, err
 	}
 	if !info.IsDir() {
-		return nil, errors.New("path is not a directory")
+		return ListResult{}, errors.New("path is not a directory")
 	}
 	limit := clamp(req.Limit, defaultListLimit, maxListLimit)
 	depth := clamp(req.Depth, defaultListDepth, maxListDepth)
-	entries := make([]protocol.WorkspaceEntry, 0)
+	result := ListResult{Entries: make([]protocol.WorkspaceEntry, 0)}
 	err = filepath.WalkDir(target.Path, func(path string, entry os.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if walkErr != nil {
+			result.addWarning(relativeWarning(target.Root, path, walkErr))
 			return nil
 		}
 		if samePath(path, target.Path) {
@@ -79,6 +102,7 @@ func (fs Filesystem) List(ctx context.Context, target Target, req protocol.Works
 		}
 		info, err := entry.Info()
 		if err != nil {
+			result.addWarning(relativeWarning(target.Root, path, err))
 			return nil
 		}
 		rel, err := filepath.Rel(target.Root, path)
@@ -89,7 +113,7 @@ func (fs Filesystem) List(ctx context.Context, target Target, req protocol.Works
 		if entry.IsDir() {
 			kind = "directory"
 		}
-		entries = append(entries, protocol.WorkspaceEntry{
+		result.Entries = append(result.Entries, protocol.WorkspaceEntry{
 			Name:      name,
 			Path:      filepath.ToSlash(rel),
 			Kind:      kind,
@@ -97,44 +121,46 @@ func (fs Filesystem) List(ctx context.Context, target Target, req protocol.Works
 			ModTime:   info.ModTime().UTC(),
 			Sensitive: policy.Sensitive(path),
 		})
-		if len(entries) >= limit {
+		if len(result.Entries) >= limit {
 			return errLimitReached
 		}
 		return nil
 	})
 	if errors.Is(err, errLimitReached) {
 		err = nil
+		result.addWarning("workspace list limit reached")
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].Kind != entries[j].Kind {
-			return entries[i].Kind == "directory"
+	sort.Slice(result.Entries, func(i, j int) bool {
+		if result.Entries[i].Kind != result.Entries[j].Kind {
+			return result.Entries[i].Kind == "directory"
 		}
-		return strings.ToLower(entries[i].Path) < strings.ToLower(entries[j].Path)
+		return strings.ToLower(result.Entries[i].Path) < strings.ToLower(result.Entries[j].Path)
 	})
-	return entries, err
+	return result, err
 }
 
-func (fs Filesystem) Search(ctx context.Context, target Target, req protocol.WorkspaceRequest) ([]protocol.WorkspaceSearchMatch, error) {
+func (fs Filesystem) Search(ctx context.Context, target Target, req protocol.WorkspaceRequest) (SearchResult, error) {
 	policy := fs.policy()
 	query := strings.ToLower(strings.TrimSpace(req.Query))
 	if query == "" {
-		return nil, errors.New("query is required")
+		return SearchResult{}, errors.New("query is required")
 	}
 	info, err := os.Stat(target.Path)
 	if err != nil {
-		return nil, err
+		return SearchResult{}, err
 	}
 	if !info.IsDir() {
-		return nil, errors.New("path is not a directory")
+		return SearchResult{}, errors.New("path is not a directory")
 	}
 	limit := clamp(req.Limit, 100, maxListLimit)
 	depth := clamp(req.Depth, maxListDepth, maxListDepth)
-	matches := make([]protocol.WorkspaceSearchMatch, 0)
+	result := SearchResult{Matches: make([]protocol.WorkspaceSearchMatch, 0)}
 	err = filepath.WalkDir(target.Path, func(path string, entry os.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if walkErr != nil {
+			result.addWarning(relativeWarning(target.Root, path, walkErr))
 			return nil
 		}
 		if samePath(path, target.Path) {
@@ -174,6 +200,7 @@ func (fs Filesystem) Search(ctx context.Context, target Target, req protocol.Wor
 		rel = filepath.ToSlash(rel)
 		info, err := entry.Info()
 		if err != nil {
+			result.addWarning(relativeWarning(target.Root, path, err))
 			return nil
 		}
 		kind := "file"
@@ -191,7 +218,8 @@ func (fs Filesystem) Search(ctx context.Context, target Target, req protocol.Wor
 			Sensitive: policy.Sensitive(path),
 		}
 		if score == 0 && kind == "file" && !match.Sensitive {
-			line, preview, contentScore := fs.contentMatch(ctx, path, query, info.Size())
+			line, preview, contentScore, warning := fs.contentMatch(ctx, target.Root, path, query, info.Size())
+			result.addWarning(warning)
 			match.Line = line
 			match.Preview = preview
 			match.Score = contentScore
@@ -199,54 +227,58 @@ func (fs Filesystem) Search(ctx context.Context, target Target, req protocol.Wor
 		if match.Score == 0 {
 			return nil
 		}
-		matches = append(matches, match)
-		if len(matches) >= limit {
+		result.Matches = append(result.Matches, match)
+		if len(result.Matches) >= limit {
 			return errLimitReached
 		}
 		return nil
 	})
 	if errors.Is(err, errLimitReached) {
 		err = nil
+		result.addWarning("workspace search limit reached")
 	}
-	sort.Slice(matches, func(i, j int) bool {
-		if matches[i].Score != matches[j].Score {
-			return matches[i].Score > matches[j].Score
+	sort.Slice(result.Matches, func(i, j int) bool {
+		if result.Matches[i].Score != result.Matches[j].Score {
+			return result.Matches[i].Score > result.Matches[j].Score
 		}
-		if matches[i].Kind != matches[j].Kind {
-			return matches[i].Kind == "file"
+		if result.Matches[i].Kind != result.Matches[j].Kind {
+			return result.Matches[i].Kind == "file"
 		}
-		return strings.ToLower(matches[i].Path) < strings.ToLower(matches[j].Path)
+		return strings.ToLower(result.Matches[i].Path) < strings.ToLower(result.Matches[j].Path)
 	})
-	return matches, err
+	return result, err
 }
 
-func (fs Filesystem) contentMatch(ctx context.Context, path string, query string, size int64) (int, string, int) {
+func (fs Filesystem) contentMatch(ctx context.Context, root string, path string, query string, size int64) (int, string, int, string) {
 	if size <= 0 || size > searchContentBytes {
-		return 0, "", 0
+		return 0, "", 0, ""
 	}
 	if ctx.Err() != nil {
-		return 0, "", 0
+		return 0, "", 0, ""
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return 0, "", 0
+		return 0, "", 0, relativeWarning(root, path, err)
 	}
 	defer file.Close()
 	if ctx.Err() != nil {
-		return 0, "", 0
+		return 0, "", 0, ""
 	}
 	data, err := io.ReadAll(io.LimitReader(file, searchContentBytes+1))
 	if err != nil || int64(len(data)) > searchContentBytes || fs.policy().Binary(data) {
-		return 0, "", 0
+		if err != nil {
+			return 0, "", 0, relativeWarning(root, path, err)
+		}
+		return 0, "", 0, ""
 	}
 	lines := strings.Split(string(data), "\n")
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.Contains(strings.ToLower(trimmed), query) {
-			return i + 1, truncatePreview(trimmed, 180), 30
+			return i + 1, truncatePreview(trimmed, 180), 30, ""
 		}
 	}
-	return 0, "", 0
+	return 0, "", 0, ""
 }
 
 func (fs Filesystem) Read(target Target, req protocol.WorkspaceRequest) (protocol.WorkspaceFile, error) {
@@ -324,6 +356,18 @@ func truncatePreview(text string, max int) string {
 	}
 	runes := []rune(text)
 	return string(runes[:max])
+}
+
+func relativeWarning(root, path string, err error) string {
+	if err == nil {
+		return ""
+	}
+	rel, relErr := filepath.Rel(root, path)
+	if relErr != nil {
+		rel = filepath.Base(path)
+	}
+	rel = filepath.ToSlash(rel)
+	return rel + ": " + err.Error()
 }
 
 func (fs Filesystem) policy() Policy {

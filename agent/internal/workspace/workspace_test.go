@@ -182,3 +182,20 @@ func TestHandlerDoesNotEnumerateSensitiveFiles(t *testing.T) {
 		t.Fatalf("sensitive file was searchable: %+v", search.Matches)
 	}
 }
+
+func TestHandlerMarksLimitedWorkspaceResultsPartial(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a.go", "b.go", "c.go"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("package main\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := New(fakeState{projects: map[string]string{"project_1": root}})
+	resp := handler.Handle(context.Background(), protocol.WorkspaceRequest{RequestID: "req_1", Operation: "list", ProjectID: "project_1", Limit: 1})
+	if resp.Status != "ok" {
+		t.Fatalf("list status = %q", resp.Status)
+	}
+	if !resp.Partial || len(resp.Warnings) == 0 {
+		t.Fatalf("expected partial limited response, got partial=%v warnings=%v", resp.Partial, resp.Warnings)
+	}
+}

@@ -170,6 +170,8 @@ type WorkspaceResponse struct {
 	Status    string                 `json:"status"`
 	Code      string                 `json:"code,omitempty"`
 	Message   string                 `json:"message,omitempty"`
+	Partial   bool                   `json:"partial,omitempty"`
+	Warnings  []string               `json:"warnings,omitempty"`
 	Entries   []WorkspaceEntry       `json:"entries,omitempty"`
 	Matches   []WorkspaceSearchMatch `json:"matches,omitempty"`
 	File      *WorkspaceFile         `json:"file,omitempty"`
