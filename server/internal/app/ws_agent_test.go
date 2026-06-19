@@ -107,6 +107,48 @@ func TestDashAcceptsSubscribedSessionRunEventBroadcast(t *testing.T) {
 	}
 }
 
+func TestDashAcceptsSubscribedNativeSessionRunEventBroadcast(t *testing.T) {
+	dash := &DashConn{
+		Subscriptions: map[string]DashSubscription{
+			dashSessionSubscriptionKey("agent_1", "native_thread_1"): {AgentID: "agent_1", SessionID: "native_thread_1"},
+		},
+	}
+	event := protocol.RunEvent{
+		RunID: "run_1",
+		Seq:   1,
+		Kind:  "assistant.message.delta",
+		Payload: protocol.Raw(map[string]string{
+			"runtime":   protocol.RuntimeCodexCLI,
+			"thread_id": "native_thread_1",
+			"text":      "hello",
+		}),
+	}
+	data := dashEvent("run.event", &AgentConn{AgentID: "agent_1", DeviceID: "device_1"}, event)
+	if !dashAcceptsBroadcast(dash, data) {
+		t.Fatal("expected native-thread session subscription to accept run event")
+	}
+}
+
+func TestDashAdvancesRunSubscriptionCursorAfterBroadcast(t *testing.T) {
+	key := dashRunSubscriptionKey("agent_1", "run_1")
+	dash := &DashConn{
+		Subscriptions: map[string]DashSubscription{
+			key: {AgentID: "agent_1", RunID: "run_1", AfterSeq: 4},
+		},
+	}
+	event := protocol.RunEvent{RunID: "run_1", Seq: 5, Kind: "assistant.message.delta"}
+	data := dashEvent("run.event", &AgentConn{AgentID: "agent_1", DeviceID: "device_1"}, event)
+	if !dashAcceptsBroadcast(dash, data) {
+		t.Fatal("expected subscribed dash to accept new run event")
+	}
+	if got := dash.Subscriptions[key].AfterSeq; got != 5 {
+		t.Fatalf("after seq = %d, want 5", got)
+	}
+	if dashAcceptsBroadcast(dash, data) {
+		t.Fatal("expected advanced cursor to reject repeated run event")
+	}
+}
+
 func TestDashFiltersRuntimeTimelineUpdateBySessionSubscription(t *testing.T) {
 	dash := &DashConn{
 		Subscriptions: map[string]DashSubscription{
@@ -120,6 +162,61 @@ func TestDashFiltersRuntimeTimelineUpdateBySessionSubscription(t *testing.T) {
 	rejected := dashEvent("runtime.timeline.updated", &AgentConn{AgentID: "agent_1", DeviceID: "device_1"}, map[string]any{"session_id": "session_2"})
 	if dashAcceptsBroadcast(dash, rejected) {
 		t.Fatal("unexpected runtime timeline update for another session")
+	}
+}
+
+func TestDashFiltersRuntimeTimelineUpdateByNativeSession(t *testing.T) {
+	dash := &DashConn{
+		Subscriptions: map[string]DashSubscription{
+			dashSessionSubscriptionKey("agent_1", "native_thread_1"): {AgentID: "agent_1", SessionID: "native_thread_1"},
+		},
+	}
+	accepted := dashEvent("runtime.timeline.updated", &AgentConn{AgentID: "agent_1", DeviceID: "device_1"}, map[string]any{
+		"session_id":        "session_1",
+		"native_session_id": "native_thread_1",
+	})
+	if !dashAcceptsBroadcast(dash, accepted) {
+		t.Fatal("expected subscribed native session runtime timeline update")
+	}
+}
+
+func TestDashFiltersRuntimeSessionUpdateByNativeSession(t *testing.T) {
+	dash := &DashConn{
+		Subscriptions: map[string]DashSubscription{
+			dashSessionSubscriptionKey("agent_1", "native_thread_1"): {AgentID: "agent_1", SessionID: "native_thread_1"},
+		},
+	}
+	accepted := dashEvent("runtime.session.updated", &AgentConn{AgentID: "agent_1", DeviceID: "device_1"}, protocol.RuntimeSession{
+		Runtime:         protocol.RuntimeCodexCLI,
+		SessionID:       "session_1",
+		NativeSessionID: "native_thread_1",
+	})
+	if !dashAcceptsBroadcast(dash, accepted) {
+		t.Fatal("expected subscribed native session runtime session update")
+	}
+	rejected := dashEvent("runtime.session.updated", &AgentConn{AgentID: "agent_1", DeviceID: "device_1"}, protocol.RuntimeSession{
+		Runtime:         protocol.RuntimeCodexCLI,
+		SessionID:       "session_2",
+		NativeSessionID: "native_thread_2",
+	})
+	if dashAcceptsBroadcast(dash, rejected) {
+		t.Fatal("unexpected runtime session update for another native session")
+	}
+}
+
+func TestDashFiltersCommandAckByRunSubscription(t *testing.T) {
+	dash := &DashConn{
+		Subscriptions: map[string]DashSubscription{
+			dashRunSubscriptionKey("agent_1", "run_1"): {AgentID: "agent_1", RunID: "run_1"},
+		},
+	}
+	accepted := dashEvent("command.ack", &AgentConn{AgentID: "agent_1", DeviceID: "device_1"}, protocol.Ack{RunID: "run_1", Status: "ok"})
+	if !dashAcceptsBroadcast(dash, accepted) {
+		t.Fatal("expected subscribed run command ack")
+	}
+	rejected := dashEvent("command.ack", &AgentConn{AgentID: "agent_1", DeviceID: "device_1"}, protocol.Ack{RunID: "run_2", Status: "ok"})
+	if dashAcceptsBroadcast(dash, rejected) {
+		t.Fatal("unexpected command ack for another run")
 	}
 }
 

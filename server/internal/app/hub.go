@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -408,6 +409,10 @@ func dashAcceptsBroadcast(dash *DashConn, data []byte) bool {
 		return dashAcceptsRunEventBroadcast(dash, event.AgentID, event.Payload)
 	case "runtime.timeline.updated":
 		return dashAcceptsSessionUpdateBroadcast(dash, event.AgentID, event.Payload)
+	case "runtime.session.updated":
+		return dashAcceptsSessionUpdateBroadcast(dash, event.AgentID, event.Payload)
+	case "command.ack":
+		return dashAcceptsCommandAckBroadcast(dash, event.AgentID, event.Payload)
 	default:
 		return true
 	}
@@ -415,7 +420,7 @@ func dashAcceptsBroadcast(dash *DashConn, data []byte) bool {
 
 func dashAcceptsRunEventBroadcast(dash *DashConn, agentID string, payload map[string]any) bool {
 	runID, _ := payload["run_id"].(string)
-	sessionID, _ := payload["session_id"].(string)
+	sessionIDs := sessionIDsFromPayload(payload)
 	seq := uint64FromPayload(payload["seq"])
 	dash.mu.RLock()
 	subscriptions := make([]DashSubscription, 0, len(dash.Subscriptions))
@@ -428,9 +433,10 @@ func dashAcceptsRunEventBroadcast(dash *DashConn, agentID string, payload map[st
 			continue
 		}
 		if subscription.RunID != "" && subscription.RunID == runID && seq > subscription.AfterSeq {
+			dashAdvanceRunSubscription(dash, subscription, seq)
 			return true
 		}
-		if subscription.SessionID != "" && subscription.SessionID == sessionID {
+		if subscription.SessionID != "" && stringSetContains(sessionIDs, subscription.SessionID) {
 			return true
 		}
 	}
@@ -438,8 +444,8 @@ func dashAcceptsRunEventBroadcast(dash *DashConn, agentID string, payload map[st
 }
 
 func dashAcceptsSessionUpdateBroadcast(dash *DashConn, agentID string, payload map[string]any) bool {
-	sessionID, _ := payload["session_id"].(string)
-	if sessionID == "" {
+	sessionIDs := sessionIDsFromPayload(payload)
+	if len(sessionIDs) == 0 {
 		return true
 	}
 	dash.mu.RLock()
@@ -449,11 +455,73 @@ func dashAcceptsSessionUpdateBroadcast(dash *DashConn, agentID string, payload m
 	}
 	dash.mu.RUnlock()
 	for _, subscription := range subscriptions {
-		if subscription.AgentID == agentID && subscription.SessionID == sessionID {
+		if subscription.AgentID == agentID && stringSetContains(sessionIDs, subscription.SessionID) {
 			return true
 		}
 	}
 	return false
+}
+
+func dashAcceptsCommandAckBroadcast(dash *DashConn, agentID string, payload map[string]any) bool {
+	runID, _ := payload["run_id"].(string)
+	if strings.TrimSpace(runID) == "" {
+		return false
+	}
+	dash.mu.RLock()
+	subscriptions := make([]DashSubscription, 0, len(dash.Subscriptions))
+	for _, subscription := range dash.Subscriptions {
+		subscriptions = append(subscriptions, subscription)
+	}
+	dash.mu.RUnlock()
+	for _, subscription := range subscriptions {
+		if subscription.AgentID == agentID && subscription.RunID == runID {
+			return true
+		}
+	}
+	return false
+}
+
+func dashAdvanceRunSubscription(dash *DashConn, subscription DashSubscription, seq uint64) {
+	if dash == nil || subscription.RunID == "" || seq == 0 {
+		return
+	}
+	key := dashRunSubscriptionKey(subscription.AgentID, subscription.RunID)
+	dash.mu.Lock()
+	current := dash.Subscriptions[key]
+	if current.AgentID == subscription.AgentID && current.RunID == subscription.RunID && seq > current.AfterSeq {
+		current.AfterSeq = seq
+		dash.Subscriptions[key] = current
+	}
+	dash.mu.Unlock()
+}
+
+func sessionIDsFromPayload(payload map[string]any) map[string]struct{} {
+	out := map[string]struct{}{}
+	addSessionIDsFromMap(out, payload)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func addSessionIDsFromMap(out map[string]struct{}, payload map[string]any) {
+	for _, key := range []string{"session_id", "native_session_id", "thread_id"} {
+		if value, _ := payload[key].(string); strings.TrimSpace(value) != "" {
+			out[strings.TrimSpace(value)] = struct{}{}
+		}
+	}
+	nested, _ := payload["payload"].(map[string]any)
+	if nested != nil {
+		addSessionIDsFromMap(out, nested)
+	}
+}
+
+func stringSetContains(values map[string]struct{}, value string) bool {
+	if len(values) == 0 || strings.TrimSpace(value) == "" {
+		return false
+	}
+	_, ok := values[strings.TrimSpace(value)]
+	return ok
 }
 
 func uint64FromPayload(value any) uint64 {

@@ -177,6 +177,7 @@ func TestReadStdoutMapsCodexExecEvents(t *testing.T) {
 		t.Fatalf("session event target = project %q session %q, want project %q session %q", sink.events[0].ProjectID, sink.events[0].SessionID, runtimeSession.ProjectID, runtimeSession.SessionID)
 	}
 	threadID := "019edb96-e4c5-7503-9d11-f3e7c4b2c704"
+	assertRuntimeEventTargets(t, sink.events, "project_1", threadID)
 	assertPayloadString(t, sink.events[1].Payload, "thread_id", threadID)
 	turnID := payloadStringForTest(t, sink.events[1].Payload, "turn_id")
 	if turnID == "" {
@@ -187,6 +188,25 @@ func TestReadStdoutMapsCodexExecEvents(t *testing.T) {
 	assertPayloadString(t, sink.events[2].Payload, "item_id", "item_0")
 	assertPayloadString(t, sink.events[2].Payload, "item_type", "agent_message")
 	assertPayloadString(t, sink.events[3].Payload, "turn_id", turnID)
+}
+
+func TestReadStdoutKeepsResolvedSessionTargetForResume(t *testing.T) {
+	adapter := New(Config{})
+	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1", SessionID: "session_1"}
+	resolved := localstate.CommandContext{
+		Project: localstate.ProjectRecord{ID: "project_1"},
+		Session: localstate.SessionRecord{ID: "session_1", ProjectID: "project_1"},
+	}
+	input := strings.Join([]string{
+		`{"type":"thread.started","thread_id":"native_thread_1"}`,
+		`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"probe-ok"}}`,
+	}, "\n")
+	sink := &captureSink{}
+	if err := adapter.readStdout(context.Background(), strings.NewReader(input), command, resolved, sink, &completionSignal{}); err != nil && err != io.EOF {
+		t.Fatalf("read stdout: %v", err)
+	}
+	assertRuntimeEventTargets(t, sink.events, "project_1", "session_1")
+	assertPayloadString(t, sink.events[1].Payload, "thread_id", "native_thread_1")
 }
 
 func TestReadStdoutMapsCodexToolItems(t *testing.T) {
@@ -417,6 +437,15 @@ func assertPayloadString(t *testing.T, raw json.RawMessage, key, want string) {
 	t.Helper()
 	if got := payloadStringForTest(t, raw, key); got != want {
 		t.Fatalf("payload[%s] = %q, want %q; payload=%s", key, got, want, raw)
+	}
+}
+
+func assertRuntimeEventTargets(t *testing.T, events []protocol.RunEvent, projectID, sessionID string) {
+	t.Helper()
+	for _, event := range events {
+		if event.ProjectID != projectID || event.SessionID != sessionID {
+			t.Fatalf("event %s target = project %q session %q, want %s/%s", event.Kind, event.ProjectID, event.SessionID, projectID, sessionID)
+		}
 	}
 }
 
