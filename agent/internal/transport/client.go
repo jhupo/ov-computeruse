@@ -25,6 +25,8 @@ import (
 )
 
 const workspaceRequestTimeout = 15 * time.Second
+const runHistorySettleTimeout = 10 * time.Second
+const runHistorySettleInterval = 500 * time.Millisecond
 
 type Client struct {
 	identity      securestore.Identity
@@ -196,23 +198,12 @@ func (c *Client) syncRunHistory(ctx context.Context, trigger protocol.RunEvent) 
 		"session_id":        target.SessionID,
 		"native_session_id": target.NativeSessionID,
 	})
-	result, err := c.scanner.Scan(ctx)
+	result, session, err := c.scanRunHistorySession(ctx, target)
 	if err != nil {
-		c.emitIndexRefreshStatus(context.Background(), trigger, "history.sync.failed", map[string]any{"error": err.Error()})
-		return
-	}
-	if c.state != nil {
-		if _, err := c.state.SaveScanResult(ctx, result); err != nil {
-			c.emitIndexRefreshStatus(context.Background(), trigger, "history.sync.failed", map[string]any{"error": err.Error()})
-			return
-		}
-	}
-	session, ok := findHistorySession(result, target)
-	if !ok {
 		c.emitIndexRefreshStatus(context.Background(), trigger, "history.sync.failed", map[string]any{
 			"session_id":        target.SessionID,
 			"native_session_id": target.NativeSessionID,
-			"error":             "codex session file not found",
+			"error":             err.Error(),
 		})
 		return
 	}
@@ -238,6 +229,46 @@ func (c *Client) syncRunHistory(ctx context.Context, trigger protocol.RunEvent) 
 		"native_session_id": target.NativeSessionID,
 		"cursor":            historyCursor(session),
 	})
+}
+
+func (c *Client) scanRunHistorySession(ctx context.Context, target protocol.RuntimeSession) (codexscan.Result, codexscan.Session, error) {
+	deadline := time.Now().Add(runHistorySettleTimeout)
+	var lastResult codexscan.Result
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		result, err := c.scanner.Scan(ctx)
+		if err != nil {
+			return codexscan.Result{}, codexscan.Session{}, err
+		}
+		lastResult = result
+		if c.state != nil {
+			if _, err := c.state.SaveScanResult(ctx, result); err != nil {
+				return codexscan.Result{}, codexscan.Session{}, err
+			}
+		}
+		if session, ok := findHistorySession(result, target); ok {
+			return result, session, nil
+		}
+		lastErr = errors.New("codex session file not found")
+		if attempt > 0 && time.Now().After(deadline) {
+			break
+		}
+		wait := runHistorySettleInterval
+		if remaining := time.Until(deadline); remaining < wait {
+			wait = remaining
+		}
+		if wait <= 0 {
+			break
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return codexscan.Result{}, codexscan.Session{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return lastResult, codexscan.Session{}, lastErr
 }
 
 func (c *Client) runHistoryTarget(ctx context.Context, trigger protocol.RunEvent) (protocol.RuntimeSession, error) {

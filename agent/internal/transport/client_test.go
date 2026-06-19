@@ -148,6 +148,40 @@ func TestFindHistorySessionMatchesNativeRuntimeSession(t *testing.T) {
 	}
 }
 
+func TestScanRunHistorySessionRetriesUntilHistoryAppears(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	client := newClient(
+		securestore.Identity{AgentID: "agent_1", DeviceID: "device_1", AgentSecret: "secret", ServerURL: "https://server.test"},
+		nil,
+		&sequenceScanner{results: []codexscan.Result{
+			{},
+			{
+				Sessions: []codexscan.Session{{ID: "history_session"}},
+				RuntimeSessions: []codexscan.RuntimeSession{{
+					Runtime:         protocol.RuntimeCodexCLI,
+					SessionID:       "history_session",
+					NativeSessionID: "native_thread",
+				}},
+			},
+		}},
+		protocolDevice(),
+		defaultConfig(),
+		nil,
+		false,
+		false,
+		nil,
+	)
+	_, session, err := client.scanRunHistorySession(ctx, protocol.RuntimeSession{Runtime: protocol.RuntimeCodexCLI, NativeSessionID: "native_thread"})
+	if err != nil {
+		t.Fatalf("scan history session: %v", err)
+	}
+	if session.ID != "history_session" {
+		t.Fatalf("session id = %q, want history_session", session.ID)
+	}
+}
+
 func TestServeStartsReadLoopBeforeIndexUploadCompletes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -609,6 +643,38 @@ func (s staticScanner) Scan(context.Context) (codexscan.Result, error) {
 }
 
 func (staticScanner) ForEachHistoryChunk(context.Context, codexscan.Session, int, func(codexscan.HistoryChunk) error) error {
+	return nil
+}
+
+type sequenceScanner struct {
+	mu      sync.Mutex
+	results []codexscan.Result
+	index   int
+}
+
+func (*sequenceScanner) Credential() (codexscan.Credential, error) {
+	return codexscan.Credential{}, errors.New("not configured")
+}
+
+func (*sequenceScanner) DiscoverRoots() []codexscan.Root {
+	return nil
+}
+
+func (s *sequenceScanner) Scan(context.Context) (codexscan.Result, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.results) == 0 {
+		return codexscan.Result{}, nil
+	}
+	if s.index >= len(s.results) {
+		return s.results[len(s.results)-1], nil
+	}
+	result := s.results[s.index]
+	s.index++
+	return result, nil
+}
+
+func (*sequenceScanner) ForEachHistoryChunk(context.Context, codexscan.Session, int, func(codexscan.HistoryChunk) error) error {
 	return nil
 }
 
