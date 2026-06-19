@@ -236,7 +236,7 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 			result, err := s.store.SaveRunEvent(ctx, agent.AgentID, agent.DeviceID, event)
 			if err == nil {
 				if event.RunID != "" && event.Seq > 0 {
-					s.sendAgent(agent, "run.event.ack", protocol.Ack{EventID: event.EventID, RunID: event.RunID, Status: result.AckStatus(), AckSeq: event.Seq, At: time.Now().UTC()})
+					s.sendAgent(agent, "run.event.ack", runEventAck(event, result.AckStatus(), ""))
 				}
 				if result.ShouldBroadcast() {
 					if runtimeSession, ok := runtimeSessionFromRunEvent(event); ok {
@@ -244,6 +244,9 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 					}
 					s.hub.BroadcastDash(agent.UserID, dashEvent("run.event", agent, event))
 				}
+			} else if event.RunID != "" && event.Seq > 0 {
+				s.log.WarnContext(ctx, "run event rejected", "agent_id", agent.AgentID, "run_id", event.RunID, "seq", event.Seq, "kind", event.Kind, "error", err)
+				s.sendAgent(agent, "run.event.ack", runEventAck(event, "failed", err.Error()))
 			}
 		}
 	case "ack":
@@ -258,6 +261,10 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 
 func skipAgentRunEvent(event protocol.RunEvent) bool {
 	return protocol.IsUsageKind(event.Kind)
+}
+
+func runEventAck(event protocol.RunEvent, status, message string) protocol.Ack {
+	return protocol.Ack{EventID: event.EventID, RunID: event.RunID, Status: status, Message: message, AckSeq: event.Seq, At: time.Now().UTC()}
 }
 
 func countAcceptedHistoryItems(batch protocol.HistoryItems) int {

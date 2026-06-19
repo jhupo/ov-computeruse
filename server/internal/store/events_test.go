@@ -241,3 +241,12 @@ func TestPrepareCommandRetryIncludesStopFailed(t *testing.T) {
 		}
 	}
 }
+
+func TestCommandAckCanAdvanceRunToAccepted(t *testing.T) {
+	query := markRunAcceptedFromCommandAckSQL
+	for _, want := range []string{"status='accepted'", "command_id=$3", "'queued'", "'stale'"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("accepted ack SQL missing %q: %s", want, query)
+		}
+	}
+}

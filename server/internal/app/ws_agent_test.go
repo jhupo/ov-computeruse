@@ -93,3 +93,17 @@ func TestDashEventWrapsRunEventPayloadForSubscriptionFilter(t *testing.T) {
 		t.Fatalf("wire event = %+v", wire)
 	}
 }
+
+func TestRunEventAckCarriesFailureDetails(t *testing.T) {
+	event := protocol.RunEvent{EventID: "evt_1", RunID: "run_1", Seq: 42, Kind: "run.done"}
+	ack := runEventAck(event, "failed", "ownership mismatch")
+	if ack.EventID != "evt_1" || ack.RunID != "run_1" || ack.AckSeq != 42 {
+		t.Fatalf("ack target = %+v", ack)
+	}
+	if ack.Status != "failed" || ack.Message != "ownership mismatch" {
+		t.Fatalf("ack status/message = %q/%q", ack.Status, ack.Message)
+	}
+	if ack.At.IsZero() {
+		t.Fatal("ack time should be set")
+	}
+}

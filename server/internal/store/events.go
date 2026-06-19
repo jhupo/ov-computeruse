@@ -1064,6 +1064,8 @@ func (s *Store) MarkCommandAck(ctx context.Context, agentID string, ack protocol
 		if err := s.releaseFailedApprovalDecisionCommand(ctx, agentID, ack.CommandID, ack.Message); err != nil {
 			return err
 		}
+	} else if err := s.markRunAcceptedFromCommandAck(ctx, agentID, command, ack); err != nil {
+		return err
 	}
 	if err := s.SaveCommandAttempt(ctx, agentID, ack.CommandID, "ack", status, ack.Message, protocol.Raw(ack)); err != nil {
 		return err
@@ -1079,6 +1081,27 @@ func (s *Store) MarkCommandAck(ctx context.Context, agentID string, ack protocol
 	}
 	return nil
 }
+
+func (s *Store) markRunAcceptedFromCommandAck(ctx context.Context, agentID string, command CommandRecord, ack protocol.Ack) error {
+	if !storeCommandCreatesRun(command.Kind) {
+		return nil
+	}
+	runID := storeFirstNonEmpty(ack.RunID, command.RunID)
+	if runID == "" {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, markRunAcceptedFromCommandAckSQL, agentID, runID, command.ID)
+	return err
+}
+
+const markRunAcceptedFromCommandAckSQL = `UPDATE runs
+		SET status='accepted',
+			status_reason='accepted by agent',
+			finished_at=NULL
+		WHERE agent_id=$1
+			AND id=$2
+			AND command_id=$3
+			AND status IN ('queued','stale')`
 
 func (s *Store) markStopCommandAck(ctx context.Context, agentID string, command CommandRecord, ack protocol.Ack) error {
 	status := commandStatusFromAck(ack)
