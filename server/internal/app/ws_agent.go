@@ -210,6 +210,13 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 	case "workspace.response":
 		response, err := protocol.Decode[protocol.WorkspaceResponse](env.Data)
 		if err == nil {
+			if response.AgentID == "" {
+				response.AgentID = agent.AgentID
+			}
+			if response.AgentID != agent.AgentID {
+				s.log.WarnContext(ctx, "workspace response agent mismatch", "connection_agent_id", agent.AgentID, "response_agent_id", response.AgentID, "request_id", response.RequestID)
+				return
+			}
 			s.workspace.Resolve(response)
 		}
 	case "workspace.git.updated":

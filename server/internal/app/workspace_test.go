@@ -41,3 +41,29 @@ func TestValidateWorkspaceCapabilityRequiresGitFeatures(t *testing.T) {
 		t.Fatal("expected git_status to require git capability")
 	}
 }
+
+func TestWorkspaceResponseMatchesPendingTarget(t *testing.T) {
+	pending := workspacePending{agentID: "agent_1", projectID: "project_1", operation: "read"}
+	resp := protocol.WorkspaceResponse{RequestID: "req_1", AgentID: "agent_1", ProjectID: "project_1", Operation: "read"}
+	if !workspaceResponseMatchesPending(resp, pending) {
+		t.Fatal("expected response to match pending workspace request")
+	}
+
+	for _, resp := range []protocol.WorkspaceResponse{
+		{RequestID: "req_1", AgentID: "agent_2", ProjectID: "project_1", Operation: "read"},
+		{RequestID: "req_1", AgentID: "agent_1", ProjectID: "project_2", Operation: "read"},
+		{RequestID: "req_1", AgentID: "agent_1", ProjectID: "project_1", Operation: "search"},
+	} {
+		if workspaceResponseMatchesPending(resp, pending) {
+			t.Fatalf("expected mismatched response to be rejected: %+v", resp)
+		}
+	}
+}
+
+func TestValidateWorkspaceResponseRejectsTargetMismatch(t *testing.T) {
+	req := protocol.WorkspaceRequest{RequestID: "req_1", ProjectID: "project_1", Operation: "read"}
+	resp := protocol.WorkspaceResponse{RequestID: "req_1", AgentID: "agent_1", ProjectID: "project_2", Operation: "read"}
+	if err := validateWorkspaceResponse("agent_1", req, resp); err == nil {
+		t.Fatal("expected project mismatch to be rejected")
+	}
+}

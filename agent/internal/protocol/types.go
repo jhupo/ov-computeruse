@@ -163,6 +163,7 @@ type WorkspaceRequest struct {
 
 type WorkspaceResponse struct {
 	RequestID string                 `json:"request_id"`
+	AgentID   string                 `json:"agent_id,omitempty"`
 	Operation string                 `json:"operation"`
 	ProjectID string                 `json:"project_id,omitempty"`
 	Path      string                 `json:"path,omitempty"`

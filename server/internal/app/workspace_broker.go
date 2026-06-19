@@ -23,7 +23,14 @@ type WorkspaceBroker struct {
 	hub     *Hub
 	log     *slog.Logger
 	mu      sync.Mutex
-	pending map[string]chan protocol.WorkspaceResponse
+	pending map[string]workspacePending
+}
+
+type workspacePending struct {
+	agentID   string
+	projectID string
+	operation string
+	ch        chan protocol.WorkspaceResponse
 }
 
 type WorkspaceResponseEnvelope struct {
@@ -35,7 +42,7 @@ func NewWorkspaceBroker(redisClient *redis.Client, hub *Hub, logger *slog.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return WorkspaceBroker{redis: redisClient, hub: hub, log: logger, pending: map[string]chan protocol.WorkspaceResponse{}}
+	return WorkspaceBroker{redis: redisClient, hub: hub, log: logger, pending: map[string]workspacePending{}}
 }
 
 func (b *WorkspaceBroker) Run(ctx context.Context) {
@@ -64,7 +71,7 @@ func (b *WorkspaceBroker) Send(ctx context.Context, identity store.AgentIdentity
 	if !b.hub.AgentMayBeOnline(ctx, identity.AgentID) {
 		return protocol.WorkspaceResponse{}, http.StatusConflict, errors.New("agent is offline")
 	}
-	waitCh := b.register(req.RequestID)
+	waitCh := b.register(identity.AgentID, req)
 	defer b.unregister(req.RequestID)
 	if status := b.hub.DispatchEnvelope(ctx, identity.AgentID, identity.UserID, message); !workspaceDispatchAccepted(status) {
 		return protocol.WorkspaceResponse{}, http.StatusConflict, errors.New("agent is not available")
@@ -77,8 +84,8 @@ func (b *WorkspaceBroker) Send(ctx context.Context, identity store.AgentIdentity
 	case <-timer.C:
 		return protocol.WorkspaceResponse{}, http.StatusGatewayTimeout, errors.New("workspace request timed out")
 	case resp := <-waitCh:
-		if resp.RequestID != req.RequestID {
-			return protocol.WorkspaceResponse{}, http.StatusBadGateway, errors.New("workspace response request_id mismatch")
+		if err := validateWorkspaceResponse(identity.AgentID, req, resp); err != nil {
+			return protocol.WorkspaceResponse{}, http.StatusBadGateway, err
 		}
 		return resp, http.StatusOK, nil
 	}
@@ -103,10 +110,15 @@ func (b *WorkspaceBroker) Resolve(resp protocol.WorkspaceResponse) {
 	b.publish(resp)
 }
 
-func (b *WorkspaceBroker) register(requestID string) chan protocol.WorkspaceResponse {
+func (b *WorkspaceBroker) register(agentID string, req protocol.WorkspaceRequest) chan protocol.WorkspaceResponse {
 	ch := make(chan protocol.WorkspaceResponse, 1)
 	b.mu.Lock()
-	b.pending[requestID] = ch
+	b.pending[req.RequestID] = workspacePending{
+		agentID:   strings.TrimSpace(agentID),
+		projectID: strings.TrimSpace(req.ProjectID),
+		operation: strings.TrimSpace(req.Operation),
+		ch:        ch,
+	}
 	b.mu.Unlock()
 	return ch
 }
@@ -119,16 +131,41 @@ func (b *WorkspaceBroker) unregister(requestID string) {
 
 func (b *WorkspaceBroker) resolveLocal(resp protocol.WorkspaceResponse) bool {
 	b.mu.Lock()
-	ch := b.pending[resp.RequestID]
+	pending, ok := b.pending[resp.RequestID]
 	b.mu.Unlock()
-	if ch == nil {
+	if !ok {
+		return false
+	}
+	if !workspaceResponseMatchesPending(resp, pending) {
+		b.log.Warn("workspace response rejected", "request_id", resp.RequestID, "agent_id", resp.AgentID, "project_id", resp.ProjectID, "operation", resp.Operation)
 		return false
 	}
 	select {
-	case ch <- resp:
+	case pending.ch <- resp:
 	default:
 	}
 	return true
+}
+
+func validateWorkspaceResponse(agentID string, req protocol.WorkspaceRequest, resp protocol.WorkspaceResponse) error {
+	if strings.TrimSpace(resp.RequestID) != strings.TrimSpace(req.RequestID) {
+		return errors.New("workspace response request_id mismatch")
+	}
+	expected := workspacePending{agentID: strings.TrimSpace(agentID), projectID: strings.TrimSpace(req.ProjectID), operation: strings.TrimSpace(req.Operation)}
+	if !workspaceResponseMatchesPending(resp, expected) {
+		return errors.New("workspace response target mismatch")
+	}
+	return nil
+}
+
+func workspaceResponseMatchesPending(resp protocol.WorkspaceResponse, pending workspacePending) bool {
+	if strings.TrimSpace(resp.AgentID) != strings.TrimSpace(pending.agentID) {
+		return false
+	}
+	if strings.TrimSpace(resp.ProjectID) != strings.TrimSpace(pending.projectID) {
+		return false
+	}
+	return strings.TrimSpace(resp.Operation) == strings.TrimSpace(pending.operation)
 }
 
 func (b *WorkspaceBroker) publish(resp protocol.WorkspaceResponse) {

@@ -1083,7 +1083,9 @@ func (c *Client) readLoop(ctx context.Context, conn Conn) error {
 				_ = c.send(ctx, "workspace.response", protocol.WorkspaceResponse{RequestID: "", Status: "rejected", Message: err.Error(), At: time.Now().UTC()})
 				continue
 			}
-			_ = c.send(ctx, "workspace.response", c.workspace.Handle(ctx, request))
+			response := c.workspace.Handle(ctx, request)
+			response.AgentID = c.identity.AgentID
+			_ = c.send(ctx, "workspace.response", response)
 		case "history.chunk.ack":
 			if c.state == nil {
 				continue
