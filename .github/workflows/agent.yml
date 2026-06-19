@@ -48,11 +48,21 @@ jobs:
 
       - name: Resolve server injection
         env:
-          OV_COMPUTERUSE_SERVER_URL: ${{ vars.OV_COMPUTERUSE_SERVER_URL }}
-          OV_COMPUTERUSE_TOKEN: ${{ vars.OV_COMPUTERUSE_TOKEN }}
+          OV_COMPUTERUSE_SERVER_URL_VAR: ${{ vars.OV_COMPUTERUSE_SERVER_URL }}
+          OV_COMPUTERUSE_TOKEN_VAR: ${{ vars.OV_COMPUTERUSE_TOKEN }}
+          OV_COMPUTERUSE_SERVER_URL_SECRET: ${{ secrets.OV_COMPUTERUSE_SERVER_URL }}
+          OV_COMPUTERUSE_TOKEN_SECRET: ${{ secrets.OV_COMPUTERUSE_TOKEN }}
         run: |
-          test -n "$OV_COMPUTERUSE_SERVER_URL"
-          test -n "$OV_COMPUTERUSE_TOKEN"
+          OV_COMPUTERUSE_SERVER_URL="${OV_COMPUTERUSE_SERVER_URL_VAR:-$OV_COMPUTERUSE_SERVER_URL_SECRET}"
+          OV_COMPUTERUSE_TOKEN="${OV_COMPUTERUSE_TOKEN_VAR:-$OV_COMPUTERUSE_TOKEN_SECRET}"
+          if [ -z "$OV_COMPUTERUSE_SERVER_URL" ]; then
+            echo "::error::OV_COMPUTERUSE_SERVER_URL is required in GitHub Actions variables or secrets"
+            exit 1
+          fi
+          if [ -z "$OV_COMPUTERUSE_TOKEN" ]; then
+            echo "::error::OV_COMPUTERUSE_TOKEN is required in GitHub Actions variables or secrets"
+            exit 1
+          fi
           echo "OV_SERVER_URL=$OV_COMPUTERUSE_SERVER_URL" >> "$GITHUB_ENV"
           echo "OV_COMPUTERUSE_TOKEN=$OV_COMPUTERUSE_TOKEN" >> "$GITHUB_ENV"
 
