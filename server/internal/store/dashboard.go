@@ -288,33 +288,7 @@ func (s *Store) ListSessions(ctx context.Context, agentID, projectID string, lim
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	query := `WITH codex AS (
-			SELECT cs.agent_id, cs.id, COALESCE(cs.id_source, '') AS id_source, COALESCE(cs.project_id, '') AS project_id, COALESCE(cs.title, '') AS title, COALESCE(cs.path, '') AS path, COALESCE(cs.cwd, '') AS cwd, cs.updated_at, COALESCE(cs.size_bytes, 0) AS size_bytes, COALESCE(cs.content_sha256, '') AS content_sha256, COUNT(hi.item_index) AS message_count, MAX(hi.item_at) AS last_message_at
-			FROM codex_sessions cs
-			LEFT JOIN history_items hi ON hi.agent_id = cs.agent_id AND hi.session_id = cs.id
-			WHERE cs.agent_id=$1 AND cs.deleted_at IS NULL`
-	args := []any{agentID}
-	if projectID != "" {
-		query += ` AND cs.project_id=$2`
-		args = append(args, projectID)
-	}
-	query += ` GROUP BY cs.agent_id, cs.id, cs.id_source, cs.project_id, cs.title, cs.path, cs.cwd, cs.updated_at, cs.size_bytes, cs.content_sha256
-		), runtime_only AS (
-			SELECT rs.agent_id, rs.session_id AS id, 'runtime_session' AS id_source, COALESCE(rs.project_id, '') AS project_id, COALESCE(NULLIF(rs.session_id, ''), NULLIF(rs.native_session_id, ''), rs.id) AS title, '' AS path, '' AS cwd, rs.updated_at, 0::BIGINT AS size_bytes, '' AS content_sha256, 0::BIGINT AS message_count, NULL::TIMESTAMPTZ AS last_message_at
-			FROM runtime_sessions rs
-			WHERE rs.agent_id=$1 AND rs.session_id IS NOT NULL AND rs.session_id <> ''
-				AND NOT EXISTS (SELECT 1 FROM codex_sessions cs WHERE cs.agent_id=rs.agent_id AND cs.id=rs.session_id AND cs.deleted_at IS NULL)`
-	if projectID != "" {
-		query += ` AND rs.project_id=$2`
-	}
-	query += `)
-		SELECT agent_id, id, id_source, project_id, title, path, cwd, updated_at, size_bytes, content_sha256, message_count, last_message_at
-		FROM codex
-		UNION ALL
-		SELECT agent_id, id, id_source, project_id, title, path, cwd, updated_at, size_bytes, content_sha256, message_count, last_message_at
-		FROM runtime_only
-		ORDER BY COALESCE(updated_at, last_message_at, now()) DESC LIMIT $` + strconv.Itoa(len(args)+1)
-	args = append(args, limit)
+	query, args := listSessionsQuery(agentID, projectID, limit)
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -337,6 +311,55 @@ func (s *Store) ListSessions(ctx context.Context, agentID, projectID string, lim
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func listSessionsQuery(agentID, projectID string, limit int) (string, []any) {
+	query := `WITH codex AS (
+			SELECT cs.agent_id, cs.id, COALESCE(cs.id_source, '') AS id_source, COALESCE(cs.project_id, '') AS project_id, COALESCE(cs.title, '') AS title, COALESCE(cs.path, '') AS path, COALESCE(cs.cwd, '') AS cwd, cs.updated_at, COALESCE(cs.size_bytes, 0) AS size_bytes, COALESCE(cs.content_sha256, '') AS content_sha256, COUNT(hi.item_index) AS message_count, MAX(hi.item_at) AS last_message_at
+			FROM codex_sessions cs
+			LEFT JOIN history_items hi ON hi.agent_id = cs.agent_id AND hi.session_id = cs.id
+			WHERE cs.agent_id=$1 AND cs.deleted_at IS NULL`
+	args := []any{agentID}
+	if projectID != "" {
+		query += ` AND cs.project_id=$2`
+		args = append(args, projectID)
+	}
+	query += ` GROUP BY cs.agent_id, cs.id, cs.id_source, cs.project_id, cs.title, cs.path, cs.cwd, cs.updated_at, cs.size_bytes, cs.content_sha256
+		), runtime_only AS (
+			SELECT rs.agent_id, rs.session_id AS id, 'runtime_session' AS id_source, COALESCE(rs.project_id, '') AS project_id, COALESCE(NULLIF(rs.session_id, ''), NULLIF(rs.native_session_id, ''), rs.id) AS title, '' AS path, '' AS cwd, rs.updated_at, 0::BIGINT AS size_bytes, '' AS content_sha256, 0::BIGINT AS message_count, NULL::TIMESTAMPTZ AS last_message_at
+			FROM runtime_sessions rs
+			WHERE rs.agent_id=$1 AND rs.session_id IS NOT NULL AND rs.session_id <> ''
+				AND NOT EXISTS (SELECT 1 FROM codex_sessions cs WHERE cs.agent_id=rs.agent_id AND cs.id=rs.session_id AND cs.deleted_at IS NULL)`
+	if projectID != "" {
+		query += ` AND rs.project_id=$2`
+	}
+	query += `)`
+	if projectID == "" {
+		query += `, history_only AS (
+			SELECT hi.agent_id, hi.session_id AS id, 'history_items' AS id_source, '' AS project_id, hi.session_id AS title, '' AS path, '' AS cwd, MAX(hi.item_at) AS updated_at, 0::BIGINT AS size_bytes, '' AS content_sha256, COUNT(hi.item_index) AS message_count, MAX(hi.item_at) AS last_message_at
+			FROM history_items hi
+			WHERE hi.agent_id=$1
+				AND NOT EXISTS (SELECT 1 FROM codex_sessions cs WHERE cs.agent_id=hi.agent_id AND cs.id=hi.session_id AND cs.deleted_at IS NULL)
+				AND NOT EXISTS (SELECT 1 FROM runtime_sessions rs WHERE rs.agent_id=hi.agent_id AND rs.session_id=hi.session_id AND rs.session_id IS NOT NULL AND rs.session_id <> '')
+			GROUP BY hi.agent_id, hi.session_id
+		)`
+	}
+	query += `
+		SELECT agent_id, id, id_source, project_id, title, path, cwd, updated_at, size_bytes, content_sha256, message_count, last_message_at
+		FROM codex
+		UNION ALL
+		SELECT agent_id, id, id_source, project_id, title, path, cwd, updated_at, size_bytes, content_sha256, message_count, last_message_at
+		FROM runtime_only
+		`
+	if projectID == "" {
+		query += `UNION ALL
+		SELECT agent_id, id, id_source, project_id, title, path, cwd, updated_at, size_bytes, content_sha256, message_count, last_message_at
+		FROM history_only
+		`
+	}
+	query += `ORDER BY COALESCE(updated_at, last_message_at, now()) DESC LIMIT $` + strconv.Itoa(len(args)+1)
+	args = append(args, limit)
+	return query, args
 }
 
 func (s *Store) ListRuns(ctx context.Context, agentID, sessionID string, limit int) ([]RunSummary, error) {
