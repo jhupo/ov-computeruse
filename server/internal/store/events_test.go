@@ -100,13 +100,30 @@ func TestHeartbeatMissingRunCanBecomeStale(t *testing.T) {
 }
 
 func TestHeartbeatReconciliationDoesNotAdvanceRunEventSeq(t *testing.T) {
-	for _, query := range []string{heartbeatRunningRunUpdateSQL, heartbeatStaleRunUpdateSQL} {
+	for _, query := range []string{heartbeatRunningRunUpdateSQL, heartbeatMissingRunUpdateSQL} {
 		normalized := strings.ToLower(query)
 		if strings.Contains(normalized, "last_event_seq") {
 			t.Fatalf("heartbeat reconciliation must not update per-run event seq: %s", query)
 		}
-		if strings.Contains(normalized, "$4") {
-			t.Fatalf("heartbeat reconciliation should not bind heartbeat global seq: %s", query)
+	}
+}
+
+func TestHeartbeatMissingRunMarksTerminalRunState(t *testing.T) {
+	query := strings.ToLower(heartbeatMissingRunUpdateSQL)
+	for _, want := range []string{"status=$3", "status_reason=$4", "finished_at=coalesce", "'running'", "'awaiting_approval'", "'stopping'"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("heartbeat missing run SQL missing %q: %s", want, heartbeatMissingRunUpdateSQL)
+		}
+	}
+	if strings.Contains(query, "status='stale'") {
+		t.Fatalf("missing heartbeat run should not leave run in stale limbo: %s", heartbeatMissingRunUpdateSQL)
+	}
+}
+
+func TestHeartbeatMissingRunCommandStatusesAreRetryableWhenNeeded(t *testing.T) {
+	for _, want := range []string{"'failed'", "'stop_failed'"} {
+		if !strings.Contains(prepareCommandRetrySQL, want) {
+			t.Fatalf("retry SQL should accept missing heartbeat status %q: %s", want, prepareCommandRetrySQL)
 		}
 	}
 }
