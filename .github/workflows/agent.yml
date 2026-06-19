@@ -253,6 +253,8 @@ jobs:
       - package-linux
     if: startsWith(github.ref, 'refs/tags/agent-v')
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -260,6 +262,7 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           mapfile -t files < <(find dist -maxdepth 3 -type f | sort)
           printf '%s\n' "${files[@]}"
