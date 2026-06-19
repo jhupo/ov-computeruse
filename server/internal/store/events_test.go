@@ -123,6 +123,19 @@ func TestHeartbeatStaleCandidatesRequireGraceWindow(t *testing.T) {
 	}
 }
 
+func TestNormalizeHeartbeatFillsServerFields(t *testing.T) {
+	heartbeat := normalizeHeartbeat("agent_1", "device_1", protocol.Heartbeat{})
+	if heartbeat.AgentID != "agent_1" || heartbeat.DeviceID != "device_1" {
+		t.Fatalf("heartbeat identity = %q/%q, want agent_1/device_1", heartbeat.AgentID, heartbeat.DeviceID)
+	}
+	if heartbeat.Status != "online" {
+		t.Fatalf("heartbeat status = %q, want online", heartbeat.Status)
+	}
+	if heartbeat.At.IsZero() {
+		t.Fatal("heartbeat at should be filled")
+	}
+}
+
 func TestStoreCommandCreatesRun(t *testing.T) {
 	for _, kind := range []string{"command.new_session", "new_session", "command.resume", "resume", "command.send", "send"} {
 		if !storeCommandCreatesRun(kind) {

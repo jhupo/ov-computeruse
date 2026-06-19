@@ -671,10 +671,32 @@ func storeFirstNonEmpty(values ...string) string {
 }
 
 func (s *Store) SaveHeartbeat(ctx context.Context, agentID, deviceID string, heartbeat protocol.Heartbeat) error {
+	heartbeat = normalizeHeartbeat(agentID, deviceID, heartbeat)
 	if _, err := s.pool.Exec(ctx, `INSERT INTO heartbeats (agent_id, device_id, status, payload, received_at) VALUES ($1,$2,$3,$4,now()) ON CONFLICT (agent_id) DO UPDATE SET device_id=EXCLUDED.device_id, status=EXCLUDED.status, payload=EXCLUDED.payload, received_at=now()`, agentID, deviceID, heartbeat.Status, jsonRaw(heartbeat)); err != nil {
 		return err
 	}
 	return s.ReconcileHeartbeatRuns(ctx, agentID, heartbeat)
+}
+
+func normalizeHeartbeat(agentID, deviceID string, heartbeat protocol.Heartbeat) protocol.Heartbeat {
+	heartbeat.AgentID = strings.TrimSpace(heartbeat.AgentID)
+	if heartbeat.AgentID == "" {
+		heartbeat.AgentID = strings.TrimSpace(agentID)
+	}
+	heartbeat.DeviceID = strings.TrimSpace(heartbeat.DeviceID)
+	if heartbeat.DeviceID == "" {
+		heartbeat.DeviceID = strings.TrimSpace(deviceID)
+	}
+	heartbeat.Status = strings.TrimSpace(heartbeat.Status)
+	if heartbeat.Status == "" {
+		heartbeat.Status = "online"
+	}
+	if heartbeat.At.IsZero() {
+		heartbeat.At = time.Now().UTC()
+	} else {
+		heartbeat.At = heartbeat.At.UTC()
+	}
+	return heartbeat
 }
 
 func (s *Store) SaveCommand(ctx context.Context, agentID string, command protocol.Command) (protocol.Command, error) {
