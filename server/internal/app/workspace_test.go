@@ -10,6 +10,7 @@ import (
 
 func TestNormalizeWorkspaceRequestFillsIDAndTrimsFields(t *testing.T) {
 	req := normalizeWorkspaceRequest(protocol.WorkspaceRequest{
+		RequestID: "client_supplied",
 		Operation: " read ",
 		ProjectID: " project_1 ",
 		Path:      " internal/app.go ",
@@ -17,6 +18,9 @@ func TestNormalizeWorkspaceRequestFillsIDAndTrimsFields(t *testing.T) {
 	})
 	if req.RequestID == "" {
 		t.Fatal("request id was not generated")
+	}
+	if req.RequestID == "client_supplied" {
+		t.Fatal("client supplied request id should not be reused")
 	}
 	if req.Operation != "read" || req.ProjectID != "project_1" || req.Path != "internal/app.go" || req.Query != "needle" {
 		t.Fatalf("request was not normalized: %+v", req)

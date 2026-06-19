@@ -209,10 +209,7 @@ func (s *Server) workspaceRequestFromBody(w http.ResponseWriter, r *http.Request
 }
 
 func normalizeWorkspaceRequest(req protocol.WorkspaceRequest) protocol.WorkspaceRequest {
-	req.RequestID = strings.TrimSpace(req.RequestID)
-	if req.RequestID == "" {
-		req.RequestID = protocol.NewID("wsreq")
-	}
+	req.RequestID = protocol.NewID("wsreq")
 	req.Operation = strings.TrimSpace(req.Operation)
 	req.ProjectID = strings.TrimSpace(req.ProjectID)
 	req.Path = strings.TrimSpace(req.Path)
