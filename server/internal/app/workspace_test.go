@@ -1,6 +1,7 @@
 package app
 
 import (
+	"net/http"
 	"testing"
 
 	"ov-computeruse/server/internal/protocol"
@@ -65,5 +66,24 @@ func TestValidateWorkspaceResponseRejectsTargetMismatch(t *testing.T) {
 	resp := protocol.WorkspaceResponse{RequestID: "req_1", AgentID: "agent_1", ProjectID: "project_2", Operation: "read"}
 	if err := validateWorkspaceResponse("agent_1", req, resp); err == nil {
 		t.Fatal("expected project mismatch to be rejected")
+	}
+}
+
+func TestWorkspaceResponseHTTPStatusPreservesBusinessErrors(t *testing.T) {
+	cases := []struct {
+		code string
+		want int
+	}{
+		{"invalid_workspace_path", http.StatusBadRequest},
+		{"permission_denied", http.StatusForbidden},
+		{"not_git_repo", http.StatusConflict},
+		{"timeout", http.StatusGatewayTimeout},
+		{"git_failed", http.StatusBadGateway},
+	}
+	for _, tc := range cases {
+		got := workspaceResponseHTTPStatus(protocol.WorkspaceResponse{Status: "failed", Code: tc.code})
+		if got != tc.want {
+			t.Fatalf("code %q mapped to %d, want %d", tc.code, got, tc.want)
+		}
 	}
 }

@@ -29,7 +29,7 @@ func (s *Server) handleDashWorkspaceTree(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if resp.Status != "ok" {
-		writeError(w, http.StatusBadGateway, firstWorkspaceCode(resp.Code, "workspace_request_failed"), firstWorkspaceMessage(resp.Message, "workspace request failed"))
+		writeWorkspaceResponseError(w, resp)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "path": req.Path, "entries": resp.Entries})
@@ -47,7 +47,7 @@ func (s *Server) handleDashWorkspaceFile(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if resp.Status != "ok" {
-		writeError(w, http.StatusBadGateway, firstWorkspaceCode(resp.Code, "workspace_request_failed"), firstWorkspaceMessage(resp.Message, "workspace request failed"))
+		writeWorkspaceResponseError(w, resp)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "path": req.Path, "file": resp.File})
@@ -74,7 +74,7 @@ func (s *Server) handleDashWorkspaceSearch(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if resp.Status != "ok" {
-		writeError(w, http.StatusBadGateway, firstWorkspaceCode(resp.Code, "workspace_request_failed"), firstWorkspaceMessage(resp.Message, "workspace request failed"))
+		writeWorkspaceResponseError(w, resp)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "query": req.Query, "matches": resp.Matches})
@@ -92,7 +92,7 @@ func (s *Server) handleDashWorkspaceGitStatus(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if resp.Status != "ok" {
-		writeError(w, http.StatusBadGateway, firstWorkspaceCode(resp.Code, "workspace_request_failed"), firstWorkspaceMessage(resp.Message, "workspace request failed"))
+		writeWorkspaceResponseError(w, resp)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "git": resp.Git})
@@ -111,7 +111,7 @@ func (s *Server) handleDashWorkspaceGitDiff(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if resp.Status != "ok" {
-		writeError(w, http.StatusBadGateway, firstWorkspaceCode(resp.Code, "workspace_request_failed"), firstWorkspaceMessage(resp.Message, "workspace request failed"))
+		writeWorkspaceResponseError(w, resp)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "path": req.Path, "diff": resp.Diff})
@@ -133,7 +133,7 @@ func (s *Server) handleDashWorkspaceRequest(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if resp.Status != "ok" {
-		writeError(w, http.StatusBadGateway, firstWorkspaceCode(resp.Code, "workspace_request_failed"), firstWorkspaceMessage(resp.Message, "workspace request failed"))
+		writeWorkspaceResponseError(w, resp)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "request_id": req.RequestID, "response": resp})
@@ -236,6 +236,32 @@ func workspaceErrorCode(status int) string {
 		return "workspace_timeout"
 	default:
 		return "workspace_request_failed"
+	}
+}
+
+func writeWorkspaceResponseError(w http.ResponseWriter, resp protocol.WorkspaceResponse) {
+	writeError(w, workspaceResponseHTTPStatus(resp), firstWorkspaceCode(resp.Code, "workspace_request_failed"), firstWorkspaceMessage(resp.Message, "workspace request failed"))
+}
+
+func workspaceResponseHTTPStatus(resp protocol.WorkspaceResponse) int {
+	switch strings.TrimSpace(resp.Code) {
+	case "invalid_workspace_path", "workspace_list_failed", "workspace_search_failed", "workspace_read_failed":
+		return http.StatusBadRequest
+	case "permission_denied":
+		return http.StatusForbidden
+	case "project_not_found", "not_found":
+		return http.StatusNotFound
+	case "not_git_repo", "git_unavailable":
+		return http.StatusConflict
+	case "timeout":
+		return http.StatusGatewayTimeout
+	case "git_status_failed", "git_diff_failed", "git_failed":
+		return http.StatusBadGateway
+	default:
+		if strings.TrimSpace(resp.Status) == "rejected" {
+			return http.StatusBadRequest
+		}
+		return http.StatusBadGateway
 	}
 }
 

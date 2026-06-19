@@ -239,7 +239,7 @@ func (fs Filesystem) Read(target Target, req protocol.WorkspaceRequest) (protoco
 	}
 	rel = filepath.ToSlash(rel)
 	if policy.Sensitive(target.Path) {
-		return protocol.WorkspaceFile{Path: rel, Size: info.Size(), ModTime: info.ModTime().UTC(), Encoding: "utf-8", Sensitive: true}, errors.New("refusing to read sensitive file")
+		return protocol.WorkspaceFile{Path: rel, Size: info.Size(), ModTime: info.ModTime().UTC(), Encoding: "utf-8", Sensitive: true}, workspaceErr("permission_denied", "refusing to read sensitive file")
 	}
 	maxBytes := req.MaxBytes
 	if maxBytes <= 0 {
