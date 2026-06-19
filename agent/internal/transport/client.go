@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -751,15 +752,15 @@ func (c *Client) uploadHistoryItems(ctx context.Context, session codexscan.Sessi
 	reset := true
 	sent := 0
 	batchBytes := 0
+	uploadID := protocol.NewID("hup")
+	batches := []protocol.HistoryItems{}
 	out := make([]protocol.HistoryItem, 0, historyItemBatchSize)
-	flush := func() error {
+	flush := func(final bool) error {
 		if len(out) == 0 {
 			return nil
 		}
-		batch := protocol.HistoryItems{SessionID: session.ID, Cursor: cursor, Reset: reset, Items: out}
-		if err := c.sendHistoryItems(ctx, batch); err != nil {
-			return err
-		}
+		items := append([]protocol.HistoryItem(nil), out...)
+		batches = append(batches, protocol.HistoryItems{SessionID: session.ID, Cursor: cursor, Reset: reset, UploadID: uploadID, Items: items, Final: final})
 		reset = false
 		sent += len(out)
 		out = make([]protocol.HistoryItem, 0, historyItemBatchSize)
@@ -784,18 +785,24 @@ func (c *Client) uploadHistoryItems(ctx context.Context, session codexscan.Sessi
 		out = append(out, wire)
 		batchBytes += len(wire.Text) + len(wire.Payload)
 		if len(out) >= historyItemBatchSize || batchBytes >= historyItemBatchBytes {
-			return flush()
+			return flush(false)
 		}
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	if err := flush(); err != nil {
+	if err := flush(true); err != nil {
 		return err
 	}
 	if sent == 0 {
-		if err := c.sendHistoryItems(ctx, protocol.HistoryItems{SessionID: session.ID, Cursor: cursor, Reset: true}); err != nil {
+		batches = append(batches, protocol.HistoryItems{SessionID: session.ID, Cursor: cursor, Reset: true, UploadID: uploadID, Final: true})
+	}
+	for i := range batches {
+		batches[i].BatchIndex = i
+		batches[i].BatchCount = len(batches)
+		batches[i].Final = i == len(batches)-1
+		if err := c.sendHistoryItems(ctx, batches[i]); err != nil {
 			return err
 		}
 	}
@@ -808,7 +815,7 @@ func (c *Client) uploadHistoryItems(ctx context.Context, session codexscan.Sessi
 }
 
 func (c *Client) sendHistoryItems(ctx context.Context, batch protocol.HistoryItems) error {
-	ackKey := historyAckKey(batch.SessionID, batch.Cursor)
+	ackKey := historyAckKey(batch)
 	ackCh := c.registerHistoryAck(ackKey)
 	defer c.unregisterHistoryAck(ackKey)
 	if err := c.send(ctx, "history.items", batch); err != nil {
@@ -848,7 +855,7 @@ func (c *Client) unregisterHistoryAck(key string) {
 
 func (c *Client) resolveHistoryAck(ack protocol.HistoryItemsAck) {
 	c.historyAckMu.Lock()
-	ch := c.pendingHistoryAck[historyAckKey(ack.SessionID, ack.Cursor)]
+	ch := c.pendingHistoryAck[historyAckKeyFromAck(ack)]
 	c.historyAckMu.Unlock()
 	if ch == nil {
 		return
@@ -859,8 +866,18 @@ func (c *Client) resolveHistoryAck(ack protocol.HistoryItemsAck) {
 	}
 }
 
-func historyAckKey(sessionID, cursor string) string {
-	return sessionID + "\x00" + cursor
+func historyAckKey(batch protocol.HistoryItems) string {
+	if strings.TrimSpace(batch.UploadID) != "" {
+		return batch.SessionID + "\x00" + batch.UploadID + "\x00" + strconv.Itoa(batch.BatchIndex)
+	}
+	return batch.SessionID + "\x00" + batch.Cursor
+}
+
+func historyAckKeyFromAck(ack protocol.HistoryItemsAck) string {
+	if strings.TrimSpace(ack.UploadID) != "" {
+		return ack.SessionID + "\x00" + ack.UploadID + "\x00" + strconv.Itoa(ack.BatchIndex)
+	}
+	return ack.SessionID + "\x00" + ack.Cursor
 }
 
 func skipHistoryItem(item codexscan.HistoryItem) bool {

@@ -405,10 +405,15 @@ func TestOutboxTerminalRunEventTriggersHistorySync(t *testing.T) {
 	if historyBatch.SessionID != "history_session" || len(historyBatch.Items) == 0 {
 		t.Fatalf("history batch = %+v", historyBatch)
 	}
+	if historyBatch.UploadID == "" || historyBatch.BatchIndex != 0 || historyBatch.BatchCount != 1 || !historyBatch.Final {
+		t.Fatalf("history batch metadata = %+v", historyBatch)
+	}
 	if err := conn.pushEncrypted("history.items.ack", "server", "server_device", 1, protocol.HistoryItemsAck{
-		SessionID: historyBatch.SessionID,
-		Cursor:    historyBatch.Cursor,
-		Status:    "ok",
+		SessionID:  historyBatch.SessionID,
+		Cursor:     historyBatch.Cursor,
+		UploadID:   historyBatch.UploadID,
+		BatchIndex: historyBatch.BatchIndex,
+		Status:     "ok",
 	}, "secret"); err != nil {
 		t.Fatal(err)
 	}

@@ -185,9 +185,6 @@ func (s *Store) SaveHistoryItems(ctx context.Context, agentID string, batch prot
 			}
 		}
 	}
-	if batch.Cursor != "" {
-		return s.SaveSyncCursor(ctx, agentID, protocol.SyncCursor{Stream: "history.items", SubjectID: batch.SessionID, Cursor: batch.Cursor, At: now()})
-	}
 	return nil
 }
 

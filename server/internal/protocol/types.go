@@ -293,18 +293,24 @@ type HistoryItem struct {
 }
 
 type HistoryItems struct {
-	SessionID string        `json:"session_id"`
-	Cursor    string        `json:"cursor,omitempty"`
-	Reset     bool          `json:"reset,omitempty"`
-	Items     []HistoryItem `json:"items"`
+	SessionID  string        `json:"session_id"`
+	Cursor     string        `json:"cursor,omitempty"`
+	Reset      bool          `json:"reset,omitempty"`
+	UploadID   string        `json:"upload_id,omitempty"`
+	BatchIndex int           `json:"batch_index,omitempty"`
+	BatchCount int           `json:"batch_count,omitempty"`
+	Final      bool          `json:"final,omitempty"`
+	Items      []HistoryItem `json:"items"`
 }
 
 type HistoryItemsAck struct {
-	SessionID string    `json:"session_id"`
-	Cursor    string    `json:"cursor,omitempty"`
-	Status    string    `json:"status,omitempty"`
-	Message   string    `json:"message,omitempty"`
-	At        time.Time `json:"at,omitempty"`
+	SessionID  string    `json:"session_id"`
+	Cursor     string    `json:"cursor,omitempty"`
+	UploadID   string    `json:"upload_id,omitempty"`
+	BatchIndex int       `json:"batch_index,omitempty"`
+	Status     string    `json:"status,omitempty"`
+	Message    string    `json:"message,omitempty"`
+	At         time.Time `json:"at,omitempty"`
 }
 
 type Command struct {

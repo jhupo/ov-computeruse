@@ -195,11 +195,11 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 		items, err := protocol.Decode[protocol.HistoryItems](env.Data)
 		if err == nil {
 			if err := s.store.SaveHistoryItems(ctx, agent.AgentID, items); err == nil {
-				s.sendAgent(agent, "history.items.ack", protocol.HistoryItemsAck{SessionID: items.SessionID, Cursor: items.Cursor, Status: "acked", At: time.Now().UTC()})
-				s.hub.BroadcastDash(agent.UserID, dashEvent("history.items.updated", agent, map[string]any{"session_id": items.SessionID, "count": countAcceptedHistoryItems(items), "cursor": items.Cursor, "reset": items.Reset}))
+				s.sendAgent(agent, "history.items.ack", protocol.HistoryItemsAck{SessionID: items.SessionID, Cursor: items.Cursor, UploadID: items.UploadID, BatchIndex: items.BatchIndex, Status: "acked", At: time.Now().UTC()})
+				s.hub.BroadcastDash(agent.UserID, dashEvent("history.items.updated", agent, map[string]any{"session_id": items.SessionID, "count": countAcceptedHistoryItems(items), "cursor": items.Cursor, "reset": items.Reset, "upload_id": items.UploadID, "batch_index": items.BatchIndex, "batch_count": items.BatchCount, "final": items.Final}))
 			} else {
 				s.log.WarnContext(ctx, "history items rejected", "agent_id", agent.AgentID, "session_id", items.SessionID, "error", err)
-				s.sendAgent(agent, "history.items.ack", protocol.HistoryItemsAck{SessionID: items.SessionID, Cursor: items.Cursor, Status: "failed", Message: err.Error(), At: time.Now().UTC()})
+				s.sendAgent(agent, "history.items.ack", protocol.HistoryItemsAck{SessionID: items.SessionID, Cursor: items.Cursor, UploadID: items.UploadID, BatchIndex: items.BatchIndex, Status: "failed", Message: err.Error(), At: time.Now().UTC()})
 			}
 		}
 	case "sync.cursor":
