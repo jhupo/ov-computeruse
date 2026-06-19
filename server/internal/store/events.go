@@ -1168,7 +1168,7 @@ func (s *Store) ReconcileHeartbeatRuns(ctx context.Context, agentID string, hear
 		}
 	}
 	for runID := range running {
-		if _, err := s.pool.Exec(ctx, `UPDATE runs SET status='running', status_reason='reported_by_agent_heartbeat', last_event_seq=GREATEST(last_event_seq, $3), last_event_at=$4 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','accepted','running','awaiting_approval','stale') AND status <> 'stopping'`, agentID, runID, heartbeat.LastEventSeq, heartbeat.At); err != nil {
+		if _, err := s.pool.Exec(ctx, heartbeatRunningRunUpdateSQL, agentID, runID, heartbeat.At); err != nil {
 			return err
 		}
 	}
@@ -1192,12 +1192,16 @@ func (s *Store) ReconcileHeartbeatRuns(ctx context.Context, agentID string, hear
 		return err
 	}
 	for _, runID := range stale {
-		if _, err := s.pool.Exec(ctx, `UPDATE runs SET status='stale', status_reason='missing_from_agent_heartbeat', last_event_seq=GREATEST(last_event_seq, $3), last_event_at=$4 WHERE agent_id=$1 AND id=$2 AND status IN ('running','awaiting_approval','stopping')`, agentID, runID, heartbeat.LastEventSeq, heartbeat.At); err != nil {
+		if _, err := s.pool.Exec(ctx, heartbeatStaleRunUpdateSQL, agentID, runID, heartbeat.At); err != nil {
 			return err
 		}
 	}
 	return s.ExpireCommands(ctx, agentID)
 }
+
+const heartbeatRunningRunUpdateSQL = `UPDATE runs SET status='running', status_reason='reported_by_agent_heartbeat', last_event_at=$3 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','accepted','running','awaiting_approval','stale') AND status <> 'stopping'`
+
+const heartbeatStaleRunUpdateSQL = `UPDATE runs SET status='stale', status_reason='missing_from_agent_heartbeat', last_event_at=$3 WHERE agent_id=$1 AND id=$2 AND status IN ('running','awaiting_approval','stopping')`
 
 func heartbeatMissingRunCanBecomeStale(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {

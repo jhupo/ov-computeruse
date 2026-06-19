@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,6 +95,18 @@ func TestHeartbeatMissingRunCanBecomeStale(t *testing.T) {
 	for _, status := range []string{"queued", "accepted", "stale", "stopped", "failed", ""} {
 		if heartbeatMissingRunCanBecomeStale(status) {
 			t.Fatalf("expected %q to remain unchanged when missing from heartbeat", status)
+		}
+	}
+}
+
+func TestHeartbeatReconciliationDoesNotAdvanceRunEventSeq(t *testing.T) {
+	for _, query := range []string{heartbeatRunningRunUpdateSQL, heartbeatStaleRunUpdateSQL} {
+		normalized := strings.ToLower(query)
+		if strings.Contains(normalized, "last_event_seq") {
+			t.Fatalf("heartbeat reconciliation must not update per-run event seq: %s", query)
+		}
+		if strings.Contains(normalized, "$4") {
+			t.Fatalf("heartbeat reconciliation should not bind heartbeat global seq: %s", query)
 		}
 	}
 }
