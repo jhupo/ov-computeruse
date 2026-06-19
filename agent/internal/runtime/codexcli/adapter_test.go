@@ -329,6 +329,31 @@ func TestReadStdoutReturnsErrorForTurnFailed(t *testing.T) {
 	assertPayloadString(t, sink.events[0].Payload, "message", "boom")
 }
 
+func TestReadStdoutDrainsEventsAfterTurnFailed(t *testing.T) {
+	adapter := New(Config{})
+	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1"}
+	input := strings.Join([]string{
+		`{"type":"turn.failed","error":{"message":"boom"}}`,
+		`{"type":"item.completed","item":{"id":"msg","type":"agent_message","text":"diagnostic after failure"}}`,
+		`plain buffered stdout`,
+	}, "\n")
+	sink := &captureSink{}
+	err := adapter.readStdout(context.Background(), strings.NewReader(input), command, localstate.CommandContext{}, sink, &completionSignal{})
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("read stdout error = %v, want turn failure", err)
+	}
+	kinds := make([]string, 0, len(sink.events))
+	for _, event := range sink.events {
+		kinds = append(kinds, event.Kind)
+	}
+	wantKinds := []string{"run.status", "assistant.message.done", "terminal.output"}
+	if strings.Join(kinds, "\x00") != strings.Join(wantKinds, "\x00") {
+		t.Fatalf("event kinds = %#v, want %#v", kinds, wantKinds)
+	}
+	assertPayloadString(t, sink.events[1].Payload, "text", "diagnostic after failure")
+	assertPayloadString(t, sink.events[2].Payload, "text", "plain buffered stdout")
+}
+
 func TestReadStdoutEmitsTerminalOutputDelta(t *testing.T) {
 	adapter := New(Config{})
 	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1"}

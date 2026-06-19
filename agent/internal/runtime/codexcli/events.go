@@ -105,7 +105,10 @@ func (a *Adapter) readStdout(ctx context.Context, stdout io.Reader, command prot
 			return err
 		}
 	}
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return mapper.terminalErr
 }
 
 func isTerminalExecEvent(eventType string) bool {

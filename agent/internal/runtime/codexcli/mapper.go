@@ -20,6 +20,7 @@ type eventMapper struct {
 	sessionID         string
 	assistantByItemID map[string]string
 	terminalByItemID  map[string]string
+	terminalErr       error
 }
 
 var errUnsupportedApproval = errors.New("codex cli exec approval request is unsupported")
@@ -46,15 +47,23 @@ func (m *eventMapper) emitEvent(ctx context.Context, command protocol.Command, r
 		if err := m.emit(ctx, sink, command, "run.status", m.enrichPayload(map[string]any{"status": "codex.turn.failed", "message": message, "raw": event.Raw}, execItem{}, "turn.failed")); err != nil {
 			return err
 		}
-		return fmt.Errorf("codex CLI turn failed: %s", firstNonEmpty(message, string(event.Raw)))
+		m.recordTerminalError(fmt.Errorf("codex CLI turn failed: %s", firstNonEmpty(message, string(event.Raw))))
+		return nil
 	case "error":
-		return fmt.Errorf("codex CLI error: %s", firstNonEmpty(event.Message, event.Error.Message, string(event.Raw)))
+		m.recordTerminalError(fmt.Errorf("codex CLI error: %s", firstNonEmpty(event.Message, event.Error.Message, string(event.Raw))))
+		return nil
 	case "codex/event/exec_approval_request", "codex/event/apply_patch_approval_request", "codex/event/elicitation_request", "exec_approval_request", "apply_patch_approval_request", "elicitation_request":
 		return m.emitUnsupportedApproval(ctx, command, event.Type, event.Raw, sink)
 	case "item.started", "item.updated", "item.completed":
 		return m.emitItem(ctx, command, event.Type, decodeItem(event.Item), sink)
 	default:
 		return m.emit(ctx, sink, command, "run.status", m.enrichPayload(map[string]any{"status": "codex.event", "type": event.Type, "raw": event.Raw}, execItem{}, event.Type))
+	}
+}
+
+func (m *eventMapper) recordTerminalError(err error) {
+	if err != nil && m.terminalErr == nil {
+		m.terminalErr = err
 	}
 }
 
