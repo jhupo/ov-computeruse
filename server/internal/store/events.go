@@ -1219,11 +1219,8 @@ func (s *Store) releaseFailedApprovalDecisionCommand(ctx context.Context, agentI
 
 func normalizeCommand(command protocol.Command) protocol.Command {
 	now := time.Now().UTC()
-	if command.DeadlineAt.IsZero() {
-		command.DeadlineAt = now.Add(10 * time.Minute)
-	}
 	if command.ExpiresAt.IsZero() {
-		command.ExpiresAt = command.DeadlineAt.Add(50 * time.Minute)
+		command.ExpiresAt = now.Add(60 * time.Minute)
 	}
 	command.IdempotencyKey = strings.TrimSpace(command.IdempotencyKey)
 	return command

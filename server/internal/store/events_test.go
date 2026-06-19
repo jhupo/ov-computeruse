@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"ov-computeruse/server/internal/protocol"
 )
@@ -168,5 +169,26 @@ func TestCommandMatchesIdempotencyRejectsDifferentTarget(t *testing.T) {
 	}
 	if commandMatchesIdempotency(existing, incoming) {
 		t.Fatal("expected different target to conflict")
+	}
+}
+
+func TestNormalizeCommandDoesNotAddDefaultExecutionDeadline(t *testing.T) {
+	command := normalizeCommand(protocol.Command{Kind: "command.send"})
+	if !command.DeadlineAt.IsZero() {
+		t.Fatalf("deadline_at = %v, want zero for long-running Codex CLI execution", command.DeadlineAt)
+	}
+	if command.ExpiresAt.IsZero() {
+		t.Fatal("expires_at should still be set to expire undispatched queued commands")
+	}
+	if time.Until(command.ExpiresAt) <= 0 {
+		t.Fatalf("expires_at = %v, want future time", command.ExpiresAt)
+	}
+}
+
+func TestNormalizeCommandPreservesExplicitExecutionDeadline(t *testing.T) {
+	deadline := time.Now().UTC().Add(2 * time.Hour)
+	command := normalizeCommand(protocol.Command{Kind: "command.send", DeadlineAt: deadline})
+	if !command.DeadlineAt.Equal(deadline) {
+		t.Fatalf("deadline_at = %v, want explicit deadline %v", command.DeadlineAt, deadline)
 	}
 }
