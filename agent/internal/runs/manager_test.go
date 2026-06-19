@@ -83,6 +83,8 @@ type blockingRuntime struct {
 	started chan struct{}
 	release chan struct{}
 	once    sync.Once
+	mu      sync.Mutex
+	stopped []protocol.Command
 }
 
 func newBlockingRuntime() *blockingRuntime {
@@ -105,7 +107,10 @@ func (r *blockingRuntime) Send(ctx context.Context, _ protocol.Command, _ runtim
 	return r.wait(ctx)
 }
 
-func (r *blockingRuntime) Stop(context.Context, protocol.Command) error {
+func (r *blockingRuntime) Stop(_ context.Context, command protocol.Command) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stopped = append(r.stopped, command)
 	return nil
 }
 
@@ -117,6 +122,12 @@ func (r *blockingRuntime) wait(ctx context.Context) error {
 	case <-r.release:
 		return nil
 	}
+}
+
+func (r *blockingRuntime) stoppedCommands() []protocol.Command {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]protocol.Command(nil), r.stopped...)
 }
 
 func TestEmitStatusUsesManagerSequence(t *testing.T) {
@@ -196,6 +207,48 @@ func TestStartPersistsRunStartedBeforeAcceptedAck(t *testing.T) {
 	case <-rt.started:
 	case <-time.After(time.Second):
 		t.Fatal("runtime did not start")
+	}
+	close(rt.release)
+}
+
+func TestStopUsesRuntimeSessionAliasAndOriginalRunCommand(t *testing.T) {
+	rt := newBlockingRuntime()
+	manager := NewManager(rt, &captureSink{}, nil)
+	startAck := manager.Handle(context.Background(), protocol.Command{
+		CommandID: "cmd_start",
+		RunID:     "run_1",
+		Kind:      "command.new_session",
+		ProjectID: "project_1",
+		SessionID: "display_session",
+	})
+	if startAck.Status != "ok" {
+		t.Fatalf("start ack = %+v", startAck)
+	}
+	manager.Emit(context.Background(), protocol.RunEvent{
+		RunID: "run_1",
+		Kind:  "session.updated",
+		Payload: protocol.Raw(protocol.RuntimeSession{
+			Runtime:         protocol.RuntimeCodexCLI,
+			ProjectID:       "project_1",
+			SessionID:       "display_session",
+			NativeSessionID: "thread_native",
+		}),
+	})
+
+	stopAck := manager.Handle(context.Background(), protocol.Command{
+		CommandID: "cmd_stop",
+		Kind:      "command.stop",
+		SessionID: "thread_native",
+	})
+	if stopAck.Status != "ok" || stopAck.RunID != "run_1" {
+		t.Fatalf("stop ack = %+v, want ok for run_1", stopAck)
+	}
+	stopped := rt.stoppedCommands()
+	if len(stopped) != 1 {
+		t.Fatalf("stopped commands = %+v, want 1", stopped)
+	}
+	if stopped[0].CommandID != "cmd_start" || stopped[0].RunID != "run_1" || stopped[0].SessionID != "display_session" {
+		t.Fatalf("runtime stop command = %+v, want original run command", stopped[0])
 	}
 	close(rt.release)
 }

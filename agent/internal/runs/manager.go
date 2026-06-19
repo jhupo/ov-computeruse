@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,6 +61,40 @@ type activeRun struct {
 	state     State
 	stopping  bool
 	approvals map[string]chan protocol.ApprovalDecision
+	sessions  map[string]struct{}
+}
+
+func sessionAliasSet(values ...string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out[value] = struct{}{}
+		}
+	}
+	return out
+}
+
+func (r *activeRun) addSession(sessionID string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	if r.sessions == nil {
+		r.sessions = map[string]struct{}{}
+	}
+	r.sessions[sessionID] = struct{}{}
+}
+
+func (r *activeRun) hasSession(sessionID string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return false
+	}
+	if _, ok := r.sessions[sessionID]; ok {
+		return true
+	}
+	return strings.TrimSpace(r.command.SessionID) == sessionID
 }
 
 func NewManager(rt runtime.Runtime, sink EventSink, logger *slog.Logger) *Manager {
@@ -189,6 +224,7 @@ func (m *Manager) State() State {
 
 func (m *Manager) Emit(ctx context.Context, event protocol.RunEvent) error {
 	m.mu.Lock()
+	m.applyRuntimeSessionUpdateLocked(event)
 	m.eventSeq++
 	event.Seq = m.eventSeq
 	if event.EventID == "" {
@@ -203,6 +239,28 @@ func (m *Manager) Emit(ctx context.Context, event protocol.RunEvent) error {
 		return nil
 	}
 	return sink.Emit(ctx, event)
+}
+
+func (m *Manager) applyRuntimeSessionUpdateLocked(event protocol.RunEvent) {
+	if event.Kind != "session.updated" || len(event.Payload) == 0 {
+		return
+	}
+	run := m.active[event.RunID]
+	if run == nil {
+		return
+	}
+	var session protocol.RuntimeSession
+	if json.Unmarshal(event.Payload, &session) != nil {
+		return
+	}
+	run.addSession(session.SessionID)
+	run.addSession(session.NativeSessionID)
+	if session.SessionID != "" && run.command.SessionID == "" {
+		run.command.SessionID = session.SessionID
+	}
+	if session.ProjectID != "" && run.command.ProjectID == "" {
+		run.command.ProjectID = session.ProjectID
+	}
 }
 
 func (m *Manager) EmitStatus(ctx context.Context, trigger protocol.RunEvent, status string, payload map[string]any) error {
@@ -242,14 +300,14 @@ func (m *Manager) start(ctx context.Context, command protocol.Command) protocol.
 	}
 	if command.SessionID != "" {
 		for _, run := range m.active {
-			if run.command.SessionID == command.SessionID {
+			if run.hasSession(command.SessionID) {
 				m.mu.Unlock()
 				cancel()
 				return m.remember(protocol.Ack{CommandID: command.CommandID, RunID: command.RunID, Status: "rejected", Message: ErrSessionAlreadyActive.Error(), At: time.Now().UTC()})
 			}
 		}
 	}
-	m.active[command.RunID] = &activeRun{command: command, cancel: cancel, state: StateStarting, approvals: map[string]chan protocol.ApprovalDecision{}}
+	m.active[command.RunID] = &activeRun{command: command, cancel: cancel, state: StateStarting, approvals: map[string]chan protocol.ApprovalDecision{}, sessions: sessionAliasSet(command.SessionID)}
 	m.mu.Unlock()
 
 	if err := m.emitRunStarted(ctx, command); err != nil {
@@ -343,7 +401,7 @@ func (m *Manager) stop(ctx context.Context, command protocol.Command) protocol.A
 	run := m.active[command.RunID]
 	if run == nil && command.SessionID != "" {
 		for _, candidate := range m.active {
-			if candidate.command.SessionID == command.SessionID {
+			if candidate.hasSession(command.SessionID) {
 				run = candidate
 				break
 			}
@@ -357,7 +415,7 @@ func (m *Manager) stop(ctx context.Context, command protocol.Command) protocol.A
 	run.stopping = true
 	m.mu.Unlock()
 
-	_ = m.runtime.Stop(ctx, command)
+	_ = m.runtime.Stop(ctx, run.command)
 	run.cancel()
 	return m.remember(protocol.Ack{CommandID: command.CommandID, RunID: run.command.RunID, Status: "ok", Message: "stop requested", At: time.Now().UTC()})
 }

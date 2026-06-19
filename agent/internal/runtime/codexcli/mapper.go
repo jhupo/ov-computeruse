@@ -34,6 +34,7 @@ func (m *eventMapper) emitEvent(ctx context.Context, command protocol.Command, r
 		m.threadID = strings.TrimSpace(event.ThreadID)
 		m.sessionID = firstNonEmpty(command.SessionID, resolved.Session.ID, m.threadID)
 		m.projectID = firstNonEmpty(command.ProjectID, resolved.Project.ID, resolved.Session.ProjectID)
+		m.adapter.active.alias(command.RunID, m.sessionID, m.threadID)
 		return m.adapter.emitRuntimeSession(ctx, command, resolved, event.ThreadID, sink)
 	case "turn.started":
 		m.currentTurnID = firstNonEmpty(event.TurnID, protocol.NewID("turn"))

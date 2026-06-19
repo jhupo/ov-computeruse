@@ -33,6 +33,27 @@ func (r *activeRuns) track(command protocol.Command, cancel context.CancelFunc) 
 	}
 }
 
+func (r *activeRuns) alias(runID string, sessionIDs ...string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.sessionBy == nil {
+		r.sessionBy = map[string]string{}
+	}
+	if r.cancelBy == nil || r.cancelBy[runID] == nil {
+		return
+	}
+	for _, sessionID := range sessionIDs {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID != "" {
+			r.sessionBy[sessionID] = runID
+		}
+	}
+}
+
 func (r *activeRuns) untrack(command protocol.Command) {
 	runID := strings.TrimSpace(command.RunID)
 	if runID == "" {
@@ -43,6 +64,11 @@ func (r *activeRuns) untrack(command protocol.Command) {
 	delete(r.cancelBy, runID)
 	if command.SessionID != "" && r.sessionBy[command.SessionID] == runID {
 		delete(r.sessionBy, command.SessionID)
+	}
+	for sessionID, sessionRunID := range r.sessionBy {
+		if sessionRunID == runID {
+			delete(r.sessionBy, sessionID)
+		}
 	}
 }
 
