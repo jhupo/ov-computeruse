@@ -115,3 +115,12 @@ func TestRuntimeTimelineSkipsNonRuntimeEvents(t *testing.T) {
 		t.Fatalf("non-runtime event projected unexpectedly: %+v", item)
 	}
 }
+
+func TestRuntimeTimelineSessionQueryAcceptsSessionOrThreadID(t *testing.T) {
+	query := runtimeTimelineSessionQuery()
+	for _, want := range []string{"session_id=$2 OR thread_id=$2", "ORDER BY event_at ASC"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("runtime timeline session query missing %q:\n%s", want, query)
+		}
+	}
+}

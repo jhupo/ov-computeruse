@@ -108,15 +108,47 @@ func (s *Store) ListRuntimeTimeline(ctx context.Context, agentID, runID string, 
 	if limit <= 0 || limit > 1000 {
 		limit = 300
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id, agent_id, run_id, COALESCE(session_id, ''), COALESCE(project_id, ''), seq, runtime, COALESCE(thread_id, ''), COALESCE(turn_id, ''), COALESCE(item_id, ''), COALESCE(item_type, ''), COALESCE(phase, ''), kind, COALESCE(role, ''), COALESCE(text, ''), COALESCE(status, ''), payload, event_at, received_at
-		FROM runtime_timeline
-		WHERE agent_id=$1 AND run_id=$2 AND seq>$3
-		ORDER BY seq ASC, received_at ASC
-		LIMIT $4`, agentID, runID, afterSeq, limit)
+	rows, err := s.pool.Query(ctx, runtimeTimelineRunQuery(), agentID, runID, afterSeq, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanRuntimeTimeline(rows)
+}
+
+func (s *Store) ListSessionRuntimeTimeline(ctx context.Context, agentID, sessionID string, limit int) ([]RuntimeTimelineItem, error) {
+	if limit <= 0 || limit > 2000 {
+		limit = 500
+	}
+	rows, err := s.pool.Query(ctx, runtimeTimelineSessionQuery(), agentID, sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanRuntimeTimeline(rows)
+}
+
+func runtimeTimelineRunQuery() string {
+	return `SELECT id, agent_id, run_id, COALESCE(session_id, ''), COALESCE(project_id, ''), seq, runtime, COALESCE(thread_id, ''), COALESCE(turn_id, ''), COALESCE(item_id, ''), COALESCE(item_type, ''), COALESCE(phase, ''), kind, COALESCE(role, ''), COALESCE(text, ''), COALESCE(status, ''), payload, event_at, received_at
+		FROM runtime_timeline
+		WHERE agent_id=$1 AND run_id=$2 AND seq>$3
+		ORDER BY seq ASC, received_at ASC
+		LIMIT $4`
+}
+
+func runtimeTimelineSessionQuery() string {
+	return `SELECT id, agent_id, run_id, COALESCE(session_id, ''), COALESCE(project_id, ''), seq, runtime, COALESCE(thread_id, ''), COALESCE(turn_id, ''), COALESCE(item_id, ''), COALESCE(item_type, ''), COALESCE(phase, ''), kind, COALESCE(role, ''), COALESCE(text, ''), COALESCE(status, ''), payload, event_at, received_at
+		FROM runtime_timeline
+		WHERE agent_id=$1 AND (session_id=$2 OR thread_id=$2)
+		ORDER BY event_at ASC, received_at ASC, run_id ASC, seq ASC
+		LIMIT $3`
+}
+
+func scanRuntimeTimeline(rows interface {
+	Next() bool
+	Scan(...any) error
+	Err() error
+}) ([]RuntimeTimelineItem, error) {
 	out := []RuntimeTimelineItem{}
 	for rows.Next() {
 		var item RuntimeTimelineItem

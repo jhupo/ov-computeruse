@@ -97,6 +97,7 @@ type DashboardRepository interface {
 	ListToolCalls(context.Context, string, string) ([]store.ToolCall, error)
 	ListRuntimeSessions(context.Context, string, string) ([]protocol.RuntimeSession, error)
 	ListRuntimeTimeline(context.Context, string, string, uint64, int) ([]store.RuntimeTimelineItem, error)
+	ListSessionRuntimeTimeline(context.Context, string, string, int) ([]store.RuntimeTimelineItem, error)
 	SaveApprovalRequest(context.Context, string, protocol.ApprovalRequest) error
 	ListApprovals(context.Context, string, bool, string, int) ([]store.ApprovalSummary, error)
 	ApprovalByID(context.Context, string, string) (store.ApprovalSummary, bool, error)

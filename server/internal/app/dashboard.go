@@ -182,6 +182,37 @@ func (s *Server) handleDashRuntimeSessions(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"agent_id": agentID, "session_id": sessionID, "runtime_sessions": runtimeSessions})
 }
 
+func (s *Server) handleDashRuntimeTimeline(w http.ResponseWriter, r *http.Request) {
+	principal, agentID, ok := s.authorizeAgentQuery(w, r)
+	if !ok {
+		return
+	}
+	runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	if runID == "" && sessionID == "" {
+		writeError(w, http.StatusBadRequest, "missing_target", "run_id or session_id is required")
+		return
+	}
+	limit := queryInt(r, "limit", 500)
+	if runID != "" {
+		items, err := s.store.ListRuntimeTimeline(r.Context(), agentID, runID, uint64(queryInt(r, "after_seq", 0)), limit)
+		if err != nil {
+			s.log.ErrorContext(r.Context(), "run runtime timeline list failed", "agent_id", agentID, "run_id", runID, "user_id", principal.UserID, "error", err)
+			writeError(w, http.StatusInternalServerError, "runtime_timeline_failed", "unable to load runtime timeline")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"agent_id": agentID, "run_id": runID, "items": items})
+		return
+	}
+	items, err := s.store.ListSessionRuntimeTimeline(r.Context(), agentID, sessionID, limit)
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "session runtime timeline list failed", "agent_id", agentID, "session_id", sessionID, "user_id", principal.UserID, "error", err)
+		writeError(w, http.StatusInternalServerError, "runtime_timeline_failed", "unable to load runtime timeline")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agent_id": agentID, "session_id": sessionID, "items": items})
+}
+
 func (s *Server) handleDashHistoryItems(w http.ResponseWriter, r *http.Request) {
 	principal, agentID, ok := s.authorizeAgentQuery(w, r)
 	if !ok {
