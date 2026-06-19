@@ -52,6 +52,49 @@ func TestRuntimeSessionFromFileUsesCodexSessionMeta(t *testing.T) {
 	}
 }
 
+func TestRuntimeSessionFromFilePrefersSessionConfiguredThreadID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	content := "" +
+		`{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"id":"session_uuid","cwd":"C:\\repo"}}` + "\n" +
+		`{"timestamp":"2026-06-18T01:01:00Z","type":"session_configured","payload":{"session_id":"session_uuid","thread_id":"thread_uuid","model":"gpt-5.1-codex-max"}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtimeSession := runtimeSessionFromFile(Session{
+		ID:        "session_uuid",
+		Path:      path,
+		UpdatedAt: time.Date(2026, 6, 18, 1, 0, 0, 0, time.UTC),
+	})
+	if runtimeSession.SessionID != "session_uuid" {
+		t.Fatalf("session id = %q, want session_uuid", runtimeSession.SessionID)
+	}
+	if runtimeSession.NativeSessionID != "thread_uuid" {
+		t.Fatalf("native session id = %q, want thread_uuid", runtimeSession.NativeSessionID)
+	}
+	if runtimeSession.Model != "gpt-5.1-codex-max" {
+		t.Fatalf("model = %q, want gpt-5.1-codex-max", runtimeSession.Model)
+	}
+}
+
+func TestRuntimeSessionFromFileReadsNestedSessionConfiguredThreadID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	content := "" +
+		`{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"session_configured","session_id":"session_uuid","thread_id":"thread_nested"}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtimeSession := runtimeSessionFromFile(Session{
+		ID:        "session_uuid",
+		Path:      path,
+		UpdatedAt: time.Date(2026, 6, 18, 1, 0, 0, 0, time.UTC),
+	})
+	if runtimeSession.NativeSessionID != "thread_nested" {
+		t.Fatalf("native session id = %q, want thread_nested", runtimeSession.NativeSessionID)
+	}
+}
+
 func TestRuntimeSessionFromFileFallsBackToIndexedSessionID(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")

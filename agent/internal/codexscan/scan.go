@@ -598,6 +598,7 @@ func sessionFromFile(path string, info os.FileInfo, maxBytes int64, titles map[s
 
 type sessionMeta struct {
 	ID              string
+	ThreadID        string
 	CWD             string
 	Model           string
 	ApprovalPolicy  string
@@ -663,18 +664,29 @@ func runtimeSessionFromFile(session Session) RuntimeSession {
 			if meta.ID != "" {
 				nativeSessionID = meta.ID
 			}
+			if meta.ThreadID != "" {
+				nativeSessionID = meta.ThreadID
+			}
 			context = mergeSessionMeta(context, meta)
 			continue
 		}
 		if row.Type == "turn_context" || row.Type == "session_configured" {
-			context = mergeSessionMeta(context, sessionMetaFromPayload(row.Payload))
+			meta := sessionMetaFromPayload(row.Payload)
+			if meta.ThreadID != "" {
+				nativeSessionID = meta.ThreadID
+			}
+			context = mergeSessionMeta(context, meta)
 			continue
 		}
 		var payload map[string]any
 		if json.Unmarshal(row.Payload, &payload) == nil {
 			payloadType := stringFromAny(payload["type"])
 			if payloadType == "turn_context" || payloadType == "session_configured" {
-				context = mergeSessionMeta(context, sessionMetaFromAny(payload))
+				meta := sessionMetaFromAny(payload)
+				if meta.ThreadID != "" {
+					nativeSessionID = meta.ThreadID
+				}
+				context = mergeSessionMeta(context, meta)
 			}
 		}
 	}
@@ -720,6 +732,7 @@ func sessionMetaFromAny(payload map[string]any) sessionMeta {
 	}
 	return sessionMeta{
 		ID:              stringFromAny(payload["id"]),
+		ThreadID:        stringFromAny(payload["thread_id"]),
 		CWD:             cleanExistingPath(firstNonEmpty(stringFromAny(payload["cwd"]), pathStringFromAny(payload["cwd"]))),
 		Model:           firstNonEmpty(stringFromAny(payload["model"]), stringFromAny(payload["model_slug"])),
 		ApprovalPolicy:  stringFromAny(payload["approval_policy"]),
@@ -731,6 +744,7 @@ func sessionMetaFromAny(payload map[string]any) sessionMeta {
 
 func mergeSessionMeta(existing, incoming sessionMeta) sessionMeta {
 	existing.ID = firstNonEmpty(incoming.ID, existing.ID)
+	existing.ThreadID = firstNonEmpty(incoming.ThreadID, existing.ThreadID)
 	existing.CWD = firstNonEmpty(incoming.CWD, existing.CWD)
 	existing.Model = firstNonEmpty(incoming.Model, existing.Model)
 	existing.ApprovalPolicy = firstNonEmpty(incoming.ApprovalPolicy, existing.ApprovalPolicy)
