@@ -61,7 +61,7 @@ func (s *Store) projectRuntimeTimeline(ctx context.Context, agentID string, even
 }
 
 func runtimeTimelineFromEvent(agentID string, event protocol.RunEvent) RuntimeTimelineItem {
-	threadID := payloadString(event.Payload, "thread_id")
+	threadID := payloadString(event.Payload, "thread_id", "native_session_id")
 	turnID := payloadString(event.Payload, "turn_id")
 	itemID := payloadString(event.Payload, "item_id", "tool_call_id", "id")
 	itemType := payloadString(event.Payload, "item_type", "tool_name", "tool")
