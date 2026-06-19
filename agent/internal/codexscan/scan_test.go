@@ -65,6 +65,34 @@ func TestRuntimeSessionFromFileFallsBackToIndexedSessionID(t *testing.T) {
 	}
 }
 
+func TestScanIndexesArchivedSessions(t *testing.T) {
+	root := t.TempDir()
+	sessionDir := filepath.Join(root, "archived_sessions", "2026", "06", "18")
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(sessionDir, "rollout-2026-06-18T01-00-00-00000000-0000-0000-0000-000000000001.jsonl")
+	content := "" +
+		`{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"id":"00000000-0000-0000-0000-000000000001","cwd":"` + filepath.ToSlash(root) + `"}}` + "\n" +
+		`{"timestamp":"2026-06-18T01:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"archived hello"}]}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (Scanner{Roots: []string{root}}).Scan(context.Background())
+	if err != nil {
+		t.Fatalf("scan archived sessions: %v", err)
+	}
+	if len(result.Sessions) != 1 {
+		t.Fatalf("session count = %d, want 1: %+v", len(result.Sessions), result.Sessions)
+	}
+	if result.Sessions[0].ID != "00000000-0000-0000-0000-000000000001" || result.Sessions[0].Title != "archived hello" {
+		t.Fatalf("archived session = %+v", result.Sessions[0])
+	}
+	if len(result.RuntimeSessions) != 1 || result.RuntimeSessions[0].NativeSessionID != "00000000-0000-0000-0000-000000000001" {
+		t.Fatalf("runtime sessions = %+v", result.RuntimeSessions)
+	}
+}
+
 func TestReadSessionItemsParsesCodexCLIItemTypes(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")

@@ -467,9 +467,9 @@ func classifyFile(root, path string) string {
 		return "config"
 	case strings.HasPrefix(relSlash, "projects/"):
 		return "project"
-	case strings.HasPrefix(relSlash, "sessions/"):
+	case strings.HasPrefix(relSlash, "sessions/"), strings.HasPrefix(relSlash, "archived_sessions/"):
 		return "session"
-	case strings.Contains(relSlash, "/sessions/"):
+	case strings.Contains(relSlash, "/sessions/"), strings.Contains(relSlash, "/archived_sessions/"):
 		return "session"
 	case base == "history.jsonl" || base == "history.json" || strings.HasPrefix(relSlash, "history/"):
 		return "history"
