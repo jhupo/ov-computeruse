@@ -20,6 +20,9 @@ import (
 var ErrApprovalDecisionAlreadyQueued = errors.New("approval decision already queued")
 var ErrApprovalNotPending = errors.New("approval is not pending")
 
+const createRunCommandKindsSQL = "'command.new_session','new_session','command.resume','resume','command.send','send'"
+const blockedRunDispatchStatusesSQL = "'stopping','stopped','failed','error','expired','rejected','done','stale','stop_failed'"
+
 type AgentSummary struct {
 	ID                   string          `json:"id"`
 	WorkspaceID          string          `json:"workspace_id"`
@@ -510,13 +513,21 @@ func (s *Store) ClaimPendingCommands(ctx context.Context, agentID, claimant stri
 		claimant = "unknown"
 	}
 	rows, err := s.pool.Query(ctx, `WITH picked AS (
-			SELECT id
-			FROM commands
-			WHERE agent_id=$1
-				AND status IN ('queued','dispatch_failed','dispatched')
-				AND (expires_at IS NULL OR expires_at > now())
-				AND (dispatch_claimed_until IS NULL OR dispatch_claimed_until < now())
-			ORDER BY created_at ASC
+			SELECT c.id
+			FROM commands c
+			WHERE c.agent_id=$1
+				AND c.status IN ('queued','dispatch_failed','dispatched')
+				AND (c.expires_at IS NULL OR c.expires_at > now())
+				AND (c.dispatch_claimed_until IS NULL OR c.dispatch_claimed_until < now())
+				AND (c.kind NOT IN (`+createRunCommandKindsSQL+`)
+					OR NOT EXISTS (
+						SELECT 1
+						FROM runs r
+						WHERE r.agent_id=c.agent_id
+							AND r.id=c.run_id
+							AND r.status IN (`+blockedRunDispatchStatusesSQL+`)
+					))
+			ORDER BY c.created_at ASC
 			FOR UPDATE SKIP LOCKED
 			LIMIT $3
 		)
@@ -543,6 +554,28 @@ func (s *Store) ClaimPendingCommands(ctx context.Context, agentID, claimant stri
 	return out, rows.Err()
 }
 
+func (s *Store) CommandDispatchable(ctx context.Context, agentID string, command CommandRecord) (bool, error) {
+	if !storeCommandCreatesRun(command.Kind) {
+		return true, nil
+	}
+	runID := strings.TrimSpace(command.RunID)
+	if runID == "" {
+		return true, nil
+	}
+	var blocked bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1
+		FROM runs
+		WHERE agent_id=$1
+			AND id=$2
+			AND status IN (`+blockedRunDispatchStatusesSQL+`)
+	)`, agentID, runID).Scan(&blocked)
+	if err != nil {
+		return false, err
+	}
+	return !blocked, nil
+}
+
 func (s *Store) ClaimCommand(ctx context.Context, agentID, commandID, claimant string) (CommandRecord, bool, error) {
 	claimant = strings.TrimSpace(claimant)
 	if claimant == "" {
@@ -556,6 +589,14 @@ func (s *Store) ClaimCommand(ctx context.Context, agentID, commandID, claimant s
 			AND status IN ('queued','dispatch_failed','dispatched')
 			AND (expires_at IS NULL OR expires_at > now())
 			AND (dispatch_claimed_until IS NULL OR dispatch_claimed_until < now())
+			AND (kind NOT IN (`+createRunCommandKindsSQL+`)
+				OR NOT EXISTS (
+					SELECT 1
+					FROM runs r
+					WHERE r.agent_id=commands.agent_id
+						AND r.id=commands.run_id
+						AND r.status IN (`+blockedRunDispatchStatusesSQL+`)
+				))
 		RETURNING id, agent_id, COALESCE(run_id, ''), COALESCE(session_id, ''), COALESCE(project_id, ''), kind, COALESCE(mode, ''), payload, status, COALESCE(status_reason, ''), created_at, dispatched_at, acked_at, deadline_at, expires_at, retry_count, COALESCE(idempotency_key, '')
 	`, agentID, commandID, claimant)
 	item, err := scanCommandRecord(row)
@@ -577,13 +618,21 @@ func (s *Store) ClaimDispatchCommands(ctx context.Context, claimant string, limi
 		claimant = "unknown"
 	}
 	rows, err := s.pool.Query(ctx, `WITH picked AS (
-			SELECT id, agent_id
-			FROM commands
-			WHERE status IN ('queued','dispatch_failed','dispatched')
-				AND (expires_at IS NULL OR expires_at > now())
-				AND (dispatched_at IS NULL OR dispatched_at < now() - interval '15 seconds')
-				AND (dispatch_claimed_until IS NULL OR dispatch_claimed_until < now())
-			ORDER BY created_at ASC
+			SELECT c.id, c.agent_id
+			FROM commands c
+			WHERE c.status IN ('queued','dispatch_failed','dispatched')
+				AND (c.expires_at IS NULL OR c.expires_at > now())
+				AND (c.dispatched_at IS NULL OR c.dispatched_at < now() - interval '15 seconds')
+				AND (c.dispatch_claimed_until IS NULL OR c.dispatch_claimed_until < now())
+				AND (c.kind NOT IN (`+createRunCommandKindsSQL+`)
+					OR NOT EXISTS (
+						SELECT 1
+						FROM runs r
+						WHERE r.agent_id=c.agent_id
+							AND r.id=c.run_id
+							AND r.status IN (`+blockedRunDispatchStatusesSQL+`)
+					))
+			ORDER BY c.created_at ASC
 			FOR UPDATE SKIP LOCKED
 			LIMIT $2
 		)

@@ -64,6 +64,7 @@ type EventRepository interface {
 	MarkCommandDispatchFailed(context.Context, string, string, string) error
 	MarkCommandFailed(context.Context, string, string, string) error
 	MarkCommandExpired(context.Context, string, string, string) error
+	MarkCommandStopped(context.Context, string, string, string) error
 	ReleaseApprovalDecisionCommand(context.Context, string, string, string) error
 	PrepareCommandRetry(context.Context, string, string, time.Time, time.Time) error
 	ExpireCommands(context.Context, string) error
@@ -77,6 +78,7 @@ type DashboardRepository interface {
 	ListCommandAttempts(context.Context, string, string, int) ([]store.CommandAttempt, error)
 	PendingCommands(context.Context, string, int) ([]store.CommandRecord, error)
 	ClaimCommand(context.Context, string, string, string) (store.CommandRecord, bool, error)
+	CommandDispatchable(context.Context, string, store.CommandRecord) (bool, error)
 	ClaimPendingCommands(context.Context, string, string, int) ([]store.CommandRecord, error)
 	ClaimDispatchCommands(context.Context, string, int) ([]store.CommandRecord, error)
 	ListProjects(context.Context, string) ([]store.ProjectSummary, error)

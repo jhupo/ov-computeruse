@@ -97,6 +97,20 @@ func TestHeartbeatMissingRunCanBecomeStale(t *testing.T) {
 	}
 }
 
+func TestStoreCommandCreatesRun(t *testing.T) {
+	for _, kind := range []string{"command.new_session", "new_session", "command.resume", "resume", "command.send", "send"} {
+		if !storeCommandCreatesRun(kind) {
+			t.Fatalf("expected %q to create a run", kind)
+		}
+	}
+
+	for _, kind := range []string{"command.stop", "stop", "command.approval_decision", "workspace.request"} {
+		if storeCommandCreatesRun(kind) {
+			t.Fatalf("expected %q to not create a run", kind)
+		}
+	}
+}
+
 func TestCommandMatchesIdempotencyAcceptsEquivalentCommand(t *testing.T) {
 	existing := CommandRecord{
 		RunID:     "run_1",

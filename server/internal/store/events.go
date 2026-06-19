@@ -854,6 +854,13 @@ func (s *Store) markStopRequestedTx(ctx context.Context, tx pgx.Tx, agentID stri
 	if runID == "" {
 		return command, nil
 	}
+	locallyStopped, err := s.stopUndispatchedRunTx(ctx, tx, agentID, command, runID)
+	if err != nil {
+		return protocol.Command{}, err
+	}
+	if locallyStopped {
+		return command, nil
+	}
 	tag, err := tx.Exec(ctx, `UPDATE runs
 		SET status='stopping',
 			status_reason='stop requested',
@@ -868,6 +875,74 @@ func (s *Store) markStopRequestedTx(ctx context.Context, tx pgx.Tx, agentID stri
 		return command, nil
 	}
 	return command, s.saveCommandAttemptTx(ctx, tx, agentID, command.CommandID, "stop", "stopping", "stop requested", protocol.Raw(map[string]any{"run_id": runID, "session_id": command.SessionID}))
+}
+
+func (s *Store) stopUndispatchedRunTx(ctx context.Context, tx pgx.Tx, agentID string, command protocol.Command, runID string) (bool, error) {
+	var runCommandID string
+	err := tx.QueryRow(ctx, `SELECT COALESCE(command_id, '')
+		FROM runs
+		WHERE agent_id=$1
+			AND id=$2
+			AND status='queued'
+		FOR UPDATE`, agentID, runID).Scan(&runCommandID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(runCommandID) == "" {
+		return false, nil
+	}
+	tag, err := tx.Exec(ctx, `UPDATE commands
+		SET status='stopped',
+			status_reason='stopped before dispatch',
+			acked_at=COALESCE(acked_at, now()),
+			dispatch_claimed_by=NULL,
+			dispatch_claimed_at=NULL,
+			dispatch_claimed_until=NULL
+		WHERE agent_id=$1
+			AND id=$2
+			AND status IN ('queued','dispatch_failed')
+			AND (dispatch_claimed_until IS NULL OR dispatch_claimed_until < now())`,
+		agentID, runCommandID)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	if _, err := tx.Exec(ctx, `UPDATE runs
+		SET status='stopped',
+			status_reason='stopped before dispatch',
+			finished_at=COALESCE(finished_at, now())
+		WHERE agent_id=$1
+			AND id=$2
+			AND status='queued'`, agentID, runID); err != nil {
+		return false, err
+	}
+	reason := "run stopped before agent dispatch"
+	if _, err := tx.Exec(ctx, `UPDATE commands
+		SET status='done',
+			status_reason=$3,
+			acked_at=COALESCE(acked_at, now()),
+			dispatch_claimed_by=NULL,
+			dispatch_claimed_at=NULL,
+			dispatch_claimed_until=NULL,
+			run_id=COALESCE(NULLIF($4, ''), run_id)
+		WHERE agent_id=$1
+			AND id=$2
+			AND status NOT IN ('done','expired','failed','rejected','stopped')`,
+		agentID, command.CommandID, reason, runID); err != nil {
+		return false, err
+	}
+	if err := s.saveCommandAttemptTx(ctx, tx, agentID, runCommandID, "stop", "stopped", reason, protocol.Raw(map[string]any{"run_id": runID, "stop_command_id": command.CommandID})); err != nil {
+		return false, err
+	}
+	if err := s.saveCommandAttemptTx(ctx, tx, agentID, command.CommandID, "stop", "done", reason, protocol.Raw(map[string]any{"run_id": runID, "session_id": command.SessionID, "local": true})); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Store) MarkCommandDispatched(ctx context.Context, agentID, commandID string) error {
@@ -916,6 +991,19 @@ func (s *Store) MarkCommandExpired(ctx context.Context, agentID, commandID, reas
 		return err
 	}
 	return s.SaveCommandAttempt(ctx, agentID, commandID, "expire", "expired", reason, nil)
+}
+
+func (s *Store) MarkCommandStopped(ctx context.Context, agentID, commandID, reason string) error {
+	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status='stopped', status_reason=$3, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired','stopped')`, agentID, commandID, reason); err != nil {
+		return err
+	}
+	if err := s.markRunForCommandTerminal(ctx, agentID, commandID, "stopped", reason); err != nil {
+		return err
+	}
+	if err := s.releaseFailedApprovalDecisionCommand(ctx, agentID, commandID, reason); err != nil {
+		return err
+	}
+	return s.SaveCommandAttempt(ctx, agentID, commandID, "dispatch", "stopped", reason, nil)
 }
 
 func (s *Store) PrepareCommandRetry(ctx context.Context, agentID, commandID string, deadlineAt, expiresAt time.Time) error {
@@ -1176,7 +1264,7 @@ func (s *Store) markRunForCommandTerminal(ctx context.Context, agentID, commandI
 			finished_at=COALESCE(finished_at, now())
 		WHERE agent_id=$1
 			AND command_id=$2
-			AND status IN ('queued','accepted')`, agentID, commandID, strings.ToLower(strings.TrimSpace(status)), reason)
+			AND (status IN ('queued','accepted') OR ($3='stopped' AND status='stopping'))`, agentID, commandID, strings.ToLower(strings.TrimSpace(status)), reason)
 	return err
 }
 

@@ -237,6 +237,11 @@ func (s *Server) dispatchCommand(ctx context.Context, identity store.AgentIdenti
 		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
 		return record, false
 	}
+	if !commandDispatchable(ctx, s.store, identity.AgentID, command) {
+		_ = s.store.MarkCommandStopped(ctx, identity.AgentID, command.CommandID, "run is no longer dispatchable")
+		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
+		return record, false
+	}
 	if !command.ExpiresAt.IsZero() && command.ExpiresAt.Before(time.Now().UTC()) {
 		_ = s.store.MarkCommandExpired(ctx, identity.AgentID, command.CommandID, "command expired")
 		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
@@ -273,6 +278,18 @@ func (s *Server) dispatchCommand(ctx context.Context, identity store.AgentIdenti
 		record, _, _ := s.store.CommandByID(ctx, identity.AgentID, command.CommandID)
 		return record, false
 	}
+}
+
+func commandDispatchable(ctx context.Context, repo interface {
+	CommandByID(context.Context, string, string) (store.CommandRecord, bool, error)
+	CommandDispatchable(context.Context, string, store.CommandRecord) (bool, error)
+}, agentID string, command protocol.Command) bool {
+	record, found, err := repo.CommandByID(ctx, agentID, command.CommandID)
+	if err != nil || !found {
+		return false
+	}
+	dispatchable, err := repo.CommandDispatchable(ctx, agentID, record)
+	return err == nil && dispatchable
 }
 
 func (s *Server) validateExecutionCredential(ctx context.Context, identity store.AgentIdentity, command protocol.Command) error {
