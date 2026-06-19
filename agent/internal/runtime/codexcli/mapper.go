@@ -14,6 +14,8 @@ import (
 
 type eventMapper struct {
 	adapter           *Adapter
+	threadID          string
+	currentTurnID     string
 	assistantByItemID map[string]string
 	terminalByItemID  map[string]string
 }
@@ -27,14 +29,16 @@ func newEventMapper(adapter *Adapter) *eventMapper {
 func (m *eventMapper) emitEvent(ctx context.Context, command protocol.Command, resolved localstate.CommandContext, event execEvent, sink agentruntime.Sink) error {
 	switch event.Type {
 	case "thread.started":
+		m.threadID = strings.TrimSpace(event.ThreadID)
 		return m.adapter.emitRuntimeSession(ctx, command, resolved, event.ThreadID, sink)
 	case "turn.started":
-		return emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.turn.started", "raw": event.Raw})
+		m.currentTurnID = firstNonEmpty(event.TurnID, protocol.NewID("turn"))
+		return emit(ctx, sink, command, "run.status", m.enrichPayload(map[string]any{"status": "codex.turn.started", "raw": event.Raw}, execItem{}, "turn.started"))
 	case "turn.completed":
-		return emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.turn.completed", "usage": rawJSON(event.Usage), "raw": event.Raw})
+		return emit(ctx, sink, command, "run.status", m.enrichPayload(map[string]any{"status": "codex.turn.completed", "usage": rawJSON(event.Usage), "raw": event.Raw}, execItem{}, "turn.completed"))
 	case "turn.failed":
 		message := firstNonEmpty(event.Message, event.Error.Message)
-		if err := emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.turn.failed", "message": message, "raw": event.Raw}); err != nil {
+		if err := emit(ctx, sink, command, "run.status", m.enrichPayload(map[string]any{"status": "codex.turn.failed", "message": message, "raw": event.Raw}, execItem{}, "turn.failed")); err != nil {
 			return err
 		}
 		return fmt.Errorf("codex CLI turn failed: %s", firstNonEmpty(message, string(event.Raw)))
@@ -45,7 +49,7 @@ func (m *eventMapper) emitEvent(ctx context.Context, command protocol.Command, r
 	case "item.started", "item.updated", "item.completed":
 		return m.emitItem(ctx, command, event.Type, decodeItem(event.Item), sink)
 	default:
-		return emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.event", "type": event.Type, "raw": event.Raw})
+		return emit(ctx, sink, command, "run.status", m.enrichPayload(map[string]any{"status": "codex.event", "type": event.Type, "raw": event.Raw}, execItem{}, event.Type))
 	}
 }
 
@@ -54,32 +58,51 @@ func (m *eventMapper) emitItem(ctx context.Context, command protocol.Command, ph
 	case "agent_message":
 		return m.emitAgentMessage(ctx, command, phase, item, sink)
 	case "reasoning":
-		return emitReasoning(ctx, command, phase, item, sink)
+		return m.emitReasoning(ctx, command, phase, item, sink)
 	case "command_execution":
 		return m.emitCommandExecution(ctx, command, phase, item, sink)
 	case "mcp_tool_call":
-		return emitTool(ctx, command, phase, item, firstNonEmpty(item.Tool, item.Name, "mcp"), mcpToolPayload(item), sink)
+		return m.emitTool(ctx, command, phase, item, firstNonEmpty(item.Tool, item.Name, "mcp"), mcpToolPayload(item), sink)
 	case "file_change":
-		return emitTool(ctx, command, phase, item, "file_change", fileChangePayload(item), sink)
+		return m.emitTool(ctx, command, phase, item, "file_change", fileChangePayload(item), sink)
 	case "todo_list":
-		return emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.todo_list", "phase": phase, "items": rawJSON(item.Items), "item": rawJSON(item.Raw)})
+		return emit(ctx, sink, command, "run.status", m.enrichPayload(map[string]any{"status": "codex.todo_list", "items": rawJSON(item.Items), "item": rawJSON(item.Raw)}, item, phase))
 	case "mcp_approval_request", "exec_approval_request", "apply_patch_approval_request", "elicitation_request":
 		return emitUnsupportedApproval(ctx, command, item.Type, item.Raw, sink)
 	case "error":
-		return emit(ctx, sink, command, "run.status", map[string]any{
+		return emit(ctx, sink, command, "run.status", m.enrichPayload(map[string]any{
 			"status":  "codex.item.error",
-			"phase":   phase,
 			"message": firstNonEmpty(item.Message, item.McpError.Message, rawText(item.Error)),
 			"error":   rawJSON(item.Error),
 			"item":    rawJSON(item.Raw),
-		})
+		}, item, phase))
 	case "web_search":
-		return emitTool(ctx, command, phase, item, "web_search", webSearchPayload(item), sink)
+		return m.emitTool(ctx, command, phase, item, "web_search", webSearchPayload(item), sink)
 	case "collab_tool_call":
-		return emitTool(ctx, command, phase, item, firstNonEmpty(item.Tool, item.Name, "collab"), collabToolPayload(item), sink)
+		return m.emitTool(ctx, command, phase, item, firstNonEmpty(item.Tool, item.Name, "collab"), collabToolPayload(item), sink)
 	default:
-		return emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.item", "phase": phase, "item_type": item.Type, "item": rawJSON(item.Raw)})
+		return emit(ctx, sink, command, "run.status", m.enrichPayload(map[string]any{"status": "codex.item", "item": rawJSON(item.Raw)}, item, phase))
 	}
+}
+
+func (m *eventMapper) enrichPayload(payload map[string]any, item execItem, phase string) map[string]any {
+	payload["runtime"] = runtimeName
+	if strings.TrimSpace(m.threadID) != "" {
+		payload["thread_id"] = strings.TrimSpace(m.threadID)
+	}
+	if strings.TrimSpace(m.currentTurnID) != "" {
+		payload["turn_id"] = strings.TrimSpace(m.currentTurnID)
+	}
+	if strings.TrimSpace(item.ID) != "" {
+		payload["item_id"] = strings.TrimSpace(item.ID)
+	}
+	if strings.TrimSpace(item.Type) != "" {
+		payload["item_type"] = strings.TrimSpace(item.Type)
+	}
+	if strings.TrimSpace(phase) != "" {
+		payload["phase"] = strings.TrimSpace(phase)
+	}
+	return payload
 }
 
 func emitUnsupportedApproval(ctx context.Context, command protocol.Command, sourceType string, raw json.RawMessage, sink agentruntime.Sink) error {
@@ -122,7 +145,7 @@ func approvalFields(raw json.RawMessage) map[string]any {
 
 func (m *eventMapper) emitCommandExecution(ctx context.Context, command protocol.Command, phase string, item execItem, sink agentruntime.Sink) error {
 	payload := commandExecutionPayload(item)
-	if err := emitTool(ctx, command, phase, item, "terminal", payload, sink); err != nil {
+	if err := m.emitTool(ctx, command, phase, item, "terminal", payload, sink); err != nil {
 		return err
 	}
 	if phase != "item.updated" {
@@ -136,12 +159,12 @@ func (m *eventMapper) emitCommandExecution(ctx context.Context, command protocol
 	if delta == "" {
 		return nil
 	}
-	return emit(ctx, sink, command, "terminal.output", map[string]any{
+	return emit(ctx, sink, command, "terminal.output", m.enrichPayload(map[string]any{
 		"stream":       "stdout",
 		"text":         delta,
 		"tool_call_id": item.ID,
 		"tool_name":    "terminal",
-	})
+	}, item, phase))
 }
 
 func (m *eventMapper) terminalOutputDelta(itemID string, output string) string {
@@ -165,13 +188,13 @@ func (m *eventMapper) emitAgentMessage(ctx context.Context, command protocol.Com
 		return nil
 	}
 	if phase == "item.completed" {
-		return emit(ctx, sink, command, "assistant.message.done", map[string]any{"text": item.Text, "item_id": item.ID, "raw": item.Raw})
+		return emit(ctx, sink, command, "assistant.message.done", m.enrichPayload(map[string]any{"text": item.Text, "raw": item.Raw}, item, phase))
 	}
 	text := m.assistantMessageDelta(item.ID, item.Text)
 	if text == "" {
 		return nil
 	}
-	return emit(ctx, sink, command, "assistant.message.delta", map[string]any{"text": text, "item_id": item.ID, "raw": item.Raw})
+	return emit(ctx, sink, command, "assistant.message.delta", m.enrichPayload(map[string]any{"text": text, "raw": item.Raw}, item, phase))
 }
 
 func (m *eventMapper) assistantMessageDelta(itemID string, text string) string {
@@ -190,23 +213,22 @@ func (m *eventMapper) assistantMessageDelta(itemID string, text string) string {
 	return text
 }
 
-func emitReasoning(ctx context.Context, command protocol.Command, phase string, item execItem, sink agentruntime.Sink) error {
-	return emit(ctx, sink, command, "run.status", map[string]any{
-		"status":  "codex.reasoning",
-		"phase":   phase,
-		"text":    firstNonEmpty(item.Summary, item.Text),
-		"item_id": item.ID,
-		"item":    rawJSON(item.Raw),
-	})
+func (m *eventMapper) emitReasoning(ctx context.Context, command protocol.Command, phase string, item execItem, sink agentruntime.Sink) error {
+	return emit(ctx, sink, command, "run.status", m.enrichPayload(map[string]any{
+		"status": "codex.reasoning",
+		"text":   firstNonEmpty(item.Summary, item.Text),
+		"item":   rawJSON(item.Raw),
+	}, item, phase))
 }
 
-func emitTool(ctx context.Context, command protocol.Command, phase string, item execItem, toolName string, payload map[string]any, sink agentruntime.Sink) error {
+func (m *eventMapper) emitTool(ctx context.Context, command protocol.Command, phase string, item execItem, toolName string, payload map[string]any, sink agentruntime.Sink) error {
 	payload["id"] = item.ID
 	payload["tool_call_id"] = item.ID
 	payload["tool_name"] = toolName
 	payload["name"] = firstNonEmpty(item.Name, item.Tool, toolName)
 	payload["status"] = item.Status
 	payload["raw"] = rawJSON(item.Raw)
+	payload = m.enrichPayload(payload, item, phase)
 
 	switch phase {
 	case "item.started":

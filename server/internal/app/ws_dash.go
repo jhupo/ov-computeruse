@@ -141,6 +141,12 @@ func (s *Server) handleDashRunSubscribe(r *http.Request, dash *DashConn, message
 		s.sendDashError(dash, "run_snapshot_failed", "unable to load tool calls")
 		return
 	}
+	runtimeTimeline, err := s.store.ListRuntimeTimeline(r.Context(), agentID, runID, message.AfterSeq, limit)
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "dash run subscribe runtime timeline failed", "dash_id", dash.ID, "agent_id", agentID, "run_id", runID, "error", err)
+		s.sendDashError(dash, "run_snapshot_failed", "unable to load runtime timeline")
+		return
+	}
 	events, err := s.store.ListRunEventsThrough(r.Context(), agentID, runID, message.AfterSeq, throughSeq, limit)
 	if err != nil {
 		s.log.ErrorContext(r.Context(), "dash run subscribe events failed", "dash_id", dash.ID, "agent_id", agentID, "run_id", runID, "error", err)
@@ -155,14 +161,15 @@ func (s *Server) handleDashRunSubscribe(r *http.Request, dash *DashConn, message
 	}
 	dash.mu.Unlock()
 	s.sendDash(dash, "run.snapshot", map[string]any{
-		"agent_id":    agentID,
-		"run_id":      runID,
-		"after_seq":   message.AfterSeq,
-		"through_seq": throughSeq,
-		"events":      events,
-		"timeline":    steps,
-		"messages":    messages,
-		"tool_calls":  tools,
+		"agent_id":         agentID,
+		"run_id":           runID,
+		"after_seq":        message.AfterSeq,
+		"through_seq":      throughSeq,
+		"events":           events,
+		"timeline":         steps,
+		"messages":         messages,
+		"tool_calls":       tools,
+		"runtime_timeline": runtimeTimeline,
 	})
 }
 

@@ -101,6 +101,9 @@ func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, even
 	if err := s.projectRunEvent(ctx, agentID, event); err != nil {
 		return RunEventSaveResult{}, err
 	}
+	if err := s.projectRuntimeTimeline(ctx, agentID, event); err != nil {
+		return RunEventSaveResult{}, err
+	}
 	if err := s.projectRunState(ctx, agentID, event); err != nil {
 		return RunEventSaveResult{}, err
 	}
@@ -360,6 +363,9 @@ func (s *Store) RebuildRunProjections(ctx context.Context, agentID, runID string
 		if err := s.projectRunEvent(ctx, agentID, event); err != nil {
 			return result, err
 		}
+		if err := s.projectRuntimeTimeline(ctx, agentID, event); err != nil {
+			return result, err
+		}
 		if err := s.projectRunState(ctx, agentID, event); err != nil {
 			return result, err
 		}
@@ -386,6 +392,9 @@ func (s *Store) clearRunProjections(ctx context.Context, agentID, runID string) 
 		return err
 	}
 	if _, err := s.pool.Exec(ctx, `DELETE FROM tool_calls WHERE agent_id=$1 AND run_id=$2`, agentID, runID); err != nil {
+		return err
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM runtime_timeline WHERE agent_id=$1 AND run_id=$2`, agentID, runID); err != nil {
 		return err
 	}
 	if _, err := s.pool.Exec(ctx, `DELETE FROM approval_requests WHERE agent_id=$1 AND run_id=$2`, agentID, runID); err != nil {

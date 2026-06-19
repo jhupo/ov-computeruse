@@ -176,6 +176,17 @@ func TestReadStdoutMapsCodexExecEvents(t *testing.T) {
 	if sink.events[0].SessionID != runtimeSession.SessionID || sink.events[0].ProjectID != runtimeSession.ProjectID {
 		t.Fatalf("session event target = project %q session %q, want project %q session %q", sink.events[0].ProjectID, sink.events[0].SessionID, runtimeSession.ProjectID, runtimeSession.SessionID)
 	}
+	threadID := "019edb96-e4c5-7503-9d11-f3e7c4b2c704"
+	assertPayloadString(t, sink.events[1].Payload, "thread_id", threadID)
+	turnID := payloadStringForTest(t, sink.events[1].Payload, "turn_id")
+	if turnID == "" {
+		t.Fatal("turn started event did not include turn_id")
+	}
+	assertPayloadString(t, sink.events[2].Payload, "thread_id", threadID)
+	assertPayloadString(t, sink.events[2].Payload, "turn_id", turnID)
+	assertPayloadString(t, sink.events[2].Payload, "item_id", "item_0")
+	assertPayloadString(t, sink.events[2].Payload, "item_type", "agent_message")
+	assertPayloadString(t, sink.events[3].Payload, "turn_id", turnID)
 }
 
 func TestReadStdoutMapsCodexToolItems(t *testing.T) {
@@ -404,13 +415,19 @@ func TestProcessStatusEvents(t *testing.T) {
 
 func assertPayloadString(t *testing.T, raw json.RawMessage, key, want string) {
 	t.Helper()
+	if got := payloadStringForTest(t, raw, key); got != want {
+		t.Fatalf("payload[%s] = %q, want %q; payload=%s", key, got, want, raw)
+	}
+}
+
+func payloadStringForTest(t *testing.T, raw json.RawMessage, key string) string {
+	t.Helper()
 	var payload map[string]any
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
-	if got, _ := payload[key].(string); got != want {
-		t.Fatalf("payload[%s] = %q, want %q; payload=%s", key, got, want, raw)
-	}
+	got, _ := payload[key].(string)
+	return got
 }
 
 func assertPayloadBool(t *testing.T, raw json.RawMessage, key string, want bool) {

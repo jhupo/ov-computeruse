@@ -16,6 +16,7 @@ import (
 type execEvent struct {
 	Type     string          `json:"type"`
 	ThreadID string          `json:"thread_id,omitempty"`
+	TurnID   string          `json:"turn_id,omitempty"`
 	Item     json.RawMessage `json:"item,omitempty"`
 	Usage    json.RawMessage `json:"usage,omitempty"`
 	Message  string          `json:"message,omitempty"`

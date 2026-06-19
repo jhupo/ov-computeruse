@@ -125,7 +125,13 @@ func (s *Server) handleDashRunTimeline(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "tool_call_list_failed", "unable to load tool calls")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agent_id": agentID, "run_id": runID, "timeline": steps, "messages": messages, "tool_calls": tools})
+	runtimeTimeline, err := s.store.ListRuntimeTimeline(r.Context(), agentID, runID, uint64(queryInt(r, "after_seq", 0)), queryInt(r, "limit", 500))
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "runtime timeline list failed", "agent_id", agentID, "run_id", runID, "user_id", principal.UserID, "error", err)
+		writeError(w, http.StatusInternalServerError, "runtime_timeline_failed", "unable to load runtime timeline")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agent_id": agentID, "run_id": runID, "timeline": steps, "messages": messages, "tool_calls": tools, "runtime_timeline": runtimeTimeline})
 }
 
 func (s *Server) handleDashRunRebuild(w http.ResponseWriter, r *http.Request) {

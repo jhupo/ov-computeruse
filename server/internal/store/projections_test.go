@@ -3,6 +3,7 @@ package store
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"ov-computeruse/server/internal/protocol"
 )
@@ -73,5 +74,44 @@ func TestSessionExistsQueryAcceptsHistoryOnlySessions(t *testing.T) {
 	query := sessionExistsQuery()
 	if !strings.Contains(query, "EXISTS(SELECT 1 FROM history_items WHERE agent_id=$1 AND session_id=$2)") {
 		t.Fatalf("session exists query does not accept history-only sessions:\n%s", query)
+	}
+}
+
+func TestRuntimeTimelineFromEventPreservesCodexSemantics(t *testing.T) {
+	event := protocol.RunEvent{
+		RunID:     "run_1",
+		SessionID: "session_1",
+		ProjectID: "project_1",
+		Seq:       12,
+		Kind:      "assistant.message.delta",
+		Payload: protocol.Raw(map[string]string{
+			"runtime":   protocol.RuntimeCodexCLI,
+			"thread_id": "thread_1",
+			"turn_id":   "turn_1",
+			"item_id":   "item_1",
+			"item_type": "agent_message",
+			"phase":     "item.updated",
+			"text":      "hello",
+		}),
+		At: time.Now().UTC(),
+	}
+	item := runtimeTimelineFromEvent("agent_1", event)
+	if item.Runtime != protocol.RuntimeCodexCLI || item.ThreadID != "thread_1" || item.TurnID != "turn_1" || item.ItemID != "item_1" {
+		t.Fatalf("runtime timeline identity not preserved: %+v", item)
+	}
+	if item.Role != "assistant" || item.Text != "hello" || item.ItemType != "agent_message" || item.Phase != "item.updated" {
+		t.Fatalf("runtime timeline content not preserved: %+v", item)
+	}
+}
+
+func TestRuntimeTimelineSkipsNonRuntimeEvents(t *testing.T) {
+	item := runtimeTimelineFromEvent("agent_1", protocol.RunEvent{
+		RunID: "run_1",
+		Seq:   1,
+		Kind:  "run.started",
+		At:    time.Now().UTC(),
+	})
+	if item.Runtime != "" {
+		t.Fatalf("non-runtime event projected unexpectedly: %+v", item)
 	}
 }
