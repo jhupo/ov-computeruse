@@ -826,23 +826,36 @@ func scanRunEvents(rows pgx.Rows) ([]RunEventRecord, error) {
 }
 
 func (s *Store) UpsertRuntimeSession(ctx context.Context, agentID string, runtime protocol.RuntimeSession) (bool, error) {
-	if runtime.Runtime != protocol.RuntimeCodexCLI {
-		return false, nil
-	}
-	if runtime.SessionID == "" {
-		runtime.SessionID = dashboardFirstNonEmpty(runtime.NativeSessionID, runtime.LastRunID)
-	}
-	if runtime.ID == "" {
-		runtime.ID = runtimeSessionID(agentID, runtime.Runtime, dashboardFirstNonEmpty(runtime.SessionID, runtime.NativeSessionID, runtime.LastRunID))
-	}
+	runtime = normalizeRuntimeSession(agentID, runtime)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback(ctx)
+	ok, err := s.upsertRuntimeSessionTx(ctx, tx, agentID, runtime)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return ok, s.linkRuntimeSessionToRun(ctx, agentID, runtime)
+}
+
+func (s *Store) upsertRuntimeSessionTx(ctx context.Context, tx queryExecer, agentID string, runtime protocol.RuntimeSession) (bool, error) {
+	runtime = normalizeRuntimeSession(agentID, runtime)
+	if runtime.Runtime != protocol.RuntimeCodexCLI {
+		return false, nil
+	}
+	if runtime.ID == "" {
+		return false, nil
+	}
+	if runtime.SessionID == "" && runtime.NativeSessionID == "" {
+		return false, nil
+	}
 	if runtime.NativeSessionID != "" {
 		var existingID string
-		err = tx.QueryRow(ctx, `SELECT id FROM runtime_sessions WHERE agent_id=$1 AND runtime=$2 AND native_session_id=$3 FOR UPDATE`, agentID, runtime.Runtime, runtime.NativeSessionID).Scan(&existingID)
+		err := tx.QueryRow(ctx, `SELECT id FROM runtime_sessions WHERE agent_id=$1 AND runtime=$2 AND native_session_id=$3 FOR UPDATE`, agentID, runtime.Runtime, runtime.NativeSessionID).Scan(&existingID)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return false, err
 		}
@@ -850,15 +863,22 @@ func (s *Store) UpsertRuntimeSession(ctx context.Context, agentID string, runtim
 			runtime.ID = existingID
 		}
 	}
-	_, err = tx.Exec(ctx, upsertRuntimeSessionSQL(),
+	_, err := tx.Exec(ctx, upsertRuntimeSessionSQL(),
 		runtime.ID, agentID, runtime.Runtime, runtime.NativeSessionID, runtime.ProjectID, runtime.SessionID, runtime.ResumeMode, runtime.LastRunID, runtime.Title, runtime.CWD, runtime.Model, runtime.Profile, runtime.ApprovalPolicy, runtime.SandboxMode, runtime.ReasoningEffort, runtime.LastTurnID, runtime.LastItemIndex)
 	if err != nil {
 		return false, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, err
+	return true, nil
+}
+
+func normalizeRuntimeSession(agentID string, runtime protocol.RuntimeSession) protocol.RuntimeSession {
+	if runtime.SessionID == "" {
+		runtime.SessionID = dashboardFirstNonEmpty(runtime.NativeSessionID, runtime.LastRunID)
 	}
-	return true, s.linkRuntimeSessionToRun(ctx, agentID, runtime)
+	if runtime.ID == "" {
+		runtime.ID = runtimeSessionID(agentID, runtime.Runtime, dashboardFirstNonEmpty(runtime.SessionID, runtime.NativeSessionID, runtime.LastRunID))
+	}
+	return runtime
 }
 
 func upsertRuntimeSessionSQL() string {

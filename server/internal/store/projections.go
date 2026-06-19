@@ -296,11 +296,7 @@ func (s *Store) ListHistoryItems(ctx context.Context, agentID, sessionID string,
 	if limit <= 0 || limit > 1000 {
 		limit = 300
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id, agent_id, session_id, item_index, COALESCE(role, ''), kind, COALESCE(text, ''), payload, COALESCE(source, ''), COALESCE(source_event_id, ''), item_at, received_at
-		FROM history_items
-		WHERE agent_id=$1 AND session_id=$2 AND item_index>$3 AND lower(trim(kind)) NOT IN ('usage','response.usage','token_usage','billing','cost')
-		ORDER BY item_index ASC
-		LIMIT $4`, agentID, sessionID, afterIndex, limit)
+	rows, err := s.pool.Query(ctx, historyItemsQuery(), agentID, sessionID, afterIndex, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -322,6 +318,21 @@ func (s *Store) ListHistoryItems(ctx context.Context, agentID, sessionID string,
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func historyItemsQuery() string {
+	return `WITH session_aliases AS (
+			SELECT $2::TEXT AS id
+			UNION
+			SELECT session_id FROM runtime_sessions WHERE agent_id=$1 AND runtime='codex.cli' AND (session_id=$2 OR native_session_id=$2) AND session_id IS NOT NULL AND session_id <> ''
+			UNION
+			SELECT native_session_id FROM runtime_sessions WHERE agent_id=$1 AND runtime='codex.cli' AND (session_id=$2 OR native_session_id=$2) AND native_session_id IS NOT NULL AND native_session_id <> ''
+		)
+		SELECT id, agent_id, session_id, item_index, COALESCE(role, ''), kind, COALESCE(text, ''), payload, COALESCE(source, ''), COALESCE(source_event_id, ''), item_at, received_at
+		FROM history_items
+		WHERE agent_id=$1 AND session_id IN (SELECT id FROM session_aliases) AND item_index>$3 AND lower(trim(kind)) NOT IN ('usage','response.usage','token_usage','billing','cost')
+		ORDER BY item_index ASC
+		LIMIT $4`
 }
 
 func (s *Store) ListConversationItems(ctx context.Context, agentID, sessionID string, limit int) ([]ConversationItem, error) {
@@ -357,15 +368,21 @@ func (s *Store) ListConversationItems(ctx context.Context, agentID, sessionID st
 }
 
 func conversationItemsQuery() string {
-	return `WITH history AS (
+	return `WITH session_aliases AS (
+			SELECT $2::TEXT AS id
+			UNION
+			SELECT session_id FROM runtime_sessions WHERE agent_id=$1 AND runtime='codex.cli' AND (session_id=$2 OR native_session_id=$2) AND session_id IS NOT NULL AND session_id <> ''
+			UNION
+			SELECT native_session_id FROM runtime_sessions WHERE agent_id=$1 AND runtime='codex.cli' AND (session_id=$2 OR native_session_id=$2) AND native_session_id IS NOT NULL AND native_session_id <> ''
+		), history AS (
 			SELECT id, agent_id, session_id, '' AS run_id, item_index, 0::BIGINT AS seq_start, COALESCE(role, '') AS role, kind, COALESCE(text, '') AS text, payload, COALESCE(source, 'codex.history') AS source, item_at AS at, received_at
 			FROM history_items
-			WHERE agent_id=$1 AND session_id=$2 AND lower(trim(kind)) NOT IN ('usage','response.usage','token_usage','billing','cost')
+			WHERE agent_id=$1 AND session_id IN (SELECT id FROM session_aliases) AND lower(trim(kind)) NOT IN ('usage','response.usage','token_usage','billing','cost')
 		), remote AS (
 			SELECT rm.id, rm.agent_id, r.session_id, rm.run_id, 0 AS item_index, rm.seq_start, rm.role, 'message' AS kind, COALESCE(rm.content, '') AS text, rm.payload, 'remote.run' AS source, rm.started_at AS at, rm.started_at AS received_at
 			FROM run_messages rm
 			JOIN runs r ON r.agent_id=rm.agent_id AND r.id=rm.run_id
-			WHERE rm.agent_id=$1 AND r.session_id=$2
+			WHERE rm.agent_id=$1 AND r.session_id IN (SELECT id FROM session_aliases)
 				AND (
 					r.finished_at IS NULL
 					OR NOT EXISTS (

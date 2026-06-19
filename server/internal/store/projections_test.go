@@ -32,7 +32,7 @@ func TestStatusStepProjectionIgnoresRegularStatus(t *testing.T) {
 
 func TestConversationQueryHidesRemoteRunsAfterHistorySync(t *testing.T) {
 	query := conversationItemsQuery()
-	for _, want := range []string{"r.finished_at IS NULL", "history_items hi", "hi.received_at >= r.finished_at"} {
+	for _, want := range []string{"session_aliases AS", "session_id IN (SELECT id FROM session_aliases)", "r.finished_at IS NULL", "history_items hi", "hi.received_at >= r.finished_at"} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("conversation query missing %q:\n%s", want, query)
 		}
@@ -74,6 +74,15 @@ func TestSessionExistsQueryAcceptsHistoryOnlySessions(t *testing.T) {
 	query := sessionExistsQuery()
 	if !strings.Contains(query, "EXISTS(SELECT 1 FROM history_items WHERE agent_id=$1 AND session_id=$2)") {
 		t.Fatalf("session exists query does not accept history-only sessions:\n%s", query)
+	}
+}
+
+func TestHistoryItemsQueryUsesRuntimeSessionAliases(t *testing.T) {
+	query := historyItemsQuery()
+	for _, want := range []string{"session_aliases AS", "session_id=$2 OR native_session_id=$2", "session_id IN (SELECT id FROM session_aliases)"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("history items query missing %q:\n%s", want, query)
+		}
 	}
 }
 
@@ -119,7 +128,9 @@ func TestRuntimeTimelineSkipsNonRuntimeEvents(t *testing.T) {
 func TestRuntimeTimelineSessionQueryAcceptsSessionOrThreadID(t *testing.T) {
 	query := runtimeTimelineSessionQuery()
 	for _, want := range []string{
-		"session_id=$2 OR thread_id=$2",
+		"session_aliases AS",
+		"session_id IN (SELECT id FROM session_aliases) OR thread_id IN (SELECT id FROM session_aliases)",
+		"hi.session_id IN (SELECT id FROM session_aliases)",
 		"history AS",
 		"FROM history_items hi",
 		"LEFT JOIN LATERAL",

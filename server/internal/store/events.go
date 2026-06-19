@@ -77,12 +77,6 @@ func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, even
 	if err := s.validateRunEventOwnership(ctx, agentID, event, false); err != nil {
 		return RunEventSaveResult{}, err
 	}
-	if err := s.projectRuntimeSession(ctx, agentID, event); err != nil {
-		return RunEventSaveResult{}, err
-	}
-	if err := s.validateRunEventOwnership(ctx, agentID, event, true); err != nil {
-		return RunEventSaveResult{}, err
-	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return RunEventSaveResult{}, err
@@ -102,6 +96,12 @@ func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, even
 		return RunEventSaveResult{}, err
 	}
 	if err := s.projectApprovalTx(ctx, tx, agentID, event); err != nil {
+		return RunEventSaveResult{}, err
+	}
+	if err := s.projectRuntimeSessionTx(ctx, tx, agentID, event); err != nil {
+		return RunEventSaveResult{}, err
+	}
+	if err := validateRunEventSessionOwnershipTx(ctx, tx, agentID, event); err != nil {
 		return RunEventSaveResult{}, err
 	}
 	if err := s.projectRunEventTx(ctx, tx, agentID, event); err != nil {
@@ -651,17 +651,105 @@ func runEventReason(event protocol.RunEvent) string {
 }
 
 func (s *Store) projectRuntimeSession(ctx context.Context, agentID string, event protocol.RunEvent) error {
+	return s.projectRuntimeSessionTx(ctx, s.pool, agentID, event)
+}
+
+func (s *Store) projectRuntimeSessionTx(ctx context.Context, tx queryExecer, agentID string, event protocol.RunEvent) error {
 	runtime, ok := runtimeSessionFromEvent(event)
 	if !ok {
 		return nil
 	}
-	if _, err := s.UpsertRuntimeSession(ctx, agentID, runtime); err != nil {
+	runtime = normalizeRuntimeSession(agentID, runtime)
+	if err := s.validateRuntimeSessionProjectionTx(ctx, tx, agentID, event, runtime); err != nil {
 		return err
 	}
+	if _, err := s.upsertRuntimeSessionTx(ctx, tx, agentID, runtime); err != nil {
+		return err
+	}
+	return s.projectRuntimeSessionRunLinkTx(ctx, tx, agentID, event, runtime)
+}
+
+func (s *Store) validateRuntimeSessionProjectionTx(ctx context.Context, tx queryExecer, agentID string, event protocol.RunEvent, runtime protocol.RuntimeSession) error {
+	commandKind, err := s.runEventCommandKindTx(ctx, tx, agentID, event)
+	if err != nil {
+		return err
+	}
+	if runtimeSessionProjectionCanCreate(commandKind) {
+		return nil
+	}
+	exists, err := runtimeSessionTargetExistsTx(ctx, tx, agentID, runtime)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return errors.New("runtime session update target does not belong to agent")
+	}
+	return nil
+}
+
+func (s *Store) runEventCommandKindTx(ctx context.Context, tx queryExecer, agentID string, event protocol.RunEvent) (string, error) {
+	if strings.TrimSpace(event.CommandID) != "" {
+		var kind string
+		err := tx.QueryRow(ctx, `SELECT kind FROM commands WHERE agent_id=$1 AND id=$2`, agentID, event.CommandID).Scan(&kind)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", errors.New("run event command does not belong to agent")
+		}
+		return kind, err
+	}
+	if strings.TrimSpace(event.RunID) == "" {
+		return "", nil
+	}
+	var kind string
+	err := tx.QueryRow(ctx, `SELECT COALESCE(c.kind, '')
+		FROM runs r
+		LEFT JOIN commands c ON c.agent_id=r.agent_id AND c.id=r.command_id
+		WHERE r.agent_id=$1 AND r.id=$2`, agentID, event.RunID).Scan(&kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return kind, err
+}
+
+func runtimeSessionProjectionCanCreate(commandKind string) bool {
+	return strings.TrimPrefix(strings.TrimSpace(commandKind), "command.") == "new_session"
+}
+
+func runtimeSessionTargetExistsTx(ctx context.Context, tx queryExecer, agentID string, runtime protocol.RuntimeSession) (bool, error) {
+	sessionID := strings.TrimSpace(runtime.SessionID)
+	nativeSessionID := strings.TrimSpace(runtime.NativeSessionID)
+	if sessionID == "" && nativeSessionID == "" {
+		return false, nil
+	}
+	var exists bool
+	err := tx.QueryRow(ctx, `SELECT
+		EXISTS(SELECT 1 FROM codex_sessions WHERE agent_id=$1 AND id IN ($2, $3) AND deleted_at IS NULL)
+		OR EXISTS(SELECT 1 FROM runtime_sessions WHERE agent_id=$1 AND (session_id IN ($2, $3) OR native_session_id IN ($2, $3)))
+		OR EXISTS(SELECT 1 FROM history_items WHERE agent_id=$1 AND session_id IN ($2, $3))`,
+		agentID, sessionID, nativeSessionID).Scan(&exists)
+	return exists, err
+}
+
+func validateRunEventSessionOwnershipTx(ctx context.Context, tx queryExecer, agentID string, event protocol.RunEvent) error {
+	sessionID := strings.TrimSpace(event.SessionID)
+	if sessionID == "" {
+		return nil
+	}
+	var exists bool
+	err := tx.QueryRow(ctx, sessionExistsQuery(), agentID, sessionID).Scan(&exists)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return errors.New("run event session does not belong to agent")
+	}
+	return nil
+}
+
+func (s *Store) projectRuntimeSessionRunLinkTx(ctx context.Context, tx execer, agentID string, event protocol.RunEvent, runtime protocol.RuntimeSession) error {
 	if strings.TrimSpace(event.RunID) == "" {
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, `UPDATE runs
+	_, err := tx.Exec(ctx, `UPDATE runs
 		SET session_id=COALESCE(NULLIF($3, ''), session_id),
 			project_id=COALESCE(NULLIF($4, ''), project_id)
 		WHERE agent_id=$1 AND id=$2`, agentID, event.RunID, runtime.SessionID, runtime.ProjectID)

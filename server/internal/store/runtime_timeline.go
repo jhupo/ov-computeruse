@@ -141,10 +141,16 @@ func runtimeTimelineRunQuery() string {
 }
 
 func runtimeTimelineSessionQuery() string {
-	return `WITH live AS (
+	return `WITH session_aliases AS (
+			SELECT $2::TEXT AS id
+			UNION
+			SELECT session_id FROM runtime_sessions WHERE agent_id=$1 AND runtime='codex.cli' AND (session_id=$2 OR native_session_id=$2) AND session_id IS NOT NULL AND session_id <> ''
+			UNION
+			SELECT native_session_id FROM runtime_sessions WHERE agent_id=$1 AND runtime='codex.cli' AND (session_id=$2 OR native_session_id=$2) AND native_session_id IS NOT NULL AND native_session_id <> ''
+		), live AS (
 			SELECT id, agent_id, run_id, COALESCE(session_id, '') AS session_id, COALESCE(project_id, '') AS project_id, seq, runtime, COALESCE(thread_id, '') AS thread_id, COALESCE(turn_id, '') AS turn_id, COALESCE(item_id, '') AS item_id, COALESCE(item_type, '') AS item_type, COALESCE(phase, '') AS phase, kind, COALESCE(role, '') AS role, COALESCE(text, '') AS text, COALESCE(status, '') AS status, payload, event_at, received_at
 			FROM runtime_timeline
-			WHERE agent_id=$1 AND (session_id=$2 OR thread_id=$2)
+			WHERE agent_id=$1 AND (session_id IN (SELECT id FROM session_aliases) OR thread_id IN (SELECT id FROM session_aliases))
 		), history AS (
 			SELECT hi.id, hi.agent_id, '' AS run_id, hi.session_id, COALESCE(rs.project_id, '') AS project_id, hi.item_index::BIGINT AS seq, 'codex.cli' AS runtime, COALESCE(NULLIF(rs.native_session_id, ''), hi.session_id) AS thread_id, COALESCE(hi.payload->>'turn_id', '') AS turn_id, COALESCE(NULLIF(hi.source_event_id, ''), NULLIF(hi.payload->>'id', ''), NULLIF(hi.payload->>'call_id', ''), hi.id) AS item_id,
 				CASE
@@ -172,7 +178,7 @@ func runtimeTimelineSessionQuery() string {
 				ORDER BY updated_at DESC
 				LIMIT 1
 			) rs ON true
-			WHERE hi.agent_id=$1 AND hi.session_id=$2
+			WHERE hi.agent_id=$1 AND hi.session_id IN (SELECT id FROM session_aliases)
 				AND NOT EXISTS (
 					SELECT 1 FROM live
 					WHERE live.item_id=COALESCE(NULLIF(hi.source_event_id, ''), NULLIF(hi.payload->>'id', ''), NULLIF(hi.payload->>'call_id', ''), hi.id)
