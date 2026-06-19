@@ -1,9 +1,19 @@
+FROM node:22-bookworm AS dash
+
+WORKDIR /src/dash
+COPY dash/package.json dash/package-lock.json ./
+RUN npm ci
+COPY dash/ ./
+RUN npm run build
+
 FROM golang:1.25-bookworm AS build
 
 WORKDIR /src
 COPY server/go.mod server/go.sum* ./
 RUN go mod download
 COPY server/ ./
+RUN rm -rf internal/app/dash_dist
+COPY --from=dash /src/dash/dist ./internal/app/dash_dist
 
 ARG VERSION=dev
 ARG SERVER_KEY_ID=

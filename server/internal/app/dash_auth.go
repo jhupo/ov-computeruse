@@ -29,10 +29,16 @@ func (s *Server) handleDashLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing_credentials", "username and password are required")
 		return
 	}
-	principal, token, expiresAt, err := s.sessions.Login(r.Context(), req.Username, req.Password)
+	principal, err := s.sub2api.Login(r.Context(), s.store, req.Username, req.Password)
 	if err != nil {
 		s.log.WarnContext(r.Context(), "dash login rejected", "username", req.Username, "error", err)
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "invalid username or password")
+		return
+	}
+	principal, token, expiresAt, err := s.sessions.Issue(r.Context(), principal)
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "dash session issue failed", "user_id", principal.UserID, "username", principal.Username, "error", err)
+		writeError(w, http.StatusInternalServerError, "session_issue_failed", "unable to create session")
 		return
 	}
 	s.log.InfoContext(r.Context(), "dash login", "user_id", principal.UserID, "username", principal.Username)

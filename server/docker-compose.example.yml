@@ -24,6 +24,7 @@ services:
     environment:
       OV_SERVER_ADDR: :8080
       OV_SERVER_PUBLIC_URL: https://server.example.com
+      OV_SERVER_SUB2API_LOGIN_UPSTREAM: https://sub2api.example.com
       OV_SERVER_POSTGRES_URL: postgres://ov:ov_dev_password@postgres:5432/ov_computeruse?sslmode=disable
       OV_SERVER_REDIS_URL: redis://redis:6379/0
       OV_SERVER_KEY_ID: dev-key

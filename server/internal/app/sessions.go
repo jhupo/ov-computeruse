@@ -38,11 +38,17 @@ func (s SessionService) Login(ctx context.Context, username, password string) (D
 	if err != nil {
 		return DashPrincipal{}, "", time.Time{}, err
 	}
+	return s.Issue(ctx, DashPrincipal{UserID: user.UserID, Username: user.Username})
+}
+
+func (s SessionService) Issue(ctx context.Context, principal DashPrincipal) (DashPrincipal, string, time.Time, error) {
+	if principal.UserID == "" && !principal.Admin {
+		return DashPrincipal{}, "", time.Time{}, errors.New("invalid dash principal")
+	}
 	token, err := randomSessionToken()
 	if err != nil {
 		return DashPrincipal{}, "", time.Time{}, err
 	}
-	principal := DashPrincipal{UserID: user.UserID, Username: user.Username}
 	raw, err := json.Marshal(principal)
 	if err != nil {
 		return DashPrincipal{}, "", time.Time{}, err

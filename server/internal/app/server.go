@@ -24,6 +24,7 @@ type Server struct {
 	log       *slog.Logger
 	bind      BindService
 	sessions  SessionService
+	sub2api   Sub2APIAuthenticator
 	workspace WorkspaceBroker
 }
 
@@ -32,7 +33,7 @@ func New(cfg config.Config, st Repository, postgresPool *pgxpool.Pool, redisClie
 		logger = slog.Default()
 	}
 	hub := NewHub(redisClient, st, logger)
-	return &Server{cfg: cfg, store: st, postgres: postgresPool, redis: redisClient, hub: hub, log: logger, bind: NewBindService(st, cfg.PublicURL, cfg.ServerKeyID), sessions: NewSessionService(redisClient, st, logger), workspace: NewWorkspaceBroker(redisClient, hub, logger)}
+	return &Server{cfg: cfg, store: st, postgres: postgresPool, redis: redisClient, hub: hub, log: logger, bind: NewBindService(st, cfg.PublicURL, cfg.ServerKeyID), sessions: NewSessionService(redisClient, st, logger), sub2api: NewSub2APIAuthenticator(cfg.Sub2APILoginUpstream), workspace: NewWorkspaceBroker(redisClient, hub, logger)}
 }
 
 func (s *Server) Run(ctx context.Context) {
@@ -47,6 +48,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.HandleFunc("POST /api/agents/bind", s.handleBind)
 	mux.HandleFunc("POST /api/dash/login", s.handleDashLogin)
+	mux.HandleFunc("GET /api/dash/config", s.handleDashConfig)
 	mux.HandleFunc("GET /api/dash/me", s.handleDashMe)
 	mux.HandleFunc("GET /api/admin/users", s.handleAdminUsers)
 	mux.HandleFunc("POST /api/admin/users", s.handleAdminUserUpsert)
@@ -86,6 +88,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /ws/dash", s.handleDashWS)
 	mux.HandleFunc("POST /api/dash/commands", s.handleDashCommand)
 	mux.HandleFunc("GET /api/dash/history/messages", s.handleDashHistoryMessages)
+	mux.HandleFunc("/", s.handleDashStatic)
 	return httpx.Middleware(s.log, mux)
 }
 

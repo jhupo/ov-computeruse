@@ -12,6 +12,7 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 
 - `OV_SERVER_ADDR`, default `:8080`
 - `OV_SERVER_PUBLIC_URL`
+- `OV_SERVER_SUB2API_LOGIN_UPSTREAM`, base URL for the sub2api login upstream used by dash. Server posts `POST <upstream>/api/login`.
 - `OV_SERVER_POSTGRES_URL`
 - `OV_SERVER_REDIS_URL`
 - `OV_SERVER_KEY_ID`
@@ -21,12 +22,40 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 
 `OV_SERVER_BIND_USERS_JSON` is a JSON array with username/password and allowed Codex key fingerprint records. It is a bootstrap seed path; ongoing user/key management should use the admin API.
 
+## sub2api login contract
+
+Dash login sends the user's username/password to `OV_SERVER_SUB2API_LOGIN_UPSTREAM`. On success, server syncs the returned user and key fingerprints into Postgres, issues a dash session token, and never stores plaintext API keys.
+
+Expected response:
+
+```json
+{
+  "user": {
+    "id": "usr_123",
+    "username": "alice"
+  },
+  "keys": [
+    {
+      "id": "key_123",
+      "name": "main",
+      "base_url": "https://gateway.example.com/v1",
+      "api_key": "sk-...",
+      "provider": "openai",
+      "model": "gpt-5.1-codex"
+    }
+  ]
+}
+```
+
+`key_fingerprint` may be returned instead of `api_key`. `base_url` is required because agent bind validates the local Codex config by matching both `base_url` fingerprint and key fingerprint.
+
 ## Endpoints
 
 - `POST /api/agents/bind`: installer bind flow, decrypts agent payload with the server private key.
 - `GET /ws/agent`: outbound agent websocket, bearer token is the per-agent secret.
 - `POST /api/dash/login`: username/password login, returns a short-lived dash session token.
 - `GET /api/dash/me`: return the current dash principal.
+- `GET /api/dash/config`: return dash runtime configuration, including the sub2api login upstream domain.
 - `GET /api/admin/users`: admin-only list of users.
 - `POST /api/admin/users`: admin-only create/update user. Body includes `username`, optional `id`, and `password`.
 - `POST /api/admin/users/{user_id}/disable`: admin-only disable user, invalidating sessions and disconnecting agents.
@@ -57,6 +86,8 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 - `GET /healthz`: liveness.
 - `GET /readyz`: readiness; pings Postgres and Redis and returns dependency status.
 
+The image serves the embedded dash build at `/`. Unknown non-API GET/HEAD paths fall back to `index.html` for SPA routing. GitHub Actions and the Dockerfile build `dash/dist` first, copy it into the server source tree during the image build, and embed it into the `ov-server` binary.
+
 Agent websocket envelopes encrypt `data` with AES-256-GCM derived from the per-agent secret and then sign the encrypted envelope with HMAC-SHA256. Bind requests still use the server public key because they happen before an agent secret exists.
 
 ## Dash websocket
@@ -86,3 +117,11 @@ ghcr.io/<owner>/<repo>/server:latest
 ```
 
 The workflow injects only non-secret build metadata: version, server key id, and public key fingerprint.
+
+Runtime secrets are set on the deployed container, not at image build time:
+
+- `OV_SERVER_PUBLIC_URL`: public HTTPS service URL used by agent installers.
+- `OV_SERVER_SUB2API_LOGIN_UPSTREAM`: sub2api login upstream base URL.
+- `OV_SERVER_PRIVATE_KEY_PEM` or `OV_SERVER_PRIVATE_KEY_FILE`: server private key for installer bind decrypt.
+- `OV_SERVER_KEY_ID` and `OV_SERVER_PUBLIC_KEY_FINGERPRINT`: key metadata matching the agent installer public key.
+- `OV_SERVER_DASH_TOKEN`: internal/admin bearer token.

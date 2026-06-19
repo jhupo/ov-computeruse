@@ -1,10 +1,7 @@
 .git
-.github
-agent/dist
-server/dist
 **/node_modules
-**/.DS_Store
+**/dist
+**/*.tsbuildinfo
 **/*.log
-**/tmp
-**/.cache
-**/coverage.out
+**/*.exe
+**/*.test
