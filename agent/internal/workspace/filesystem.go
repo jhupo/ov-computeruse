@@ -71,6 +71,12 @@ func (fs Filesystem) List(ctx context.Context, target Target, req protocol.Works
 			}
 			return nil
 		}
+		if policy.Sensitive(path) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		info, err := entry.Info()
 		if err != nil {
 			return nil
@@ -150,6 +156,12 @@ func (fs Filesystem) Search(ctx context.Context, target Target, req protocol.Wor
 			return filepath.SkipDir
 		}
 		if !req.IncludeHidden && policy.Hidden(name) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if policy.Sensitive(path) {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}

@@ -151,3 +151,34 @@ func TestHandlerRejectsSensitiveFileRead(t *testing.T) {
 		t.Fatalf("sensitive read status = %q", resp.Status)
 	}
 }
+
+func TestHandlerDoesNotEnumerateSensitiveFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".env", "api_token.txt", "client_secret.json"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("secret"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := New(fakeState{projects: map[string]string{"project_1": root}})
+
+	list := handler.Handle(context.Background(), protocol.WorkspaceRequest{RequestID: "req_list", Operation: "list", ProjectID: "project_1", IncludeHidden: true})
+	if list.Status != "ok" {
+		t.Fatalf("list status = %q", list.Status)
+	}
+	for _, entry := range list.Entries {
+		if entry.Path == ".env" || entry.Path == "api_token.txt" || entry.Path == "client_secret.json" {
+			t.Fatalf("sensitive file was listed: %+v", entry)
+		}
+	}
+
+	search := handler.Handle(context.Background(), protocol.WorkspaceRequest{RequestID: "req_search", Operation: "search", ProjectID: "project_1", Query: "secret", IncludeHidden: true})
+	if search.Status != "ok" {
+		t.Fatalf("search status = %q", search.Status)
+	}
+	if len(search.Matches) != 0 {
+		t.Fatalf("sensitive file was searchable: %+v", search.Matches)
+	}
+}
