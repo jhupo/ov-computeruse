@@ -179,6 +179,29 @@ func TestReadStdoutEmitsTerminalOutputDelta(t *testing.T) {
 	assertPayloadString(t, terminal[1].Payload, "text", " world")
 }
 
+func TestReadStdoutEmitsAssistantMessageDelta(t *testing.T) {
+	adapter := New(Config{})
+	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1"}
+	input := strings.Join([]string{
+		`{"type":"item.updated","item":{"id":"msg","type":"agent_message","text":"hello"}}`,
+		`{"type":"item.updated","item":{"id":"msg","type":"agent_message","text":"hello world"}}`,
+		`{"type":"item.completed","item":{"id":"msg","type":"agent_message","text":"hello world"}}`,
+	}, "\n")
+	sink := &captureSink{}
+	if err := adapter.readStdout(context.Background(), strings.NewReader(input), command, localstate.CommandContext{}, sink, &completionSignal{}); err != nil && err != io.EOF {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if len(sink.events) != 3 {
+		t.Fatalf("event count = %d, want 3; events=%+v", len(sink.events), sink.events)
+	}
+	if sink.events[0].Kind != "assistant.message.delta" || sink.events[1].Kind != "assistant.message.delta" || sink.events[2].Kind != "assistant.message.done" {
+		t.Fatalf("event kinds = %#v", []string{sink.events[0].Kind, sink.events[1].Kind, sink.events[2].Kind})
+	}
+	assertPayloadString(t, sink.events[0].Payload, "text", "hello")
+	assertPayloadString(t, sink.events[1].Payload, "text", " world")
+	assertPayloadString(t, sink.events[2].Payload, "text", "hello world")
+}
+
 func TestEmitProcessExitedMarksCanceled(t *testing.T) {
 	sink := &captureSink{}
 	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1"}

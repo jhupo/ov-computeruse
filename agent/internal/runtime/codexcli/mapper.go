@@ -12,12 +12,13 @@ import (
 )
 
 type eventMapper struct {
-	adapter          *Adapter
-	terminalByItemID map[string]string
+	adapter           *Adapter
+	assistantByItemID map[string]string
+	terminalByItemID  map[string]string
 }
 
 func newEventMapper(adapter *Adapter) *eventMapper {
-	return &eventMapper{adapter: adapter, terminalByItemID: map[string]string{}}
+	return &eventMapper{adapter: adapter, assistantByItemID: map[string]string{}, terminalByItemID: map[string]string{}}
 }
 
 func (m *eventMapper) emitEvent(ctx context.Context, command protocol.Command, resolved localstate.CommandContext, event execEvent, sink agentruntime.Sink) error {
@@ -44,7 +45,7 @@ func (m *eventMapper) emitEvent(ctx context.Context, command protocol.Command, r
 func (m *eventMapper) emitItem(ctx context.Context, command protocol.Command, phase string, item execItem, sink agentruntime.Sink) error {
 	switch item.Type {
 	case "agent_message":
-		return emitAgentMessage(ctx, command, phase, item, sink)
+		return m.emitAgentMessage(ctx, command, phase, item, sink)
 	case "reasoning":
 		return emitReasoning(ctx, command, phase, item, sink)
 	case "command_execution":
@@ -141,15 +142,34 @@ func (m *eventMapper) terminalOutputDelta(itemID string, output string) string {
 	return output
 }
 
-func emitAgentMessage(ctx context.Context, command protocol.Command, phase string, item execItem, sink agentruntime.Sink) error {
+func (m *eventMapper) emitAgentMessage(ctx context.Context, command protocol.Command, phase string, item execItem, sink agentruntime.Sink) error {
 	if item.Text == "" {
 		return nil
 	}
-	payload := map[string]any{"text": item.Text, "item_id": item.ID, "raw": item.Raw}
 	if phase == "item.completed" {
-		return emit(ctx, sink, command, "assistant.message.done", payload)
+		return emit(ctx, sink, command, "assistant.message.done", map[string]any{"text": item.Text, "item_id": item.ID, "raw": item.Raw})
 	}
-	return emit(ctx, sink, command, "assistant.message.delta", payload)
+	text := m.assistantMessageDelta(item.ID, item.Text)
+	if text == "" {
+		return nil
+	}
+	return emit(ctx, sink, command, "assistant.message.delta", map[string]any{"text": text, "item_id": item.ID, "raw": item.Raw})
+}
+
+func (m *eventMapper) assistantMessageDelta(itemID string, text string) string {
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return text
+	}
+	previous := m.assistantByItemID[itemID]
+	m.assistantByItemID[itemID] = text
+	if previous == "" {
+		return text
+	}
+	if strings.HasPrefix(text, previous) {
+		return strings.TrimPrefix(text, previous)
+	}
+	return text
 }
 
 func emitReasoning(ctx context.Context, command protocol.Command, phase string, item execItem, sink agentruntime.Sink) error {
