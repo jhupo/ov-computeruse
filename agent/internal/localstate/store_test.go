@@ -92,6 +92,7 @@ func TestResolveCommandContextAcceptsRuntimeSession(t *testing.T) {
 		SandboxMode:     "read-only",
 		ReasoningEffort: "high",
 		LastTurnID:      "turn_1",
+		LastItemIndex:   7,
 		UpdatedAt:       updatedAt,
 	})
 	if err != nil {
@@ -123,7 +124,7 @@ func TestResolveCommandContextAcceptsRuntimeSession(t *testing.T) {
 	if byNative.SessionID != "codex_session" || byNative.NativeSessionID != "codex_native" {
 		t.Fatalf("runtime session by native id = %+v", byNative)
 	}
-	if byNative.Model != "gpt-5.1-codex-max" || byNative.Profile != "work" || byNative.ApprovalPolicy != "never" || byNative.SandboxMode != "read-only" || byNative.ReasoningEffort != "high" || byNative.LastTurnID != "turn_1" {
+	if byNative.Model != "gpt-5.1-codex-max" || byNative.Profile != "work" || byNative.ApprovalPolicy != "never" || byNative.SandboxMode != "read-only" || byNative.ReasoningEffort != "high" || byNative.LastTurnID != "turn_1" || byNative.LastItemIndex != 7 {
 		t.Fatalf("runtime session metadata not preserved: %+v", byNative)
 	}
 	byRun, err := state.RuntimeSessionByRun(context.Background(), "run_1", protocol.RuntimeCodexCLI)
@@ -180,6 +181,7 @@ func TestRuntimeSessionScanMergesLiveNativeSession(t *testing.T) {
 			SessionID:       "history_session",
 			NativeSessionID: "native_thread",
 			ResumeMode:      "codex_cli_history_index",
+			LastItemIndex:   12,
 			UpdatedAt:       time.Now().UTC(),
 		}},
 	})
@@ -204,6 +206,9 @@ func TestRuntimeSessionScanMergesLiveNativeSession(t *testing.T) {
 	}
 	if byNative.SessionID != "history_session" {
 		t.Fatalf("runtime session by native = %+v", byNative)
+	}
+	if byNative.LastItemIndex != 12 {
+		t.Fatalf("last item index = %d, want 12", byNative.LastItemIndex)
 	}
 
 	sessions, err := state.RuntimeSessions(ctx)

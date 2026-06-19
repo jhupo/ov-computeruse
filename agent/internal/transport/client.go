@@ -405,6 +405,9 @@ func runtimeSessionForHistorySession(result codexscan.Result, target protocol.Ru
 		runtimeSession.SandboxMode = firstNonEmpty(candidate.SandboxMode, runtimeSession.SandboxMode)
 		runtimeSession.ReasoningEffort = firstNonEmpty(candidate.ReasoningEffort, runtimeSession.ReasoningEffort)
 		runtimeSession.LastTurnID = firstNonEmpty(candidate.LastTurnID, runtimeSession.LastTurnID)
+		if candidate.LastItemIndex > 0 {
+			runtimeSession.LastItemIndex = candidate.LastItemIndex
+		}
 		if candidate.UpdatedAt.After(runtimeSession.UpdatedAt) {
 			runtimeSession.UpdatedAt = candidate.UpdatedAt
 		}

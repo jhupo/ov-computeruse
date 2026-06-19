@@ -16,7 +16,8 @@ func TestRuntimeSessionFromFileUsesCodexSessionMeta(t *testing.T) {
 	content := "" +
 		`{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"id":"sess_native","cwd":"C:\\repo","model_provider":"openai"}}` + "\n" +
 		`{"timestamp":"2026-06-18T01:01:00Z","type":"turn_context","payload":{"turn_id":"turn_1","cwd":"C:\\repo","model":"gpt-5.1-codex-max","approval_policy":"never","permission_profile":"read-only","effort":"high"}}` + "\n" +
-		`{"timestamp":"2026-06-18T01:02:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}` + "\n"
+		`{"timestamp":"2026-06-18T01:02:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}` + "\n" +
+		`{"timestamp":"2026-06-18T01:03:00Z","type":"response_item","payload":{"type":"todo_list","items":[{"text":"ship","completed":false}]}}` + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -45,6 +46,9 @@ func TestRuntimeSessionFromFileUsesCodexSessionMeta(t *testing.T) {
 	}
 	if runtimeSession.Model != "gpt-5.1-codex-max" || runtimeSession.ApprovalPolicy != "never" || runtimeSession.SandboxMode != "read-only" || runtimeSession.ReasoningEffort != "high" || runtimeSession.LastTurnID != "turn_1" {
 		t.Fatalf("runtime session context = %+v", runtimeSession)
+	}
+	if runtimeSession.LastItemIndex != 3 {
+		t.Fatalf("last item index = %d, want 3", runtimeSession.LastItemIndex)
 	}
 }
 
@@ -88,7 +92,7 @@ func TestScanIndexesArchivedSessions(t *testing.T) {
 	if result.Sessions[0].ID != "00000000-0000-0000-0000-000000000001" || result.Sessions[0].Title != "archived hello" {
 		t.Fatalf("archived session = %+v", result.Sessions[0])
 	}
-	if len(result.RuntimeSessions) != 1 || result.RuntimeSessions[0].NativeSessionID != "00000000-0000-0000-0000-000000000001" {
+	if len(result.RuntimeSessions) != 1 || result.RuntimeSessions[0].NativeSessionID != "00000000-0000-0000-0000-000000000001" || result.RuntimeSessions[0].LastItemIndex != 1 {
 		t.Fatalf("runtime sessions = %+v", result.RuntimeSessions)
 	}
 }

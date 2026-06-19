@@ -96,6 +96,7 @@ type RuntimeSession struct {
 	SandboxMode     string    `json:"sandbox_mode,omitempty"`
 	ReasoningEffort string    `json:"reasoning_effort,omitempty"`
 	LastTurnID      string    `json:"last_turn_id,omitempty"`
+	LastItemIndex   int       `json:"last_item_index,omitempty"`
 	UpdatedAt       time.Time `json:"updated_at,omitempty"`
 }
 
@@ -640,18 +641,22 @@ func runtimeSessionFromFile(session Session) RuntimeSession {
 	nativeSessionID := session.ID
 	context := sessionMeta{CWD: session.CWD}
 	updatedAt := session.UpdatedAt
+	lastItemIndex := 0
+	historyIndex := 0
 	for scanner.Scan() {
-		var row struct {
-			ID        string          `json:"id"`
-			Timestamp time.Time       `json:"timestamp"`
-			Type      string          `json:"type"`
-			Payload   json.RawMessage `json:"payload"`
-		}
-		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
+		line := append([]byte(nil), scanner.Bytes()...)
+		var row rolloutRow
+		if err := json.Unmarshal(line, &row); err != nil {
 			continue
 		}
 		if row.Timestamp.After(updatedAt) {
 			updatedAt = row.Timestamp
+		}
+		if item, ok := parseHistoryItem(session.ID, historyIndex, line, 256<<10); ok {
+			if !(item.Kind == "message" && item.Role == "user" && looksLikeContextBlock(item.Text)) && !skipHistoryKind(item.Kind) {
+				lastItemIndex = historyIndex
+				historyIndex++
+			}
 		}
 		if row.Type == "session_meta" {
 			meta := sessionMetaFromPayload(row.Payload)
@@ -689,8 +694,16 @@ func runtimeSessionFromFile(session Session) RuntimeSession {
 		SandboxMode:     context.SandboxMode,
 		ReasoningEffort: context.ReasoningEffort,
 		LastTurnID:      context.LastTurnID,
+		LastItemIndex:   lastItemIndex,
 		UpdatedAt:       updatedAt,
 	}
+}
+
+type rolloutRow struct {
+	ID        string          `json:"id"`
+	Timestamp time.Time       `json:"timestamp"`
+	Type      string          `json:"type"`
+	Payload   json.RawMessage `json:"payload"`
 }
 
 func sessionMetaFromPayload(raw json.RawMessage) sessionMeta {
@@ -908,12 +921,7 @@ func ForEachSessionItem(ctx context.Context, session Session, maxTextBytes int, 
 }
 
 func parseHistoryItem(sessionID string, index int, rawLine []byte, maxText int) (HistoryItem, bool) {
-	var row struct {
-		ID        string          `json:"id"`
-		Timestamp time.Time       `json:"timestamp"`
-		Type      string          `json:"type"`
-		Payload   json.RawMessage `json:"payload"`
-	}
+	var row rolloutRow
 	if err := json.Unmarshal(rawLine, &row); err != nil {
 		return HistoryItem{}, false
 	}

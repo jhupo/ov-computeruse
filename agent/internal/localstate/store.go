@@ -1542,6 +1542,7 @@ func runtimeSessionFromCodexScan(session codexscan.RuntimeSession) RuntimeSessio
 		SandboxMode:     session.SandboxMode,
 		ReasoningEffort: session.ReasoningEffort,
 		LastTurnID:      session.LastTurnID,
+		LastItemIndex:   session.LastItemIndex,
 		UpdatedAt:       session.UpdatedAt,
 	}
 }
