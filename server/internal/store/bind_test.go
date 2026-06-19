@@ -35,3 +35,13 @@ func TestSaveAgentRegisterDoesNotOverwriteBoundCredential(t *testing.T) {
 		}
 	}
 }
+
+func TestRuntimeSessionUpsertIsAgentScoped(t *testing.T) {
+	query := strings.ToLower(upsertRuntimeSessionSQL())
+	if !strings.Contains(query, "on conflict (agent_id, id)") {
+		t.Fatalf("runtime session upsert must be agent scoped: %s", query)
+	}
+	if strings.Contains(query, "on conflict (id)") {
+		t.Fatalf("runtime session upsert must not use global id conflict: %s", query)
+	}
+}

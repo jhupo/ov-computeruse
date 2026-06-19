@@ -54,7 +54,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE runs ADD COLUMN IF NOT EXISTS status_reason TEXT`,
 		`ALTER TABLE runs ADD COLUMN IF NOT EXISTS last_event_seq BIGINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE runs ADD COLUMN IF NOT EXISTS last_event_at TIMESTAMPTZ`,
-		`CREATE TABLE IF NOT EXISTS runtime_sessions (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), runtime TEXT NOT NULL, native_session_id TEXT, project_id TEXT, session_id TEXT, resume_mode TEXT, last_run_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
+		`CREATE TABLE IF NOT EXISTS runtime_sessions (id TEXT NOT NULL, agent_id TEXT NOT NULL REFERENCES agents(id), runtime TEXT NOT NULL, native_session_id TEXT, project_id TEXT, session_id TEXT, resume_mode TEXT, last_run_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(agent_id, id))`,
 		`ALTER TABLE runtime_sessions ADD COLUMN IF NOT EXISTS title TEXT`,
 		`ALTER TABLE runtime_sessions ADD COLUMN IF NOT EXISTS cwd TEXT`,
 		`ALTER TABLE runtime_sessions ADD COLUMN IF NOT EXISTS model TEXT`,
@@ -112,6 +112,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.ensureApprovalRequestsAgentScopedPrimaryKey(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureRuntimeSessionsAgentScopedPrimaryKey(ctx); err != nil {
 		return err
 	}
 	if _, err := s.pool.Exec(ctx, `DROP INDEX IF EXISTS idx_runs_active_session`); err != nil {
@@ -276,6 +279,42 @@ func (s *Store) ensureApprovalRequestsAgentScopedPrimaryKey(ctx context.Context)
 
 func (s *Store) approvalRequestsPrimaryKeyIsAgentScoped(ctx context.Context) (bool, error) {
 	return s.primaryKeyIs(ctx, "approval_requests", "agent_id", "id")
+}
+
+func (s *Store) ensureRuntimeSessionsAgentScopedPrimaryKey(ctx context.Context) error {
+	if ok, err := s.runtimeSessionsPrimaryKeyIsAgentScoped(ctx); err != nil || ok {
+		return err
+	}
+	var duplicatePairs int
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM (SELECT agent_id, id FROM runtime_sessions GROUP BY agent_id, id HAVING COUNT(*) > 1) duplicated`).Scan(&duplicatePairs); err != nil {
+		return err
+	}
+	if duplicatePairs > 0 {
+		return errors.New("cannot migrate runtime_sessions primary key: duplicate runtime session ids exist within an agent")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `ALTER TABLE runtime_sessions RENAME TO runtime_sessions_legacy_id_pk`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `CREATE TABLE runtime_sessions (id TEXT NOT NULL, agent_id TEXT NOT NULL REFERENCES agents(id), runtime TEXT NOT NULL, native_session_id TEXT, project_id TEXT, session_id TEXT, resume_mode TEXT, last_run_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), title TEXT, cwd TEXT, model TEXT, profile TEXT, approval_policy TEXT, sandbox_mode TEXT, reasoning_effort TEXT, last_turn_id TEXT, last_item_index INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(agent_id, id))`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO runtime_sessions (id, agent_id, runtime, native_session_id, project_id, session_id, resume_mode, last_run_id, created_at, updated_at, title, cwd, model, profile, approval_policy, sandbox_mode, reasoning_effort, last_turn_id, last_item_index)
+		SELECT id, agent_id, runtime, native_session_id, project_id, session_id, resume_mode, last_run_id, created_at, updated_at, title, cwd, model, profile, approval_policy, sandbox_mode, reasoning_effort, last_turn_id, last_item_index FROM runtime_sessions_legacy_id_pk`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DROP TABLE runtime_sessions_legacy_id_pk`); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) runtimeSessionsPrimaryKeyIsAgentScoped(ctx context.Context) (bool, error) {
+	return s.primaryKeyIs(ctx, "runtime_sessions", "agent_id", "id")
 }
 
 func (s *Store) primaryKeyIs(ctx context.Context, table string, expected ...string) (bool, error) {

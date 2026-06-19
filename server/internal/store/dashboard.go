@@ -850,9 +850,21 @@ func (s *Store) UpsertRuntimeSession(ctx context.Context, agentID string, runtim
 			runtime.ID = existingID
 		}
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO runtime_sessions (id, agent_id, runtime, native_session_id, project_id, session_id, resume_mode, last_run_id, title, cwd, model, profile, approval_policy, sandbox_mode, reasoning_effort, last_turn_id, last_item_index, updated_at)
+	_, err = tx.Exec(ctx, upsertRuntimeSessionSQL(),
+		runtime.ID, agentID, runtime.Runtime, runtime.NativeSessionID, runtime.ProjectID, runtime.SessionID, runtime.ResumeMode, runtime.LastRunID, runtime.Title, runtime.CWD, runtime.Model, runtime.Profile, runtime.ApprovalPolicy, runtime.SandboxMode, runtime.ReasoningEffort, runtime.LastTurnID, runtime.LastItemIndex)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, s.linkRuntimeSessionToRun(ctx, agentID, runtime)
+}
+
+func upsertRuntimeSessionSQL() string {
+	return `INSERT INTO runtime_sessions (id, agent_id, runtime, native_session_id, project_id, session_id, resume_mode, last_run_id, title, cwd, model, profile, approval_policy, sandbox_mode, reasoning_effort, last_turn_id, last_item_index, updated_at)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,now())
-			ON CONFLICT (id) DO UPDATE SET
+			ON CONFLICT (agent_id, id) DO UPDATE SET
 				runtime=EXCLUDED.runtime,
 				native_session_id=COALESCE(NULLIF(EXCLUDED.native_session_id, ''), runtime_sessions.native_session_id),
 				project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runtime_sessions.project_id),
@@ -868,15 +880,7 @@ func (s *Store) UpsertRuntimeSession(ctx context.Context, agentID string, runtim
 				reasoning_effort=COALESCE(NULLIF(EXCLUDED.reasoning_effort, ''), runtime_sessions.reasoning_effort),
 				last_turn_id=COALESCE(NULLIF(EXCLUDED.last_turn_id, ''), runtime_sessions.last_turn_id),
 				last_item_index=CASE WHEN EXCLUDED.last_item_index > 0 THEN EXCLUDED.last_item_index ELSE runtime_sessions.last_item_index END,
-				updated_at=now()`,
-		runtime.ID, agentID, runtime.Runtime, runtime.NativeSessionID, runtime.ProjectID, runtime.SessionID, runtime.ResumeMode, runtime.LastRunID, runtime.Title, runtime.CWD, runtime.Model, runtime.Profile, runtime.ApprovalPolicy, runtime.SandboxMode, runtime.ReasoningEffort, runtime.LastTurnID, runtime.LastItemIndex)
-	if err != nil {
-		return false, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, err
-	}
-	return true, s.linkRuntimeSessionToRun(ctx, agentID, runtime)
+				updated_at=now()`
 }
 
 func (s *Store) linkRuntimeSessionToRun(ctx context.Context, agentID string, runtime protocol.RuntimeSession) error {
