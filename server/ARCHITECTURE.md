@@ -2,12 +2,12 @@
 
 ## 目标
 
-server 是多用户控制平面，负责 agent 绑定、设备治理、Codex 索引存储、命令下发、运行事件广播、审批和 key 可用性校验。server 不执行 Codex，不保存本地项目文件系统，也不把私钥、agent secret 或用户 key 打进镜像。
+server 是多用户控制平面，负责 agent 绑定、设备治理、Codex 索引存储、命令下发、运行事件广播、审批和 key 可用性校验。server 不执行 Codex，不保存本地项目文件系统，也不把 agent secret 或用户 key 打进镜像。
 
 ## 分层
 
 - `cmd/server`: 进程入口，加载配置，初始化 logger、Postgres、Redis、store、app，并管理 shutdown。
-- `internal/config`: 环境变量解析和启动前校验。公网 URL 必须是 HTTPS；私钥只接受运行时 env/file。
+- `internal/config`: 环境变量解析和启动前校验。公网 URL 必须是 HTTPS；安装密钥只接受运行时 env。
 - `internal/platform/*`: 基础设施适配层，包括 JSON slog、HTTP middleware、request id、Postgres pool、Redis client。
 - `internal/protocol`: agent/server/dash 之间共享的稳定消息结构。dash 消费稳定事件，不耦合 SDK 私有格式。
 - `internal/security`: 绑定 payload 解密、envelope 加密、HMAC 签名和 fingerprint。
@@ -62,7 +62,7 @@ Redis 是低延迟协调层：
 
 ## 安全模型
 
-安装绑定 payload 使用 `RSA-OAEP-SHA256 + AES-256-GCM` 混合加密，server 私钥只在运行时通过 `OV_SERVER_PRIVATE_KEY_PEM` 或 `OV_SERVER_PRIVATE_KEY_FILE` 注入。agent 包内只包含 server URL、公钥、key id 和公钥 fingerprint。
+安装绑定 payload 使用部署级 `OV_COMPUTERUSE_INSTALL_SECRET` 派生 AES-256-GCM key 加密。agent 包内包含 server URL 和安装密钥，server 运行时配置同一个安装密钥。
 
 绑定明文包含 `requested_at` 和随机 `nonce`。server 只接受 5 分钟窗口内的请求，并使用 Redis `SETNX + TTL` 记录 nonce，防止加密 payload 被重放。
 
@@ -77,7 +77,7 @@ agent websocket 使用 per-agent `agent_secret`：
 
 被禁用用户不能继续使用旧 dash session，用户下所有在线 agent 会被强制断开。被禁用 key 不会影响历史展示，但会阻止新的 `new_session/resume/send` 执行类命令通过 credential 校验。
 
-HTTP 请求统一经过 request id、panic recovery 和结构化日志 middleware。API 错误返回稳定 `{error:{code,message}}`，内部错误写日志，不把数据库、私钥或 agent secret 细节透给 dash。
+HTTP 请求统一经过 request id、panic recovery 和结构化日志 middleware。API 错误返回稳定 `{error:{code,message}}`，内部错误写日志，不把数据库、安装密钥或 agent secret 细节透给 dash。
 
 `/healthz` 只表示进程存活；`/readyz` 会 ping Postgres 和 Redis，任一依赖不可用时返回 503，并给出依赖状态。容器和负载均衡应使用 readiness 控制流量接入。
 
@@ -113,4 +113,4 @@ server 作为 Docker 镜像发布。Git tag `server-vX.Y.Z` 触发 GitHub Action
 2. buildx 构建 distroless nonroot 镜像。
 3. 推送 `ghcr.io/<owner>/<repo>/server:<tag>` 和 `latest`。
 
-构建参数只注入版本、server key id 和公钥 fingerprint。Postgres URL、Redis URL、dash token、私钥、用户 key 都是运行时 secret。
+构建参数只注入版本。Postgres URL、Redis URL、dash token、安装密钥、用户 key 都是运行时 secret。

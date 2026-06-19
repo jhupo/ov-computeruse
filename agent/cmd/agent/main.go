@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -29,7 +28,6 @@ import (
 	"ov-computeruse/agent/internal/runtime"
 	"ov-computeruse/agent/internal/runtime/codexcli"
 	"ov-computeruse/agent/internal/securestore"
-	"ov-computeruse/agent/internal/security"
 	"ov-computeruse/agent/internal/transport"
 )
 
@@ -60,7 +58,7 @@ func runInstall(args []string) {
 	fatalIf(slog.Default(), err)
 	cfg.ServerURL = firstNonEmpty(cfg.ServerURL, buildinfo.ServerURL)
 	cfg.ServerKeyID = firstNonEmpty(cfg.ServerKeyID, buildinfo.ServerKeyID)
-	cfg.ServerPublicKey = firstNonEmpty(cfg.ServerPublicKey, decodedPublicKey(), buildinfo.ServerPublicKey)
+	cfg.InstallSecret = firstNonEmpty(cfg.InstallSecret, buildinfo.InstallSecret)
 	username, password, loginPath := installLoginArgs(args)
 
 	if loginPath != "" {
@@ -89,7 +87,6 @@ func runInstall(args []string) {
 	defer cleanup()
 	store, err := securestore.New(cfg.StatePath)
 	fatalIf(logger, err)
-	fatalIf(logger, verifyPublicKeyFingerprint(cfg.ServerPublicKey))
 
 	deviceProfile, err := device.LoadOrCreateProfile(cfg.ConfigDir, buildinfo.Version)
 	fatalIf(logger, err)
@@ -98,9 +95,9 @@ func runInstall(args []string) {
 	fatalIf(logger, err)
 
 	identity, err := installer.Binder{
-		ServerURL:       cfg.ServerURL,
-		ServerKeyID:     cfg.ServerKeyID,
-		ServerPublicKey: cfg.ServerPublicKey,
+		ServerURL:     cfg.ServerURL,
+		ServerKeyID:   cfg.ServerKeyID,
+		InstallSecret: cfg.InstallSecret,
 	}.Bind(ctx, username, password, installer.DeviceProfile{
 		InstallID:    deviceProfile.InstallID,
 		MachineHash:  deviceProfile.MachineHash,
@@ -342,30 +339,4 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func decodedPublicKey() string {
-	if buildinfo.ServerPublicKeyBase64 == "" {
-		return ""
-	}
-	data, err := base64.StdEncoding.DecodeString(buildinfo.ServerPublicKeyBase64)
-	if err != nil {
-		return ""
-	}
-	return string(data)
-}
-
-func verifyPublicKeyFingerprint(publicKey string) error {
-	expected := strings.TrimSpace(buildinfo.ServerPublicKeyFingerprint)
-	if expected == "" || strings.TrimSpace(publicKey) == "" {
-		return nil
-	}
-	actual, err := security.PublicKeyFingerprint(publicKey)
-	if err != nil {
-		return err
-	}
-	if !strings.EqualFold(actual, expected) {
-		return fmt.Errorf("server public key fingerprint mismatch")
-	}
-	return nil
 }

@@ -12,13 +12,13 @@ agent 是本地 Codex 执行器，不承载业务决策，也不承载 Web UI。
 - server: 用户鉴权、key/设备策略校验、agent 索引存储、命令下发、输出广播、审批、审计。
 - dash: 选择设备、项目和历史会话，输入 prompt，查看实时输出和运行状态。
 
-agent 不保存服务端私钥，不接受公网入站连接，不绕过 server 做设备策略。用量和扣费由本地 Codex credential 指向的中转站承担，agent 不采集、不上报、不投影 token usage。
+agent 不接受公网入站连接，不绕过 server 做设备策略。用量和扣费由本地 Codex credential 指向的中转站承担，agent 不采集、不上报、不投影 token usage。
 
 ## 安装绑定
 
 安装组件在本地收集用户名和密码，不打开浏览器。agent 从本机 Codex auth/config 提取 `base_url`、`api_key`、模型和来源信息，生成或复用本机 `install_id`，采集设备画像，然后向 server 发起绑定。
 
-绑定明文只在本机内存中组装，包含用户凭据、Codex credential、设备画像、请求时间和随机 nonce。传输前使用 server 公钥混合加密：AES-256-GCM 加密内容，RSA-OAEP-SHA256 加密随机内容密钥。agent 编译时注入 server URL、公钥 key id、公钥和 fingerprint；安装时先校验 fingerprint，防止公钥被替换。
+绑定明文只在本机内存中组装，包含用户凭据、Codex credential、设备画像、请求时间和随机 nonce。传输前使用部署级安装密钥派生 AES-256-GCM key 加密。agent 编译时注入 server URL 和 `OV_COMPUTERUSE_INSTALL_SECRET`，server 运行时使用同一个安装密钥解密绑定请求。
 
 server 解密后校验 `requested_at` 是否在允许时间窗口内，并用 Redis 记录 nonce，拒绝重放的绑定 payload。随后 server 完成用户名密码校验、用户 key 可用性校验、Codex key fingerprint 与 base URL fingerprint 校验、设备策略校验，并返回 `agent_id`、`workspace_id`、`device_id`、`agent_secret`。
 
@@ -80,11 +80,9 @@ Codex CLI 负责写真实本地历史。run 完成、失败或停止后，agent 
 
 ## 发布注入
 
-CI 只从 secret 注入服务连接地址，公钥材料从仓库固定文件读取：
+CI 从 secret 注入安装包需要的公开连接地址和部署级安装密钥：
 
 - `OV_COMPUTERUSE_SERVER_URL`
-- `agent/packaging/public/server_key_id.txt`
-- `agent/packaging/public/server_public_key.pem`
-- `agent/packaging/public/server_public_key_fingerprint.txt`
+- `OV_COMPUTERUSE_INSTALL_SECRET`
 
-server 私钥、用户 key、agent secret 都不能进入构建产物。Windows job 产出 Inno `.exe`，macOS job 产出 `.pkg`，Linux job 产出 `.deb/.rpm`，同时保留裸二进制归档用于 CLI installer。
+用户 key、agent secret 都不能进入构建产物。Windows job 产出 Inno `.exe`，macOS job 产出 `.pkg`，Linux job 产出 `.deb/.rpm`，同时保留裸二进制归档用于 CLI installer。

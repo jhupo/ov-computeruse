@@ -17,7 +17,7 @@ const EnvPrefix = "OV_AGENT"
 type Config struct {
 	ServerURL         string
 	ServerKeyID       string
-	ServerPublicKey   string
+	InstallSecret     string
 	ConfigDir         string
 	DataDir           string
 	StatePath         string
@@ -89,8 +89,8 @@ func Load(opts Options) (Config, error) {
 
 	fs := flag.NewFlagSet("ov-agent", flag.ContinueOnError)
 	fs.StringVar(&cfg.ServerURL, "server-url", cfg.ServerURL, "server base url")
-	fs.StringVar(&cfg.ServerKeyID, "server-key-id", cfg.ServerKeyID, "server public key id")
-	fs.StringVar(&cfg.ServerPublicKey, "server-public-key", cfg.ServerPublicKey, "server public key pem")
+	fs.StringVar(&cfg.ServerKeyID, "server-key-id", cfg.ServerKeyID, "server install key id")
+	fs.StringVar(&cfg.InstallSecret, "install-secret", cfg.InstallSecret, "server install shared secret")
 	fs.StringVar(&cfg.ConfigDir, "config-dir", cfg.ConfigDir, "agent config directory")
 	fs.StringVar(&cfg.DataDir, "data-dir", cfg.DataDir, "agent data directory")
 	fs.StringVar(&cfg.StatePath, "state", cfg.StatePath, "identity state path")
@@ -284,8 +284,8 @@ func applyConfigValue(cfg *Config, key, value string) {
 		cfg.ServerURL = value
 	case "server_key_id":
 		cfg.ServerKeyID = value
-	case "server_public_key":
-		cfg.ServerPublicKey = value
+	case "install_secret", "server_install_secret":
+		cfg.InstallSecret = value
 	case "config_dir":
 		cfg.ConfigDir = value
 	case "data_dir":
@@ -405,11 +405,11 @@ func applyEnv(cfg *Config, lookup func(string) (string, bool), explicit map[stri
 	if value, ok := lookup(envKey("SERVER_URL")); ok {
 		cfg.ServerURL = value
 	}
-	if value, ok := lookup(envKey("SERVER_KEY_ID")); ok {
-		cfg.ServerKeyID = value
+	if value, ok := lookup(envKey("INSTALL_SECRET")); ok {
+		cfg.InstallSecret = value
 	}
-	if value, ok := lookup(envKey("SERVER_PUBLIC_KEY")); ok {
-		cfg.ServerPublicKey = value
+	if value, ok := lookup("OV_COMPUTERUSE_INSTALL_SECRET"); ok {
+		cfg.InstallSecret = value
 	}
 	if value, ok := lookup(envKey("CONFIG_DIR")); ok {
 		cfg.ConfigDir = value

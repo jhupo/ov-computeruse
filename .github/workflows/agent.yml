@@ -49,12 +49,12 @@ jobs:
       - name: Resolve server injection
         env:
           OV_COMPUTERUSE_SERVER_URL: ${{ secrets.OV_COMPUTERUSE_SERVER_URL }}
+          OV_COMPUTERUSE_INSTALL_SECRET: ${{ secrets.OV_COMPUTERUSE_INSTALL_SECRET }}
         run: |
           test -n "$OV_COMPUTERUSE_SERVER_URL"
+          test -n "$OV_COMPUTERUSE_INSTALL_SECRET"
           echo "OV_SERVER_URL=$OV_COMPUTERUSE_SERVER_URL" >> "$GITHUB_ENV"
-          echo "OV_SERVER_KEY_ID=$(cat agent/packaging/public/server_key_id.txt)" >> "$GITHUB_ENV"
-          echo "OV_SERVER_PUBLIC_KEY_FINGERPRINT=$(cat agent/packaging/public/server_public_key_fingerprint.txt)" >> "$GITHUB_ENV"
-          echo "OV_SERVER_PUBLIC_KEY_B64=$(base64 -w 0 agent/packaging/public/server_public_key.pem)" >> "$GITHUB_ENV"
+          echo "OV_COMPUTERUSE_INSTALL_SECRET=$OV_COMPUTERUSE_INSTALL_SECRET" >> "$GITHUB_ENV"
 
       - name: Resolve package version
         run: |
@@ -80,9 +80,7 @@ jobs:
             -ldflags "-s -w \
               -X 'ov-computeruse/agent/internal/buildinfo.Version=${BUILD_VERSION}' \
               -X 'ov-computeruse/agent/internal/buildinfo.ServerURL=${OV_SERVER_URL}' \
-              -X 'ov-computeruse/agent/internal/buildinfo.ServerKeyID=${OV_SERVER_KEY_ID}' \
-              -X 'ov-computeruse/agent/internal/buildinfo.ServerPublicKeyBase64=${OV_SERVER_PUBLIC_KEY_B64}' \
-              -X 'ov-computeruse/agent/internal/buildinfo.ServerPublicKeyFingerprint=${OV_SERVER_PUBLIC_KEY_FINGERPRINT}'" \
+              -X 'ov-computeruse/agent/internal/buildinfo.InstallSecret=${OV_COMPUTERUSE_INSTALL_SECRET}'" \
             -o "dist/ov-agent-${GOOS}-${GOARCH}${{ matrix.ext }}" \
             ./cmd/agent
           if [ "${GOOS}" = "windows" ]; then

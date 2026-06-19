@@ -3,33 +3,20 @@ package security
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
-	"encoding/pem"
 	"errors"
+	"strings"
 )
 
 type EncryptedPayload struct {
-	ServerKeyID      string `json:"server_key_id"`
 	Algorithm        string `json:"algorithm"`
-	KeyAlgorithm     string `json:"key_algorithm"`
 	ContentAlgorithm string `json:"content_algorithm"`
-	EncryptedKey     string `json:"encrypted_key"`
 	Nonce            string `json:"nonce"`
 	Ciphertext       string `json:"ciphertext"`
 }
 
-func DecryptFromAgent(privateKeyPEM string, payload EncryptedPayload) ([]byte, error) {
-	key, err := parsePrivateKey(privateKeyPEM)
-	if err != nil {
-		return nil, err
-	}
-	encryptedKey, err := base64.StdEncoding.DecodeString(payload.EncryptedKey)
-	if err != nil {
-		return nil, err
-	}
+func DecryptFromAgent(installSecret string, payload EncryptedPayload) ([]byte, error) {
 	nonce, err := base64.StdEncoding.DecodeString(payload.Nonce)
 	if err != nil {
 		return nil, err
@@ -38,12 +25,11 @@ func DecryptFromAgent(privateKeyPEM string, payload EncryptedPayload) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
-	label := []byte(payload.ServerKeyID)
-	contentKey, err := rsa.DecryptOAEP(sha256.New(), nil, key, encryptedKey, label)
+	key, err := installSecretKey(installSecret)
 	if err != nil {
 		return nil, err
 	}
-	block, err := aes.NewCipher(contentKey)
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
@@ -51,26 +37,20 @@ func DecryptFromAgent(privateKeyPEM string, payload EncryptedPayload) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
-	return aead.Open(nil, nonce, ciphertext, label)
+	return aead.Open(nil, nonce, ciphertext, bindAAD())
 }
 
-func parsePrivateKey(privateKeyPEM string) (*rsa.PrivateKey, error) {
-	block, _ := pem.Decode([]byte(privateKeyPEM))
-	if block == nil {
-		return nil, errors.New("server private key pem is invalid")
+func installSecretKey(secret string) ([]byte, error) {
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return nil, errors.New("install secret is required")
 	}
-	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
-		return key, nil
-	}
-	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, err
-	}
-	key, ok := parsed.(*rsa.PrivateKey)
-	if !ok {
-		return nil, errors.New("server private key must be rsa")
-	}
-	return key, nil
+	hash := sha256.Sum256([]byte("ov-computeruse/install-secret/v1\x00" + secret))
+	return hash[:], nil
+}
+
+func bindAAD() []byte {
+	return []byte("ov-computeruse/agent-bind/v1")
 }
 
 func FingerprintSecret(parts ...string) string {

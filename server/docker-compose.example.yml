@@ -42,14 +42,8 @@ services:
       OV_SERVER_SUB2API_LOGIN_UPSTREAM: ${OV_SERVER_SUB2API_LOGIN_UPSTREAM:?set OV_SERVER_SUB2API_LOGIN_UPSTREAM}
       OV_SERVER_POSTGRES_URL: postgres://${POSTGRES_USER:-ov}:${POSTGRES_PASSWORD:-ov_dev_password}@postgres:5432/${POSTGRES_DB:-ov_computeruse}?sslmode=disable
       OV_SERVER_REDIS_URL: redis://redis:6379/0
-      OV_SERVER_PRIVATE_KEY_FILE: /run/secrets/server_private_key.pem
+      OV_COMPUTERUSE_INSTALL_SECRET: ${OV_COMPUTERUSE_INSTALL_SECRET:?set OV_COMPUTERUSE_INSTALL_SECRET}
       OV_SERVER_DASH_TOKEN: ${OV_SERVER_DASH_TOKEN:-}
-    secrets:
-      - server_private_key.pem
-
-secrets:
-  server_private_key.pem:
-    file: ./server_private_key.pem
 
 volumes:
   postgres-data:

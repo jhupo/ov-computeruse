@@ -16,10 +16,8 @@ RUN rm -rf internal/app/dash_dist
 COPY --from=dash /src/dash/dist ./internal/app/dash_dist
 
 ARG VERSION=dev
-ARG SERVER_KEY_ID=
-ARG SERVER_PUBLIC_KEY_FINGERPRINT=
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags "-s -w -X 'ov-computeruse/server/internal/buildinfo.Version=${VERSION}' -X 'ov-computeruse/server/internal/buildinfo.ServerKeyID=${SERVER_KEY_ID}' -X 'ov-computeruse/server/internal/buildinfo.ServerPublicKeyFingerprint=${SERVER_PUBLIC_KEY_FINGERPRINT}'" \
+    -ldflags "-s -w -X 'ov-computeruse/server/internal/buildinfo.Version=${VERSION}'" \
     -o /out/ov-server ./cmd/server
 
 FROM gcr.io/distroless/static-debian12:nonroot
