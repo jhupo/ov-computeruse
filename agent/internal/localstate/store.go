@@ -704,16 +704,31 @@ func (s *Store) PendingRunEvents(ctx context.Context, limit int) ([]protocol.Run
 	return events, rows.Err()
 }
 
-func (s *Store) MarkRunEventSent(ctx context.Context, event protocol.RunEvent) error {
+func (s *Store) MarkRunEventSent(ctx context.Context, event protocol.RunEvent) (bool, error) {
 	if s == nil || strings.TrimSpace(event.EventID) == "" {
-		return nil
+		return false, nil
 	}
-	_, err := s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 		UPDATE run_events
-		SET sent_at = ?, retry_count = retry_count + 1, last_error = NULL, updated_at = ?
+		SET sent_at = COALESCE(sent_at, ?),
+			retry_count = retry_count + 1,
+			last_error = NULL,
+			updated_at = ?
 		WHERE event_id = ?
 	`, now(), now(), event.EventID)
-	return err
+	if err != nil {
+		return false, err
+	}
+	rows, _ := result.RowsAffected()
+	return rows > 0 && s.runEventRetryCount(ctx, event.EventID) == 1, nil
+}
+
+func (s *Store) runEventRetryCount(ctx context.Context, eventID string) int {
+	var retryCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT retry_count FROM run_events WHERE event_id = ?`, eventID).Scan(&retryCount); err != nil {
+		return 0
+	}
+	return retryCount
 }
 
 func (s *Store) MarkRunEventError(ctx context.Context, event protocol.RunEvent, eventErr error) error {

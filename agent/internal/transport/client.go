@@ -137,10 +137,15 @@ func (c *Client) Emit(ctx context.Context, event protocol.RunEvent) error {
 		c.logger.WarnContext(ctx, "run event queued for retry", "run_id", event.RunID, "seq", event.Seq, "kind", event.Kind, "error", err)
 		return nil
 	}
+	firstSend := true
 	if c.state != nil {
-		_ = c.state.MarkRunEventSent(ctx, event)
+		var err error
+		firstSend, err = c.state.MarkRunEventSent(ctx, event)
+		if err != nil {
+			c.logger.WarnContext(ctx, "run event sent state update failed", "run_id", event.RunID, "seq", event.Seq, "kind", event.Kind, "error", err)
+		}
 	}
-	if c.shouldRefreshIndexAfter(event) {
+	if firstSend && c.shouldRefreshIndexAfter(event) {
 		go c.refreshIndexAfterRun(event)
 	}
 	return nil
@@ -482,7 +487,7 @@ func (c *Client) flushRunEventOutbox(ctx context.Context) error {
 	}
 	for _, event := range events {
 		if skipRunEvent(event) {
-			if err := c.state.MarkRunEventSent(ctx, event); err != nil {
+			if _, err := c.state.MarkRunEventSent(ctx, event); err != nil {
 				return err
 			}
 			continue
@@ -491,10 +496,11 @@ func (c *Client) flushRunEventOutbox(ctx context.Context) error {
 			_ = c.state.MarkRunEventError(ctx, event, err)
 			return err
 		}
-		if err := c.state.MarkRunEventSent(ctx, event); err != nil {
+		firstSend, err := c.state.MarkRunEventSent(ctx, event)
+		if err != nil {
 			return err
 		}
-		if c.shouldRefreshIndexAfter(event) {
+		if firstSend && c.shouldRefreshIndexAfter(event) {
 			go c.refreshIndexAfterRun(event)
 		}
 	}

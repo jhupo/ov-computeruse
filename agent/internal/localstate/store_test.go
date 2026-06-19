@@ -357,6 +357,39 @@ func TestMarkRunEventAckedPrefersEventID(t *testing.T) {
 	}
 }
 
+func TestMarkRunEventSentReportsFirstSend(t *testing.T) {
+	state, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer state.Close()
+	ctx := context.Background()
+	event := protocol.RunEvent{
+		EventID: "evt_sent_once",
+		RunID:   "run_1",
+		Seq:     1,
+		Kind:    "run.done",
+		At:      time.Now().UTC(),
+	}
+	if err := state.SaveRunEvent(ctx, event); err != nil {
+		t.Fatalf("save run event: %v", err)
+	}
+	first, err := state.MarkRunEventSent(ctx, event)
+	if err != nil {
+		t.Fatalf("mark first sent: %v", err)
+	}
+	if !first {
+		t.Fatal("first send should be reported as first")
+	}
+	second, err := state.MarkRunEventSent(ctx, event)
+	if err != nil {
+		t.Fatalf("mark second sent: %v", err)
+	}
+	if second {
+		t.Fatal("second send should be reported as retry")
+	}
+}
+
 func TestCodexHistorySyncMarker(t *testing.T) {
 	state, err := Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
