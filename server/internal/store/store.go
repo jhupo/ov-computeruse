@@ -26,7 +26,6 @@ type AgentIdentity struct {
 	AgentSecret          string          `json:"-"`
 	AgentEpoch           int64           `json:"agent_epoch"`
 	ServerURL            string          `json:"server_url"`
-	ServerKeyID          string          `json:"server_key_id"`
 	Capabilities         json.RawMessage `json:"capabilities,omitempty"`
 	Credential           json.RawMessage `json:"credential,omitempty"`
 	DisabledAt           time.Time       `json:"agent_disabled_at,omitempty"`

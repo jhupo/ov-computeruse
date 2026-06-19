@@ -16,7 +16,6 @@ const EnvPrefix = "OV_AGENT"
 
 type Config struct {
 	ServerURL         string
-	ServerKeyID       string
 	InstallSecret     string
 	ConfigDir         string
 	DataDir           string
@@ -89,7 +88,6 @@ func Load(opts Options) (Config, error) {
 
 	fs := flag.NewFlagSet("ov-agent", flag.ContinueOnError)
 	fs.StringVar(&cfg.ServerURL, "server-url", cfg.ServerURL, "server base url")
-	fs.StringVar(&cfg.ServerKeyID, "server-key-id", cfg.ServerKeyID, "server install key id")
 	fs.StringVar(&cfg.InstallSecret, "install-secret", cfg.InstallSecret, "server install shared secret")
 	fs.StringVar(&cfg.ConfigDir, "config-dir", cfg.ConfigDir, "agent config directory")
 	fs.StringVar(&cfg.DataDir, "data-dir", cfg.DataDir, "agent data directory")
@@ -282,8 +280,6 @@ func applyConfigValue(cfg *Config, key, value string) {
 	switch normalizeConfigKey(key) {
 	case "server_url":
 		cfg.ServerURL = value
-	case "server_key_id":
-		cfg.ServerKeyID = value
 	case "install_secret", "server_install_secret":
 		cfg.InstallSecret = value
 	case "config_dir":

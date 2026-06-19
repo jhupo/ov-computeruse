@@ -36,8 +36,7 @@ type DeviceProfile struct {
 }
 
 type BindRequest struct {
-	ServerKeyID string                    `json:"server_key_id"`
-	Payload     security.EncryptedPayload `json:"payload"`
+	Payload security.EncryptedPayload `json:"payload"`
 }
 
 type BindPlaintext struct {
@@ -55,7 +54,6 @@ type BindResponse struct {
 	DeviceID    string `json:"device_id"`
 	AgentSecret string `json:"agent_secret"`
 	ServerURL   string `json:"server_url"`
-	ServerKeyID string `json:"server_key_id"`
 }
 
 type errorResponse struct {
@@ -67,7 +65,6 @@ type errorResponse struct {
 
 type Binder struct {
 	ServerURL     string
-	ServerKeyID   string
 	InstallSecret string
 	HTTPClient    *http.Client
 }
@@ -102,7 +99,7 @@ func (b Binder) Bind(ctx context.Context, username, password string, device Devi
 	if err != nil {
 		return securestore.Identity{}, err
 	}
-	reqBody, err := json.Marshal(BindRequest{ServerKeyID: b.ServerKeyID, Payload: encrypted})
+	reqBody, err := json.Marshal(BindRequest{Payload: encrypted})
 	if err != nil {
 		return securestore.Identity{}, err
 	}
@@ -135,7 +132,7 @@ func (b Binder) Bind(ctx context.Context, username, password string, device Devi
 	if err := requireSecureServerURL(serverURL); err != nil {
 		return securestore.Identity{}, err
 	}
-	if err := validateBindResponse(bindResp, serverURL, b.ServerKeyID); err != nil {
+	if err := validateBindResponse(bindResp, serverURL); err != nil {
 		return securestore.Identity{}, err
 	}
 	return securestore.Identity{
@@ -144,7 +141,6 @@ func (b Binder) Bind(ctx context.Context, username, password string, device Devi
 		DeviceID:    bindResp.DeviceID,
 		AgentSecret: bindResp.AgentSecret,
 		ServerURL:   serverURL,
-		ServerKeyID: firstNonEmpty(bindResp.ServerKeyID, b.ServerKeyID),
 	}, nil
 }
 
@@ -156,7 +152,7 @@ func bindNonce() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
 
-func validateBindResponse(response BindResponse, serverURL, fallbackKeyID string) error {
+func validateBindResponse(response BindResponse, serverURL string) error {
 	missing := []string{}
 	if strings.TrimSpace(response.AgentID) == "" {
 		missing = append(missing, "agent_id")
@@ -172,9 +168,6 @@ func validateBindResponse(response BindResponse, serverURL, fallbackKeyID string
 	}
 	if strings.TrimSpace(serverURL) == "" {
 		missing = append(missing, "server_url")
-	}
-	if strings.TrimSpace(firstNonEmpty(response.ServerKeyID, fallbackKeyID)) == "" {
-		missing = append(missing, "server_key_id")
 	}
 	if len(missing) > 0 {
 		return errors.New("bind response missing " + strings.Join(missing, ", "))

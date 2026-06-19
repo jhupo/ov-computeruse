@@ -18,7 +18,6 @@ type Identity struct {
 	DeviceID    string `json:"device_id"`
 	AgentSecret string `json:"agent_secret"`
 	ServerURL   string `json:"server_url"`
-	ServerKeyID string `json:"server_key_id"`
 }
 
 func New(path string) (*Store, error) {

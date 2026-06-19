@@ -9,15 +9,14 @@ import (
 type BindService struct {
 	repo      BindRepository
 	serverURL string
-	keyID     string
 }
 
-func NewBindService(repo BindRepository, serverURL, keyID string) BindService {
-	return BindService{repo: repo, serverURL: serverURL, keyID: keyID}
+func NewBindService(repo BindRepository, serverURL string) BindService {
+	return BindService{repo: repo, serverURL: serverURL}
 }
 
 func (s BindService) Bind(ctx context.Context, username, password string, device store.DeviceProfile, credential store.Credential) (store.AgentIdentity, error) {
-	return s.repo.AuthenticateAndBind(ctx, username, password, device, credential, s.serverURL, s.keyID)
+	return s.repo.AuthenticateAndBind(ctx, username, password, device, credential, s.serverURL)
 }
 
 func (s BindService) SeedUsers(ctx context.Context, users []store.BindUser) error {

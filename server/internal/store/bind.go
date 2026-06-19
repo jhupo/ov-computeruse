@@ -83,7 +83,7 @@ func (s *Store) AuthenticateUser(ctx context.Context, username, password string)
 	return user, nil
 }
 
-func (s *Store) AuthenticateAndBind(ctx context.Context, username, password string, device DeviceProfile, credential Credential, serverURL, serverKeyID string) (AgentIdentity, error) {
+func (s *Store) AuthenticateAndBind(ctx context.Context, username, password string, device DeviceProfile, credential Credential, serverURL string) (AgentIdentity, error) {
 	user, err := s.AuthenticateUser(ctx, username, password)
 	if err != nil {
 		_ = s.SaveAuditLog(ctx, "", "", "agent.bind.rejected", map[string]any{"username": username, "reason": "invalid_credentials"})
@@ -126,12 +126,12 @@ func (s *Store) AuthenticateAndBind(ctx context.Context, username, password stri
 		Model:              strings.TrimSpace(credential.Model),
 		Source:             strings.TrimSpace(credential.Source),
 	}
-	err = s.pool.QueryRow(ctx, `INSERT INTO agents (id, workspace_id, user_id, device_id, agent_secret, server_key_id, credential, agent_epoch, last_seen_at) VALUES ($1,$2,$3,$4,$5,$6,$7,1,now()) ON CONFLICT (device_id) DO UPDATE SET agent_secret=EXCLUDED.agent_secret, server_key_id=EXCLUDED.server_key_id, credential=EXCLUDED.credential, agent_epoch=agents.agent_epoch+1, last_seen_at=now() RETURNING id, agent_epoch`, agentID, workspaceID, user.UserID, deviceID, agentSecret, serverKeyID, jsonRaw(agentCredential)).Scan(&agentID, &agentEpoch)
+	err = s.pool.QueryRow(ctx, `INSERT INTO agents (id, workspace_id, user_id, device_id, agent_secret, credential, agent_epoch, last_seen_at) VALUES ($1,$2,$3,$4,$5,$6,1,now()) ON CONFLICT (device_id) DO UPDATE SET agent_secret=EXCLUDED.agent_secret, credential=EXCLUDED.credential, agent_epoch=agents.agent_epoch+1, last_seen_at=now() RETURNING id, agent_epoch`, agentID, workspaceID, user.UserID, deviceID, agentSecret, jsonRaw(agentCredential)).Scan(&agentID, &agentEpoch)
 	if err != nil {
 		return AgentIdentity{}, err
 	}
 	_ = s.SaveAuditLog(ctx, user.UserID, agentID, "agent.bind.accepted", map[string]any{"device_id": deviceID, "key_id": keyID, "base_url": baseURL, "credential_source": credential.Source})
-	return AgentIdentity{AgentID: agentID, WorkspaceID: workspaceID, UserID: user.UserID, DeviceID: deviceID, AgentSecret: agentSecret, AgentEpoch: agentEpoch, ServerURL: serverURL, ServerKeyID: serverKeyID}, nil
+	return AgentIdentity{AgentID: agentID, WorkspaceID: workspaceID, UserID: user.UserID, DeviceID: deviceID, AgentSecret: agentSecret, AgentEpoch: agentEpoch, ServerURL: serverURL}, nil
 }
 
 func (s *Store) SaveAuditLog(ctx context.Context, userID, agentID, action string, payload any) error {

@@ -57,7 +57,6 @@ func runInstall(args []string) {
 	cfg, err := config.Load(config.Options{Args: installConfigArgs(args)})
 	fatalIf(slog.Default(), err)
 	cfg.ServerURL = firstNonEmpty(cfg.ServerURL, buildinfo.ServerURL)
-	cfg.ServerKeyID = firstNonEmpty(cfg.ServerKeyID, buildinfo.ServerKeyID)
 	cfg.InstallSecret = firstNonEmpty(cfg.InstallSecret, buildinfo.InstallSecret)
 	username, password, loginPath := installLoginArgs(args)
 
@@ -96,7 +95,6 @@ func runInstall(args []string) {
 
 	identity, err := installer.Binder{
 		ServerURL:     cfg.ServerURL,
-		ServerKeyID:   cfg.ServerKeyID,
 		InstallSecret: cfg.InstallSecret,
 	}.Bind(ctx, username, password, installer.DeviceProfile{
 		InstallID:    deviceProfile.InstallID,

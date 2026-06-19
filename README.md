@@ -18,7 +18,7 @@ Current engineering focus is the agent/server contract and release pipeline. Das
 - `agent-vX.Y.Z`: builds versioned agent binaries/installers/packages.
 - `server-vX.Y.Z`: builds and pushes the Docker server image.
 
-Build-time injection only includes public or client-safe metadata. Server private keys, database URLs, Redis URLs, user keys, and runtime tokens are provided as runtime secrets/environment variables.
+Build-time injection only includes client package metadata. Database URLs, Redis URLs, user keys, install secrets, and runtime tokens are provided as runtime secrets/environment variables.
 
 ## Release flow
 

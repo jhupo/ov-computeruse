@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 )
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -25,7 +24,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS disabled_at TIMESTAMPTZ`,
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS disabled_reason TEXT`,
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS disabled_by TEXT`,
-		`CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL REFERENCES users(id), device_id TEXT NOT NULL UNIQUE REFERENCES devices(id), agent_secret TEXT NOT NULL, server_key_id TEXT NOT NULL, protocol_version TEXT, capabilities JSONB, credential JSONB, registered_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), last_seen_at TIMESTAMPTZ)`,
+		`CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL REFERENCES users(id), device_id TEXT NOT NULL UNIQUE REFERENCES devices(id), agent_secret TEXT NOT NULL, protocol_version TEXT, capabilities JSONB, credential JSONB, registered_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), last_seen_at TIMESTAMPTZ)`,
 		`ALTER TABLE agents ADD COLUMN IF NOT EXISTS protocol_version TEXT`,
 		`ALTER TABLE agents ADD COLUMN IF NOT EXISTS capabilities JSONB`,
 		`ALTER TABLE agents ADD COLUMN IF NOT EXISTS credential JSONB`,
@@ -34,6 +33,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE agents ADD COLUMN IF NOT EXISTS disabled_reason TEXT`,
 		`ALTER TABLE agents ADD COLUMN IF NOT EXISTS disabled_by TEXT`,
 		`ALTER TABLE agents ADD COLUMN IF NOT EXISTS agent_epoch BIGINT NOT NULL DEFAULT 1`,
+		`ALTER TABLE agents DROP COLUMN IF EXISTS server_key_id`,
 		`CREATE TABLE IF NOT EXISTS codex_roots (agent_id TEXT NOT NULL REFERENCES agents(id), path TEXT NOT NULL, kind TEXT, source TEXT, exists BOOLEAN NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(agent_id, path))`,
 		`CREATE TABLE IF NOT EXISTS projects (agent_id TEXT NOT NULL REFERENCES agents(id), id TEXT NOT NULL, name TEXT, path TEXT, last_active_at TIMESTAMPTZ, has_agents_md BOOLEAN NOT NULL DEFAULT false, git_branch TEXT, deleted_at TIMESTAMPTZ, updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(agent_id, id))`,
 		`ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`,
@@ -105,18 +105,6 @@ func (s *Store) migrate(ctx context.Context) error {
 			return err
 		}
 	}
-	if err := s.ensureRunsAgentScopedPrimaryKey(ctx); err != nil {
-		return err
-	}
-	if err := s.ensureCommandsAgentScopedPrimaryKey(ctx); err != nil {
-		return err
-	}
-	if err := s.ensureApprovalRequestsAgentScopedPrimaryKey(ctx); err != nil {
-		return err
-	}
-	if err := s.ensureRuntimeSessionsAgentScopedPrimaryKey(ctx); err != nil {
-		return err
-	}
 	if _, err := s.pool.Exec(ctx, `DROP INDEX IF EXISTS idx_runs_active_session`); err != nil {
 		return err
 	}
@@ -171,184 +159,4 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-func (s *Store) ensureRunsAgentScopedPrimaryKey(ctx context.Context) error {
-	if ok, err := s.runsPrimaryKeyIsAgentScoped(ctx); err != nil || ok {
-		return err
-	}
-	var duplicateIDs int
-	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM (SELECT id FROM runs GROUP BY id HAVING COUNT(DISTINCT agent_id) > 1) duplicated`).Scan(&duplicateIDs); err != nil {
-		return err
-	}
-	if duplicateIDs > 0 {
-		return errors.New("cannot migrate runs primary key: duplicate run ids exist across agents")
-	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `ALTER TABLE runs RENAME TO runs_legacy_id_pk`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `CREATE TABLE runs (id TEXT NOT NULL, agent_id TEXT NOT NULL REFERENCES agents(id), command_id TEXT, project_id TEXT, session_id TEXT, status TEXT NOT NULL, status_reason TEXT, last_event_seq BIGINT NOT NULL DEFAULT 0, last_event_at TIMESTAMPTZ, started_at TIMESTAMPTZ NOT NULL DEFAULT now(), finished_at TIMESTAMPTZ, PRIMARY KEY(agent_id, id))`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at, finished_at)
-		SELECT id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at, finished_at FROM runs_legacy_id_pk`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `DROP TABLE runs_legacy_id_pk`); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
-
-func (s *Store) runsPrimaryKeyIsAgentScoped(ctx context.Context) (bool, error) {
-	return s.primaryKeyIs(ctx, "runs", "agent_id", "id")
-}
-
-func (s *Store) ensureCommandsAgentScopedPrimaryKey(ctx context.Context) error {
-	if ok, err := s.commandsPrimaryKeyIsAgentScoped(ctx); err != nil || ok {
-		return err
-	}
-	var duplicatePairs int
-	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM (SELECT agent_id, id FROM commands GROUP BY agent_id, id HAVING COUNT(*) > 1) duplicated`).Scan(&duplicatePairs); err != nil {
-		return err
-	}
-	if duplicatePairs > 0 {
-		return errors.New("cannot migrate commands primary key: duplicate command ids exist within an agent")
-	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `ALTER TABLE commands RENAME TO commands_legacy_id_pk`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `CREATE TABLE commands (id TEXT NOT NULL, agent_id TEXT NOT NULL REFERENCES agents(id), run_id TEXT, session_id TEXT, project_id TEXT, kind TEXT NOT NULL, mode TEXT, payload JSONB, status TEXT NOT NULL, status_reason TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), dispatched_at TIMESTAMPTZ, acked_at TIMESTAMPTZ, deadline_at TIMESTAMPTZ, expires_at TIMESTAMPTZ, retry_count INTEGER NOT NULL DEFAULT 0, idempotency_key TEXT, dispatch_claimed_by TEXT, dispatch_claimed_at TIMESTAMPTZ, dispatch_claimed_until TIMESTAMPTZ, PRIMARY KEY(agent_id, id))`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO commands (id, agent_id, run_id, session_id, project_id, kind, mode, payload, status, status_reason, created_at, dispatched_at, acked_at, deadline_at, expires_at, retry_count, idempotency_key, dispatch_claimed_by, dispatch_claimed_at, dispatch_claimed_until)
-		SELECT id, agent_id, run_id, session_id, project_id, kind, mode, payload, status, status_reason, created_at, dispatched_at, acked_at, deadline_at, expires_at, retry_count, idempotency_key, dispatch_claimed_by, dispatch_claimed_at, dispatch_claimed_until FROM commands_legacy_id_pk`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `DROP TABLE commands_legacy_id_pk`); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
-
-func (s *Store) commandsPrimaryKeyIsAgentScoped(ctx context.Context) (bool, error) {
-	return s.primaryKeyIs(ctx, "commands", "agent_id", "id")
-}
-
-func (s *Store) ensureApprovalRequestsAgentScopedPrimaryKey(ctx context.Context) error {
-	if ok, err := s.approvalRequestsPrimaryKeyIsAgentScoped(ctx); err != nil || ok {
-		return err
-	}
-	var duplicatePairs int
-	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM (SELECT agent_id, id FROM approval_requests GROUP BY agent_id, id HAVING COUNT(*) > 1) duplicated`).Scan(&duplicatePairs); err != nil {
-		return err
-	}
-	if duplicatePairs > 0 {
-		return errors.New("cannot migrate approval_requests primary key: duplicate approval ids exist within an agent")
-	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `ALTER TABLE approval_requests RENAME TO approval_requests_legacy_id_pk`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `CREATE TABLE approval_requests (id TEXT NOT NULL, agent_id TEXT NOT NULL REFERENCES agents(id), run_id TEXT, project_id TEXT, session_id TEXT, category TEXT, action TEXT, risk_level TEXT, payload JSONB, status TEXT NOT NULL, requested_at TIMESTAMPTZ NOT NULL DEFAULT now(), decided_at TIMESTAMPTZ, decision TEXT, decision_reason TEXT, decision_command_id TEXT, decision_queued_at TIMESTAMPTZ, decided_by TEXT, PRIMARY KEY(agent_id, id))`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO approval_requests (id, agent_id, run_id, project_id, session_id, category, action, risk_level, payload, status, requested_at, decided_at, decision, decision_reason, decision_command_id, decision_queued_at, decided_by)
-		SELECT id, agent_id, run_id, project_id, session_id, category, action, risk_level, payload, status, requested_at, decided_at, decision, decision_reason, decision_command_id, decision_queued_at, decided_by FROM approval_requests_legacy_id_pk`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `DROP TABLE approval_requests_legacy_id_pk`); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
-
-func (s *Store) approvalRequestsPrimaryKeyIsAgentScoped(ctx context.Context) (bool, error) {
-	return s.primaryKeyIs(ctx, "approval_requests", "agent_id", "id")
-}
-
-func (s *Store) ensureRuntimeSessionsAgentScopedPrimaryKey(ctx context.Context) error {
-	if ok, err := s.runtimeSessionsPrimaryKeyIsAgentScoped(ctx); err != nil || ok {
-		return err
-	}
-	var duplicatePairs int
-	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM (SELECT agent_id, id FROM runtime_sessions GROUP BY agent_id, id HAVING COUNT(*) > 1) duplicated`).Scan(&duplicatePairs); err != nil {
-		return err
-	}
-	if duplicatePairs > 0 {
-		return errors.New("cannot migrate runtime_sessions primary key: duplicate runtime session ids exist within an agent")
-	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `ALTER TABLE runtime_sessions RENAME TO runtime_sessions_legacy_id_pk`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `CREATE TABLE runtime_sessions (id TEXT NOT NULL, agent_id TEXT NOT NULL REFERENCES agents(id), runtime TEXT NOT NULL, native_session_id TEXT, project_id TEXT, session_id TEXT, resume_mode TEXT, last_run_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), title TEXT, cwd TEXT, model TEXT, profile TEXT, approval_policy TEXT, sandbox_mode TEXT, reasoning_effort TEXT, last_turn_id TEXT, last_item_index INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(agent_id, id))`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO runtime_sessions (id, agent_id, runtime, native_session_id, project_id, session_id, resume_mode, last_run_id, created_at, updated_at, title, cwd, model, profile, approval_policy, sandbox_mode, reasoning_effort, last_turn_id, last_item_index)
-		SELECT id, agent_id, runtime, native_session_id, project_id, session_id, resume_mode, last_run_id, created_at, updated_at, title, cwd, model, profile, approval_policy, sandbox_mode, reasoning_effort, last_turn_id, last_item_index FROM runtime_sessions_legacy_id_pk`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `DROP TABLE runtime_sessions_legacy_id_pk`); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
-
-func (s *Store) runtimeSessionsPrimaryKeyIsAgentScoped(ctx context.Context) (bool, error) {
-	return s.primaryKeyIs(ctx, "runtime_sessions", "agent_id", "id")
-}
-
-func (s *Store) primaryKeyIs(ctx context.Context, table string, expected ...string) (bool, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT a.attname
-		FROM pg_index i
-		JOIN pg_class c ON c.oid = i.indrelid
-		JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) ON true
-		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
-		WHERE c.relname = $1 AND i.indisprimary
-		ORDER BY k.ord
-	`, table)
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	columns := []string{}
-	for rows.Next() {
-		var column string
-		if err := rows.Scan(&column); err != nil {
-			return false, err
-		}
-		columns = append(columns, column)
-	}
-	if err := rows.Err(); err != nil {
-		return false, err
-	}
-	if len(columns) != len(expected) {
-		return false, nil
-	}
-	for i := range expected {
-		if columns[i] != expected[i] {
-			return false, nil
-		}
-	}
-	return true, nil
 }

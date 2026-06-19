@@ -41,14 +41,14 @@ func (s *Store) agentIdentityBy(ctx context.Context, predicate string, args ...a
 	var userDisabledAt sql.NullTime
 	var agentDisabledAt sql.NullTime
 	var deviceDisabledAt sql.NullTime
-	err := s.pool.QueryRow(ctx, `SELECT a.id, a.workspace_id, a.user_id, COALESCE(u.disabled_reason, ''), u.disabled_at, a.device_id, a.agent_secret, COALESCE(a.agent_epoch, 1), a.server_key_id,
+	err := s.pool.QueryRow(ctx, `SELECT a.id, a.workspace_id, a.user_id, COALESCE(u.disabled_reason, ''), u.disabled_at, a.device_id, a.agent_secret, COALESCE(a.agent_epoch, 1),
 			COALESCE(a.capabilities, '{}'::jsonb), COALESCE(a.credential, '{}'::jsonb),
 			a.disabled_at, COALESCE(a.disabled_reason, ''), d.disabled_at, COALESCE(d.disabled_reason, '')
 		FROM agents a
 		JOIN users u ON u.id = a.user_id
 		JOIN devices d ON d.id = a.device_id
 		WHERE `+predicate, args...).Scan(
-		&identity.AgentID, &identity.WorkspaceID, &identity.UserID, &identity.UserDisabledReason, &userDisabledAt, &identity.DeviceID, &identity.AgentSecret, &identity.AgentEpoch, &identity.ServerKeyID,
+		&identity.AgentID, &identity.WorkspaceID, &identity.UserID, &identity.UserDisabledReason, &userDisabledAt, &identity.DeviceID, &identity.AgentSecret, &identity.AgentEpoch,
 		&capabilities, &credential, &agentDisabledAt, &identity.DisabledReason, &deviceDisabledAt, &identity.DeviceDisabledReason,
 	)
 	if len(capabilities) > 0 {

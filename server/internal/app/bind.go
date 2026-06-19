@@ -13,8 +13,7 @@ import (
 const bindRequestWindow = 5 * time.Minute
 
 type bindRequest struct {
-	ServerKeyID string                    `json:"server_key_id"`
-	Payload     security.EncryptedPayload `json:"payload"`
+	Payload security.EncryptedPayload `json:"payload"`
 }
 
 type bindPlaintext struct {
@@ -32,17 +31,12 @@ type bindResponse struct {
 	DeviceID    string `json:"device_id"`
 	AgentSecret string `json:"agent_secret"`
 	ServerURL   string `json:"server_url"`
-	ServerKeyID string `json:"server_key_id"`
 }
 
 func (s *Server) handleBind(w http.ResponseWriter, r *http.Request) {
 	var req bindRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", "invalid bind payload")
-		return
-	}
-	if req.ServerKeyID != s.cfg.ServerKeyID {
-		writeError(w, http.StatusBadRequest, "server_key_mismatch", "server key id mismatch")
 		return
 	}
 	data, err := security.DecryptFromAgent(s.cfg.InstallSecret, req.Payload)
@@ -74,7 +68,6 @@ func (s *Server) handleBind(w http.ResponseWriter, r *http.Request) {
 		DeviceID:    identity.DeviceID,
 		AgentSecret: identity.AgentSecret,
 		ServerURL:   identity.ServerURL,
-		ServerKeyID: identity.ServerKeyID,
 	})
 }
 
@@ -100,7 +93,7 @@ func (s *Server) validateBindFreshness(r *http.Request, plain bindPlaintext) err
 	if s.redis == nil {
 		return errBindFreshness("bind replay store is unavailable")
 	}
-	key := "bind:nonce:" + s.cfg.ServerKeyID + ":" + nonce
+	key := "bind:nonce:" + nonce
 	ok, err := s.redis.SetNX(r.Context(), key, "1", bindRequestWindow*2).Result()
 	if err != nil {
 		return errBindFreshness("bind replay store failed")

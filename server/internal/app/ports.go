@@ -22,7 +22,7 @@ type AgentRepository interface {
 }
 
 type BindRepository interface {
-	AuthenticateAndBind(context.Context, string, string, store.DeviceProfile, store.Credential, string, string) (store.AgentIdentity, error)
+	AuthenticateAndBind(context.Context, string, string, store.DeviceProfile, store.Credential, string) (store.AgentIdentity, error)
 	AuthenticateUser(context.Context, string, string) (store.UserIdentity, error)
 	EnsureBindUser(context.Context, store.BindUser) error
 }

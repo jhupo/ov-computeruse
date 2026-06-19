@@ -6,7 +6,7 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 
 - Postgres stores users, user keys, devices, agents, Codex project/session indexes, commands, approvals, audit logs, and run events.
 - Redis stores dash sessions, short-lived online agent state, and cross-instance pub/sub for dash broadcasts, agent command routing, and forced agent disconnects.
-- The Docker image is stateless. Private keys and database URLs are runtime secrets, not baked into the image.
+- The Docker image is stateless. Database URLs, install secrets, and runtime tokens are runtime environment, not baked into the image.
 
 ## Required environment
 

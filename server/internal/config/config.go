@@ -6,8 +6,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"ov-computeruse/server/internal/buildinfo"
 )
 
 type Config struct {
@@ -17,7 +15,6 @@ type Config struct {
 	Sub2APILoginUpstream string
 	PostgresURL          string
 	RedisURL             string
-	ServerKeyID          string
 	InstallSecret        string
 	DashToken            string
 	BindUsersJSON        string
@@ -33,7 +30,6 @@ func Load() (Config, error) {
 		Sub2APILoginUpstream: strings.TrimRight(os.Getenv("OV_SERVER_SUB2API_LOGIN_UPSTREAM"), "/"),
 		PostgresURL:          os.Getenv("OV_SERVER_POSTGRES_URL"),
 		RedisURL:             firstEnv("OV_SERVER_REDIS_URL", "redis://localhost:6379/0"),
-		ServerKeyID:          buildinfo.ServerKeyID,
 		InstallSecret:        firstNonEmpty(os.Getenv("OV_COMPUTERUSE_INSTALL_SECRET"), os.Getenv("OV_SERVER_INSTALL_SECRET")),
 		DashToken:            os.Getenv("OV_SERVER_DASH_TOKEN"),
 		BindUsersJSON:        os.Getenv("OV_SERVER_BIND_USERS_JSON"),
