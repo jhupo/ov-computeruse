@@ -3,6 +3,7 @@ package codexcli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -16,6 +17,8 @@ type eventMapper struct {
 	assistantByItemID map[string]string
 	terminalByItemID  map[string]string
 }
+
+var errUnsupportedApproval = errors.New("codex cli exec approval request is unsupported")
 
 func newEventMapper(adapter *Adapter) *eventMapper {
 	return &eventMapper{adapter: adapter, assistantByItemID: map[string]string{}, terminalByItemID: map[string]string{}}
@@ -75,7 +78,7 @@ func emitUnsupportedApproval(ctx context.Context, command protocol.Command, sour
 	payload := map[string]any{
 		"status":      "codex.approval.unsupported",
 		"source_type": sourceType,
-		"message":     "Codex CLI exec emitted an approval request, but this runtime has no verified stdin protocol for remote approval decisions.",
+		"message":     "Codex CLI exec emitted an approval request. Headless exec does not support remote approval decisions, so the run is failed instead of waiting.",
 		"raw":         rawJSON(raw),
 	}
 	if fields := approvalFields(raw); len(fields) > 0 {
@@ -83,7 +86,10 @@ func emitUnsupportedApproval(ctx context.Context, command protocol.Command, sour
 			payload[key] = value
 		}
 	}
-	return emit(ctx, sink, command, "run.status", payload)
+	if err := emit(ctx, sink, command, "run.status", payload); err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: %s", errUnsupportedApproval, sourceType)
 }
 
 func approvalFields(raw json.RawMessage) map[string]any {
