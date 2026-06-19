@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,31 +25,51 @@ type Sub2APIAuthenticator struct {
 }
 
 type sub2APILoginRequest struct {
-	Username string `json:"username"`
+	Email    string `json:"email"`
 	Password string `json:"password"`
 }
 
 type sub2APILoginResponse struct {
-	User sub2APIUser  `json:"user"`
-	Keys []sub2APIKey `json:"keys"`
+	AccessToken string      `json:"access_token"`
+	TokenType   string      `json:"token_type"`
+	User        sub2APIUser `json:"user"`
 }
 
 type sub2APIUser struct {
-	ID       string `json:"id"`
-	UserID   string `json:"user_id"`
-	Username string `json:"username"`
+	ID       json.Number `json:"id"`
+	Email    string      `json:"email"`
+	Username string      `json:"username"`
 }
 
 type sub2APIKey struct {
-	ID                 string `json:"id"`
-	Name               string `json:"name"`
-	BaseURL            string `json:"base_url"`
-	APIKey             string `json:"api_key"`
-	Key                string `json:"key"`
-	KeyFingerprint     string `json:"key_fingerprint"`
-	BaseURLFingerprint string `json:"base_url_fingerprint"`
-	Provider           string `json:"provider"`
-	Model              string `json:"model"`
+	ID     json.Number   `json:"id"`
+	Name   string        `json:"name"`
+	Key    string        `json:"key"`
+	Status string        `json:"status"`
+	Group  *sub2APIGroup `json:"group"`
+}
+
+type sub2APIGroup struct {
+	Platform string `json:"platform"`
+}
+
+type sub2APIEnvelope[T any] struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    T      `json:"data"`
+}
+
+type sub2APIPage[T any] struct {
+	Items []T `json:"items"`
+}
+
+type sub2APISettings struct {
+	APIBaseURL string `json:"api_base_url"`
+}
+
+type sub2APIRepository interface {
+	UpsertUser(context.Context, store.UserUpsert) (store.UserRecord, error)
+	UpsertUserKey(context.Context, store.UserKeyUpsert) (store.UserKeyRecord, error)
 }
 
 func NewSub2APIAuthenticator(baseURL string) Sub2APIAuthenticator {
@@ -57,40 +79,47 @@ func NewSub2APIAuthenticator(baseURL string) Sub2APIAuthenticator {
 	}
 }
 
-func (a Sub2APIAuthenticator) Login(ctx context.Context, repo Repository, username, password string) (DashPrincipal, error) {
+func (a Sub2APIAuthenticator) Login(ctx context.Context, repo sub2APIRepository, username, password string) (DashPrincipal, error) {
 	if a.baseURL == "" {
 		return DashPrincipal{}, errors.New("sub2api login upstream is not configured")
 	}
-	response, err := a.requestLogin(ctx, username, password)
+	login, err := a.requestLogin(ctx, username, password)
 	if err != nil {
 		return DashPrincipal{}, err
 	}
-	userID := firstNonBlank(response.User.UserID, response.User.ID, "usr_"+security.FingerprintSecret(username)[:20])
+	keys, err := a.requestKeys(ctx, login.AccessToken)
+	if err != nil {
+		return DashPrincipal{}, err
+	}
+	baseURL, err := a.requestGatewayBaseURL(ctx)
+	if err != nil {
+		return DashPrincipal{}, err
+	}
+	userID := firstNonBlank(login.User.ID.String(), "usr_"+security.FingerprintSecret(username)[:20])
 	upserted, err := repo.UpsertUser(ctx, store.UserUpsert{
 		ID:       userID,
-		Username: firstNonBlank(response.User.Username, username),
+		Username: firstNonBlank(login.User.Email, login.User.Username, username),
 		Password: password,
 		Actor:    "sub2api",
 	})
 	if err != nil {
 		return DashPrincipal{}, err
 	}
-	if len(response.Keys) == 0 {
+	if len(keys) == 0 {
 		return DashPrincipal{}, errors.New("sub2api returned no keys")
 	}
-	for _, key := range response.Keys {
-		if strings.TrimSpace(key.BaseURL) == "" || keyFingerprint(key) == "" {
+	for _, key := range keys {
+		if strings.TrimSpace(key.Key) == "" {
 			return DashPrincipal{}, errors.New("sub2api returned incomplete key")
 		}
-		keyID := firstNonBlank(key.ID, "key_"+security.FingerprintSecret(upserted.ID, key.BaseURL, keyFingerprint(key))[:20])
+		keyID := firstNonBlank(key.ID.String(), "key_"+security.FingerprintSecret(upserted.ID, baseURL, key.Key)[:20])
 		if _, err := repo.UpsertUserKey(ctx, store.UserKeyUpsert{
 			ID:             keyID,
 			UserID:         upserted.ID,
 			Name:           key.Name,
-			BaseURL:        key.BaseURL,
-			KeyFingerprint: keyFingerprint(key),
-			Provider:       key.Provider,
-			Model:          key.Model,
+			BaseURL:        baseURL,
+			KeyFingerprint: credentialFingerprint(baseURL, key.Key),
+			Provider:       keyProvider(key),
 			Actor:          "sub2api",
 		}); err != nil {
 			return DashPrincipal{}, err
@@ -100,11 +129,11 @@ func (a Sub2APIAuthenticator) Login(ctx context.Context, repo Repository, userna
 }
 
 func (a Sub2APIAuthenticator) requestLogin(ctx context.Context, username, password string) (sub2APILoginResponse, error) {
-	body, err := json.Marshal(sub2APILoginRequest{Username: username, Password: password})
+	body, err := json.Marshal(sub2APILoginRequest{Email: username, Password: password})
 	if err != nil {
 		return sub2APILoginResponse{}, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, joinURL(a.baseURL, "/api/login"), bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, joinURL(a.baseURL, "/api/v1/auth/login"), bytes.NewReader(body))
 	if err != nil {
 		return sub2APILoginResponse{}, err
 	}
@@ -117,18 +146,86 @@ func (a Sub2APIAuthenticator) requestLogin(ctx context.Context, username, passwo
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return sub2APILoginResponse{}, fmt.Errorf("sub2api login rejected: status %d", response.StatusCode)
 	}
-	var payload sub2APILoginResponse
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+	payload, err := decodeSub2API[sub2APILoginResponse](response)
+	if err != nil {
 		return sub2APILoginResponse{}, err
+	}
+	if strings.TrimSpace(payload.AccessToken) == "" {
+		return sub2APILoginResponse{}, errors.New("sub2api login returned no access token")
 	}
 	return payload, nil
 }
 
-func keyFingerprint(key sub2APIKey) string {
-	if strings.TrimSpace(key.KeyFingerprint) != "" {
-		return strings.TrimSpace(key.KeyFingerprint)
+func (a Sub2APIAuthenticator) requestKeys(ctx context.Context, accessToken string) ([]sub2APIKey, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, joinURL(a.baseURL, "/api/v1/keys?page=1&page_size=100"), nil)
+	if err != nil {
+		return nil, err
 	}
-	return security.FingerprintSecret(firstNonBlank(key.APIKey, key.Key))
+	request.Header.Set("authorization", "Bearer "+strings.TrimSpace(accessToken))
+	response, err := a.client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("sub2api keys rejected: status %d", response.StatusCode)
+	}
+	page, err := decodeSub2API[sub2APIPage[sub2APIKey]](response)
+	if err != nil {
+		return nil, err
+	}
+	active := make([]sub2APIKey, 0, len(page.Items))
+	for _, key := range page.Items {
+		if strings.TrimSpace(key.Status) == "" || strings.EqualFold(strings.TrimSpace(key.Status), "active") {
+			active = append(active, key)
+		}
+	}
+	return active, nil
+}
+
+func (a Sub2APIAuthenticator) requestGatewayBaseURL(ctx context.Context) (string, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, joinURL(a.baseURL, "/api/v1/settings/public"), nil)
+	if err != nil {
+		return "", err
+	}
+	response, err := a.client.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", fmt.Errorf("sub2api settings rejected: status %d", response.StatusCode)
+	}
+	settings, err := decodeSub2API[sub2APISettings](response)
+	if err != nil {
+		return "", err
+	}
+	return firstNonBlank(settings.APIBaseURL, a.gatewayBaseURL()), nil
+}
+
+func decodeSub2API[T any](response *http.Response) (T, error) {
+	var envelope sub2APIEnvelope[T]
+	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+		var zero T
+		return zero, err
+	}
+	if envelope.Code != 0 {
+		var zero T
+		return zero, fmt.Errorf("sub2api rejected: code %d message %s", envelope.Code, envelope.Message)
+	}
+	return envelope.Data, nil
+}
+
+func credentialFingerprint(baseURL, apiKey string) string {
+	sum := sha256.Sum256([]byte(strings.TrimRight(strings.ToLower(baseURL), "/") + "\x00" + apiKey))
+	return hex.EncodeToString(sum[:])
+}
+
+func keyProvider(key sub2APIKey) string {
+	if key.Group == nil {
+		return ""
+	}
+	return strings.TrimSpace(key.Group.Platform)
 }
 
 func joinURL(baseURL, path string) string {
@@ -136,8 +233,18 @@ func joinURL(baseURL, path string) string {
 	if err != nil {
 		return baseURL + path
 	}
-	parsed.Path = strings.TrimRight(parsed.Path, "/") + path
+	relative, err := url.Parse(path)
+	if err != nil {
+		parsed.Path = strings.TrimRight(parsed.Path, "/") + path
+		return parsed.String()
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + relative.Path
+	parsed.RawQuery = relative.RawQuery
 	return parsed.String()
+}
+
+func (a Sub2APIAuthenticator) gatewayBaseURL() string {
+	return joinURL(a.baseURL, "/v1")
 }
 
 func firstNonBlank(values ...string) string {
