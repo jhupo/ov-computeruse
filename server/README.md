@@ -22,6 +22,30 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 
 `OV_SERVER_BIND_USERS_JSON` is a JSON array with username/password and allowed Codex key fingerprint records. It is a bootstrap seed path; ongoing user/key management should use the admin API.
 
+## Docker Compose deployment
+
+The server image contains both the Go API service and the embedded dash web UI. Postgres and Redis run as separate containers in the compose stack.
+
+```text
+server/docker-compose.example.yml
+server/.env.example
+```
+
+Deploy flow:
+
+```bash
+cd server
+cp .env.example .env
+# edit .env and copy server_private_key.pem beside docker-compose.example.yml
+docker compose --env-file .env -f docker-compose.example.yml up -d
+```
+
+Containers:
+
+- `server`: `ghcr.io/jhupo/ov-computeruse/server:<tag>`, exposes API, dash UI, `/ws/agent`, and `/ws/dash`.
+- `postgres`: stores users, devices, agents, indexed Codex projects/sessions/history, commands, approvals, and timelines.
+- `redis`: stores dash sessions, live agent state, websocket pub/sub, and command routing state.
+
 ## sub2api login contract
 
 Dash login sends the user's username/password to `OV_SERVER_SUB2API_LOGIN_UPSTREAM`. On success, server syncs the returned user and key fingerprints into Postgres, issues a dash session token, and never stores plaintext API keys.
