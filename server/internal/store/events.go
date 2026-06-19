@@ -92,9 +92,6 @@ func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, even
 		}
 		return RunEventSaveResult{}, err
 	}
-	if err := s.recordRunEventConsistency(ctx, agentID, event); err != nil {
-		return RunEventSaveResult{}, err
-	}
 	if err := s.advanceRunEventCursor(ctx, agentID, event); err != nil {
 		return RunEventSaveResult{}, err
 	}
@@ -350,21 +347,7 @@ func (s *Store) RebuildRunProjections(ctx context.Context, agentID, runID string
 	if err := s.clearRunProjections(ctx, agentID, runID); err != nil {
 		return result, err
 	}
-	expectedSeq := uint64(1)
 	for _, event := range events {
-		if event.Seq > expectedSeq {
-			if err := s.saveRunEventGap(ctx, agentID, runID, expectedSeq, event.Seq, "gap"); err != nil {
-				return result, err
-			}
-		} else if event.Seq < expectedSeq {
-			kind := "duplicate_seq"
-			if event.Seq+1 < expectedSeq {
-				kind = "seq_regression"
-			}
-			if err := s.saveRunEventGap(ctx, agentID, runID, expectedSeq, event.Seq, kind); err != nil {
-				return result, err
-			}
-		}
 		if err := s.advanceRunEventCursor(ctx, agentID, event); err != nil {
 			return result, err
 		}
@@ -391,9 +374,6 @@ func (s *Store) RebuildRunProjections(ctx context.Context, agentID, runID string
 			result.LastEventSeq = event.Seq
 			result.LastEventAt = event.At
 		}
-		if event.Seq >= expectedSeq {
-			expectedSeq = event.Seq + 1
-		}
 	}
 	return result, nil
 }
@@ -418,32 +398,6 @@ func (s *Store) clearRunProjections(ctx context.Context, agentID, runID string) 
 	return err
 }
 
-func (s *Store) recordRunEventConsistency(ctx context.Context, agentID string, event protocol.RunEvent) error {
-	if event.RunID == "" || event.Seq == 0 {
-		return nil
-	}
-	if err := s.resolveRunEventGaps(ctx, agentID, event.RunID, event.Seq); err != nil {
-		return err
-	}
-	var previous uint64
-	if err := s.pool.QueryRow(ctx, `SELECT COALESCE(MAX(seq), 0) FROM run_events WHERE agent_id=$1 AND run_id=$2 AND seq<$3`, agentID, event.RunID, event.Seq).Scan(&previous); err != nil {
-		return err
-	}
-	if previous > 0 && event.Seq > previous+1 {
-		if err := s.saveRunEventGap(ctx, agentID, event.RunID, previous+1, event.Seq, "gap"); err != nil {
-			return err
-		}
-	}
-	var next uint64
-	if err := s.pool.QueryRow(ctx, `SELECT COALESCE(MIN(seq), 0) FROM run_events WHERE agent_id=$1 AND run_id=$2 AND seq>$3`, agentID, event.RunID, event.Seq).Scan(&next); err != nil {
-		return err
-	}
-	if next > 0 && next > event.Seq+1 {
-		return s.saveRunEventGap(ctx, agentID, event.RunID, event.Seq+1, next, "gap")
-	}
-	return nil
-}
-
 func (s *Store) advanceRunEventCursor(ctx context.Context, agentID string, event protocol.RunEvent) error {
 	if event.RunID == "" || event.Seq == 0 {
 		return nil
@@ -457,14 +411,6 @@ func (s *Store) advanceRunEventCursor(ctx context.Context, agentID string, event
 			last_event_seq=GREATEST(runs.last_event_seq, EXCLUDED.last_event_seq),
 			last_event_at=EXCLUDED.last_event_at`,
 		event.RunID, agentID, event.CommandID, event.ProjectID, event.SessionID, event.Seq, event.At)
-	return err
-}
-
-func (s *Store) saveRunEventGap(ctx context.Context, agentID, runID string, expected, observed uint64, kind string) error {
-	id := runEventGapID(agentID, runID, expected, observed, kind)
-	_, err := s.pool.Exec(ctx, `INSERT INTO run_event_gaps (id, agent_id, run_id, expected_seq, observed_seq, kind, status, detected_at)
-		VALUES ($1,$2,$3,$4,$5,$6,'open',now())
-		ON CONFLICT (id) DO NOTHING`, id, agentID, runID, expected, observed, kind)
 	return err
 }
 
@@ -499,14 +445,6 @@ func (s *Store) saveRunEventConflict(ctx context.Context, agentID, runID string,
 		id, agentID, runID, seq, seq, kind,
 		conflict.Existing.ID, conflict.Observed.EventID, conflict.Existing.Kind, conflict.Observed.Kind,
 		payloadSHA256(conflict.Existing.Payload), payloadSHA256(conflict.Observed.Payload), jsonRaw(details))
-	return err
-}
-
-func (s *Store) resolveRunEventGaps(ctx context.Context, agentID, runID string, seq uint64) error {
-	_, err := s.pool.Exec(ctx, `UPDATE run_event_gaps
-		SET status='resolved', resolved_at=now()
-		WHERE agent_id=$1 AND run_id=$2 AND status='open' AND expected_seq <= $3 AND observed_seq > $3`,
-		agentID, runID, seq)
 	return err
 }
 
