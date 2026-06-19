@@ -82,6 +82,21 @@ func TestTerminalOutputDeltaDoesNotOverwriteToolOutput(t *testing.T) {
 	}
 }
 
+func TestHeartbeatMissingRunCanBecomeStale(t *testing.T) {
+	staleStatuses := []string{"running", "awaiting_approval", "stopping", " STOPPING "}
+	for _, status := range staleStatuses {
+		if !heartbeatMissingRunCanBecomeStale(status) {
+			t.Fatalf("expected %q to become stale when missing from heartbeat", status)
+		}
+	}
+
+	for _, status := range []string{"queued", "accepted", "stale", "stopped", "failed", ""} {
+		if heartbeatMissingRunCanBecomeStale(status) {
+			t.Fatalf("expected %q to remain unchanged when missing from heartbeat", status)
+		}
+	}
+}
+
 func TestCommandMatchesIdempotencyAcceptsEquivalentCommand(t *testing.T) {
 	existing := CommandRecord{
 		RunID:     "run_1",

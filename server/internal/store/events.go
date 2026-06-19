@@ -1125,7 +1125,7 @@ func (s *Store) ReconcileHeartbeatRuns(ctx context.Context, agentID string, hear
 			return err
 		}
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id FROM runs WHERE agent_id=$1 AND status IN ('running','awaiting_approval','stopping')`, agentID)
+	rows, err := s.pool.Query(ctx, `SELECT id, status FROM runs WHERE agent_id=$1 AND status IN ('running','awaiting_approval','stopping')`, agentID)
 	if err != nil {
 		return err
 	}
@@ -1133,10 +1133,11 @@ func (s *Store) ReconcileHeartbeatRuns(ctx context.Context, agentID string, hear
 	stale := []string{}
 	for rows.Next() {
 		var runID string
-		if err := rows.Scan(&runID); err != nil {
+		var status string
+		if err := rows.Scan(&runID, &status); err != nil {
 			return err
 		}
-		if _, ok := running[runID]; !ok {
+		if _, ok := running[runID]; !ok && heartbeatMissingRunCanBecomeStale(status) {
 			stale = append(stale, runID)
 		}
 	}
@@ -1144,11 +1145,20 @@ func (s *Store) ReconcileHeartbeatRuns(ctx context.Context, agentID string, hear
 		return err
 	}
 	for _, runID := range stale {
-		if _, err := s.pool.Exec(ctx, `UPDATE runs SET status='stale', status_reason='missing_from_agent_heartbeat', last_event_seq=GREATEST(last_event_seq, $3), last_event_at=$4 WHERE agent_id=$1 AND id=$2 AND status IN ('running','awaiting_approval')`, agentID, runID, heartbeat.LastEventSeq, heartbeat.At); err != nil {
+		if _, err := s.pool.Exec(ctx, `UPDATE runs SET status='stale', status_reason='missing_from_agent_heartbeat', last_event_seq=GREATEST(last_event_seq, $3), last_event_at=$4 WHERE agent_id=$1 AND id=$2 AND status IN ('running','awaiting_approval','stopping')`, agentID, runID, heartbeat.LastEventSeq, heartbeat.At); err != nil {
 			return err
 		}
 	}
 	return s.ExpireCommands(ctx, agentID)
+}
+
+func heartbeatMissingRunCanBecomeStale(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "running", "awaiting_approval", "stopping":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Store) markRunForCommandTerminal(ctx context.Context, agentID, commandID, status, reason string) error {
