@@ -230,3 +230,14 @@ func TestNormalizeCommandPreservesExplicitExecutionDeadline(t *testing.T) {
 		t.Fatalf("deadline_at = %v, want explicit deadline %v", command.DeadlineAt, deadline)
 	}
 }
+
+func TestPrepareCommandRetryIncludesStopFailed(t *testing.T) {
+	if !strings.Contains(prepareCommandRetrySQL, "'stop_failed'") {
+		t.Fatalf("retry SQL should accept stop_failed commands: %s", prepareCommandRetrySQL)
+	}
+	for _, want := range []string{"status='running'", "'stale'", "'stop_failed'"} {
+		if !strings.Contains(retryStopRunSQL, want) {
+			t.Fatalf("stop retry SQL missing %q: %s", want, retryStopRunSQL)
+		}
+	}
+}

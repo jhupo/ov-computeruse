@@ -1005,11 +1005,15 @@ func (s *Store) PrepareCommandRetry(ctx context.Context, agentID, commandID stri
 			return err
 		}
 	}
-	if _, err := tx.Exec(ctx, `UPDATE commands SET status='queued', status_reason='retry requested', deadline_at=$3, expires_at=$4, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, deadlineAt.UTC(), expiresAt.UTC()); err != nil {
+	if _, err := tx.Exec(ctx, prepareCommandRetrySQL, agentID, commandID, deadlineAt.UTC(), expiresAt.UTC()); err != nil {
 		return err
 	}
 	if storeCommandCreatesRun(command.Kind) {
-		if _, err := tx.Exec(ctx, `UPDATE runs SET status='queued', status_reason='retry_requested', finished_at=NULL WHERE agent_id=$1 AND command_id=$2 AND id=$3`, agentID, commandID, command.RunID); err != nil {
+		if _, err := tx.Exec(ctx, retryCreateRunSQL, agentID, commandID, command.RunID); err != nil {
+			return err
+		}
+	} else if storeCommandStopsRun(command.Kind) && strings.TrimSpace(command.RunID) != "" {
+		if _, err := tx.Exec(ctx, retryStopRunSQL, agentID, command.RunID); err != nil {
 			return err
 		}
 	}
@@ -1018,6 +1022,12 @@ func (s *Store) PrepareCommandRetry(ctx context.Context, agentID, commandID stri
 	}
 	return tx.Commit(ctx)
 }
+
+const prepareCommandRetrySQL = `UPDATE commands SET status='queued', status_reason='retry requested', deadline_at=$3, expires_at=$4, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired','stop_failed')`
+
+const retryCreateRunSQL = `UPDATE runs SET status='queued', status_reason='retry_requested', finished_at=NULL WHERE agent_id=$1 AND command_id=$2 AND id=$3`
+
+const retryStopRunSQL = `UPDATE runs SET status='running', status_reason='stop retry requested', finished_at=NULL WHERE agent_id=$1 AND id=$2 AND status IN ('stale','stop_failed')`
 
 func (s *Store) MarkCommandAck(ctx context.Context, agentID string, ack protocol.Ack) error {
 	if ack.CommandID == "" {

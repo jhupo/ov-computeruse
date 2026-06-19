@@ -529,7 +529,7 @@ func hasPromptPayload(raw json.RawMessage) bool {
 
 func commandRetryable(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "queued", "dispatch_failed", "dispatched", "expired", "failed":
+	case "queued", "dispatch_failed", "dispatched", "expired", "failed", "stop_failed":
 		return true
 	default:
 		return false

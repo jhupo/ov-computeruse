@@ -98,3 +98,12 @@ func TestValidateCommandCapabilitiesRejectsNonCodexRuntime(t *testing.T) {
 		t.Fatal("expected runtime command to require codex.cli capability")
 	}
 }
+
+func TestCommandRetryableIncludesStopFailed(t *testing.T) {
+	if !commandRetryable("stop_failed") {
+		t.Fatal("expected stop_failed commands to be retryable")
+	}
+	if commandRetryable("done") {
+		t.Fatal("expected done commands to remain terminal")
+	}
+}
