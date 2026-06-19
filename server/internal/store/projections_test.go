@@ -131,6 +131,10 @@ func TestRuntimeTimelineSessionQueryAcceptsSessionOrThreadID(t *testing.T) {
 		"COALESCE(hi.payload->>'status', '') AS status",
 		"WHEN hi.kind='message' AND COALESCE(hi.role, '')='user' THEN 'user.message'",
 		"WHEN hi.kind='todo.list' THEN 'todo_list'",
+		"combined AS",
+		"recent AS",
+		"ORDER BY event_at DESC, received_at DESC, run_id DESC, seq DESC",
+		"FROM recent",
 		"ORDER BY event_at ASC",
 	} {
 		if !strings.Contains(query, want) {

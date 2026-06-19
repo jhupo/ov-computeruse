@@ -173,12 +173,20 @@ func runtimeTimelineSessionQuery() string {
 					SELECT 1 FROM live
 					WHERE live.item_id=COALESCE(NULLIF(hi.source_event_id, ''), NULLIF(hi.payload->>'id', ''), NULLIF(hi.payload->>'call_id', ''), hi.id)
 				)
+		), combined AS (
+			SELECT id, agent_id, run_id, session_id, project_id, seq, runtime, thread_id, turn_id, item_id, item_type, phase, kind, role, text, status, payload, event_at, received_at FROM live
+			UNION ALL
+			SELECT id, agent_id, run_id, session_id, project_id, seq, runtime, thread_id, turn_id, item_id, item_type, phase, kind, role, text, status, payload, event_at, received_at FROM history
+		), recent AS (
+			SELECT *
+			FROM combined
+			ORDER BY event_at DESC, received_at DESC, run_id DESC, seq DESC
+			LIMIT $3
 		)
-		SELECT id, agent_id, run_id, session_id, project_id, seq, runtime, thread_id, turn_id, item_id, item_type, phase, kind, role, text, status, payload, event_at, received_at FROM live
-		UNION ALL
-		SELECT id, agent_id, run_id, session_id, project_id, seq, runtime, thread_id, turn_id, item_id, item_type, phase, kind, role, text, status, payload, event_at, received_at FROM history
+		SELECT id, agent_id, run_id, session_id, project_id, seq, runtime, thread_id, turn_id, item_id, item_type, phase, kind, role, text, status, payload, event_at, received_at
+		FROM recent
 		ORDER BY event_at ASC, received_at ASC, run_id ASC, seq ASC
-		LIMIT $3`
+		`
 }
 
 func scanRuntimeTimeline(rows interface {
