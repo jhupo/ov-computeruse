@@ -15,9 +15,8 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 - `OV_SERVER_SUB2API_LOGIN_UPSTREAM`, base URL for the sub2api login upstream used by dash. Server posts `POST <upstream>/api/login`.
 - `OV_SERVER_POSTGRES_URL`
 - `OV_SERVER_REDIS_URL`
-- `OV_SERVER_KEY_ID`
 - `OV_SERVER_PRIVATE_KEY_PEM` or `OV_SERVER_PRIVATE_KEY_FILE`
-- `OV_SERVER_DASH_TOKEN`, internal/admin bearer token; normal users should use `/api/dash/login`
+- `OV_SERVER_DASH_TOKEN`, optional internal/admin bearer token; normal users should use `/api/dash/login`
 - `OV_SERVER_BIND_USERS_JSON`, optional bootstrap users for local/dev binding
 
 `OV_SERVER_BIND_USERS_JSON` is a JSON array with username/password and allowed Codex key fingerprint records. It is a bootstrap seed path; ongoing user/key management should use the admin API.
@@ -147,5 +146,4 @@ Runtime secrets are set on the deployed container, not at image build time:
 - `OV_SERVER_PUBLIC_URL`: public HTTPS service URL used by agent installers.
 - `OV_SERVER_SUB2API_LOGIN_UPSTREAM`: sub2api login upstream base URL.
 - `OV_SERVER_PRIVATE_KEY_PEM` or `OV_SERVER_PRIVATE_KEY_FILE`: server private key for installer bind decrypt.
-- `OV_SERVER_KEY_ID` and `OV_SERVER_PUBLIC_KEY_FINGERPRINT`: key metadata matching the agent installer public key.
-- `OV_SERVER_DASH_TOKEN`: internal/admin bearer token.
+- `OV_SERVER_DASH_TOKEN`: optional internal/admin bearer token.

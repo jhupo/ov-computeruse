@@ -56,9 +56,6 @@ func Load() (Config, error) {
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
 		return Config{}, errors.New("OV_SERVER_PUBLIC_URL must be https")
 	}
-	if strings.TrimSpace(cfg.ServerKeyID) == "" {
-		return Config{}, errors.New("OV_SERVER_KEY_ID is required")
-	}
 	if strings.TrimSpace(cfg.PostgresURL) == "" {
 		return Config{}, errors.New("OV_SERVER_POSTGRES_URL is required")
 	}
@@ -74,9 +71,6 @@ func Load() (Config, error) {
 	}
 	if strings.TrimSpace(cfg.ServerPrivateKeyPEM) == "" {
 		return Config{}, errors.New("OV_SERVER_PRIVATE_KEY_PEM or OV_SERVER_PRIVATE_KEY_FILE is required")
-	}
-	if strings.TrimSpace(cfg.DashToken) == "" {
-		return Config{}, errors.New("OV_SERVER_DASH_TOKEN is required")
 	}
 	return cfg, nil
 }

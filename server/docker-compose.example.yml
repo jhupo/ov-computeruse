@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-ov_computeruse}
       POSTGRES_USER: ${POSTGRES_USER:-ov}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ov_dev_password}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -27,7 +27,7 @@ services:
       retries: 10
 
   server:
-    image: ${OV_SERVER_IMAGE:-ghcr.io/jhupo/ov-computeruse/server:latest}
+    image: ghcr.io/jhupo/ov-computeruse/server:latest
     restart: unless-stopped
     depends_on:
       postgres:
@@ -40,12 +40,10 @@ services:
       OV_SERVER_ADDR: :8080
       OV_SERVER_PUBLIC_URL: ${OV_SERVER_PUBLIC_URL:?set OV_SERVER_PUBLIC_URL}
       OV_SERVER_SUB2API_LOGIN_UPSTREAM: ${OV_SERVER_SUB2API_LOGIN_UPSTREAM:?set OV_SERVER_SUB2API_LOGIN_UPSTREAM}
-      OV_SERVER_POSTGRES_URL: postgres://${POSTGRES_USER:-ov}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ov_computeruse}?sslmode=disable
+      OV_SERVER_POSTGRES_URL: postgres://${POSTGRES_USER:-ov}:${POSTGRES_PASSWORD:-ov_dev_password}@postgres:5432/${POSTGRES_DB:-ov_computeruse}?sslmode=disable
       OV_SERVER_REDIS_URL: redis://redis:6379/0
-      OV_SERVER_KEY_ID: ${OV_SERVER_KEY_ID:?set OV_SERVER_KEY_ID}
-      OV_SERVER_PUBLIC_KEY_FINGERPRINT: ${OV_SERVER_PUBLIC_KEY_FINGERPRINT:?set OV_SERVER_PUBLIC_KEY_FINGERPRINT}
       OV_SERVER_PRIVATE_KEY_FILE: /run/secrets/server_private_key.pem
-      OV_SERVER_DASH_TOKEN: ${OV_SERVER_DASH_TOKEN:?set OV_SERVER_DASH_TOKEN}
+      OV_SERVER_DASH_TOKEN: ${OV_SERVER_DASH_TOKEN:-}
     secrets:
       - server_private_key.pem
 

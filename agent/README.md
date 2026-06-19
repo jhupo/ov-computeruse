@@ -91,9 +91,6 @@ GitHub Actions builds:
 
 Required repository secrets:
 
-- `OV_SERVER_URL`
-- `OV_SERVER_KEY_ID`
-- `OV_SERVER_PUBLIC_KEY_B64`
-- `OV_SERVER_PUBLIC_KEY_FINGERPRINT`
+- `OV_COMPUTERUSE_SERVER_URL`
 
-The build injects only server URL and public-key metadata. Server private keys, user keys, and per-device `agent_secret` are never included in the package.
+The build injects the server URL from the repository secret and reads public-key metadata from `agent/packaging/public`. Server private keys, user keys, and per-device `agent_secret` are never included in the package.

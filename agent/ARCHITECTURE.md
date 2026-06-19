@@ -80,11 +80,11 @@ Codex CLI 负责写真实本地历史。run 完成、失败或停止后，agent 
 
 ## 发布注入
 
-CI 只注入公开或可给客户端的绑定信息：
+CI 只从 secret 注入服务连接地址，公钥材料从仓库固定文件读取：
 
-- `OV_SERVER_URL`
-- `OV_SERVER_KEY_ID`
-- `OV_SERVER_PUBLIC_KEY_B64`
-- `OV_SERVER_PUBLIC_KEY_FINGERPRINT`
+- `OV_COMPUTERUSE_SERVER_URL`
+- `agent/packaging/public/server_key_id.txt`
+- `agent/packaging/public/server_public_key.pem`
+- `agent/packaging/public/server_public_key_fingerprint.txt`
 
 server 私钥、用户 key、agent secret 都不能进入构建产物。Windows job 产出 Inno `.exe`，macOS job 产出 `.pkg`，Linux job 产出 `.deb/.rpm`，同时保留裸二进制归档用于 CLI installer。

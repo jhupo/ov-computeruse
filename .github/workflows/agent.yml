@@ -46,17 +46,15 @@ jobs:
           go-version: "1.25.x"
           cache-dependency-path: agent/go.sum
 
-      - name: Validate server injection
+      - name: Resolve server injection
         env:
-          OV_SERVER_URL: ${{ secrets.OV_SERVER_URL }}
-          OV_SERVER_KEY_ID: ${{ secrets.OV_SERVER_KEY_ID }}
-          OV_SERVER_PUBLIC_KEY_B64: ${{ secrets.OV_SERVER_PUBLIC_KEY_B64 }}
-          OV_SERVER_PUBLIC_KEY_FINGERPRINT: ${{ secrets.OV_SERVER_PUBLIC_KEY_FINGERPRINT }}
+          OV_COMPUTERUSE_SERVER_URL: ${{ secrets.OV_COMPUTERUSE_SERVER_URL }}
         run: |
-          test -n "$OV_SERVER_URL"
-          test -n "$OV_SERVER_KEY_ID"
-          test -n "$OV_SERVER_PUBLIC_KEY_B64"
-          test -n "$OV_SERVER_PUBLIC_KEY_FINGERPRINT"
+          test -n "$OV_COMPUTERUSE_SERVER_URL"
+          echo "OV_SERVER_URL=$OV_COMPUTERUSE_SERVER_URL" >> "$GITHUB_ENV"
+          echo "OV_SERVER_KEY_ID=$(cat agent/packaging/public/server_key_id.txt)" >> "$GITHUB_ENV"
+          echo "OV_SERVER_PUBLIC_KEY_FINGERPRINT=$(cat agent/packaging/public/server_public_key_fingerprint.txt)" >> "$GITHUB_ENV"
+          echo "OV_SERVER_PUBLIC_KEY_B64=$(base64 -w 0 agent/packaging/public/server_public_key.pem)" >> "$GITHUB_ENV"
 
       - name: Resolve package version
         run: |
@@ -76,10 +74,6 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
-          OV_SERVER_URL: ${{ secrets.OV_SERVER_URL }}
-          OV_SERVER_KEY_ID: ${{ secrets.OV_SERVER_KEY_ID }}
-          OV_SERVER_PUBLIC_KEY_B64: ${{ secrets.OV_SERVER_PUBLIC_KEY_B64 }}
-          OV_SERVER_PUBLIC_KEY_FINGERPRINT: ${{ secrets.OV_SERVER_PUBLIC_KEY_FINGERPRINT }}
         run: |
           mkdir -p dist
           go build \

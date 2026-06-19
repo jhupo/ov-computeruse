@@ -130,7 +130,7 @@ func (s *Server) requireDash(r *http.Request) (DashPrincipal, bool) {
 	if token == "" {
 		return DashPrincipal{}, false
 	}
-	if token == s.cfg.DashToken {
+	if s.cfg.DashToken != "" && token == s.cfg.DashToken {
 		return DashPrincipal{Admin: true}, true
 	}
 	principal, err := s.sessions.Principal(r.Context(), token)
