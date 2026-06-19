@@ -2,6 +2,7 @@ package codexscan
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,9 +14,10 @@ import (
 func TestRuntimeSessionFromFileUsesCodexSessionMeta(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
+	cwd := filepath.Join(dir, "repo")
 	content := "" +
-		`{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"id":"sess_native","cwd":"C:\\repo","model_provider":"openai"}}` + "\n" +
-		`{"timestamp":"2026-06-18T01:01:00Z","type":"turn_context","payload":{"turn_id":"turn_1","cwd":"C:\\repo","model":"gpt-5.1-codex-max","approval_policy":"never","permission_profile":"read-only","effort":"high"}}` + "\n" +
+		`{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"id":"sess_native","cwd":` + quoteJSON(t, cwd) + `,"model_provider":"openai"}}` + "\n" +
+		`{"timestamp":"2026-06-18T01:01:00Z","type":"turn_context","payload":{"turn_id":"turn_1","cwd":` + quoteJSON(t, cwd) + `,"model":"gpt-5.1-codex-max","approval_policy":"never","permission_profile":"read-only","effort":"high"}}` + "\n" +
 		`{"timestamp":"2026-06-18T01:02:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}` + "\n" +
 		`{"timestamp":"2026-06-18T01:03:00Z","type":"response_item","payload":{"type":"todo_list","items":[{"text":"ship","completed":false}]}}` + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -41,7 +43,7 @@ func TestRuntimeSessionFromFileUsesCodexSessionMeta(t *testing.T) {
 	if runtimeSession.ResumeMode != "codex_cli_history_index" {
 		t.Fatalf("resume mode = %q, want codex_cli_history_index", runtimeSession.ResumeMode)
 	}
-	if runtimeSession.Title != "Fix bug" || runtimeSession.CWD != filepath.Clean(`C:\repo`) {
+	if runtimeSession.Title != "Fix bug" || runtimeSession.CWD != filepath.Clean(cwd) {
 		t.Fatalf("runtime session context title/cwd = %q/%q", runtimeSession.Title, runtimeSession.CWD)
 	}
 	if runtimeSession.Model != "gpt-5.1-codex-max" || runtimeSession.ApprovalPolicy != "never" || runtimeSession.SandboxMode != "read-only" || runtimeSession.ReasoningEffort != "high" || runtimeSession.LastTurnID != "turn_1" {
@@ -50,6 +52,15 @@ func TestRuntimeSessionFromFileUsesCodexSessionMeta(t *testing.T) {
 	if runtimeSession.LastItemIndex != 3 {
 		t.Fatalf("last item index = %d, want 3", runtimeSession.LastItemIndex)
 	}
+}
+
+func quoteJSON(t *testing.T, value string) string {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }
 
 func TestRuntimeSessionFromFilePrefersSessionConfiguredThreadID(t *testing.T) {
