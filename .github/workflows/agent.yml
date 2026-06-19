@@ -48,8 +48,8 @@ jobs:
 
       - name: Resolve server injection
         env:
-          OV_COMPUTERUSE_SERVER_URL: ${{ secrets.OV_COMPUTERUSE_SERVER_URL }}
-          OV_COMPUTERUSE_TOKEN: ${{ secrets.OV_COMPUTERUSE_TOKEN }}
+          OV_COMPUTERUSE_SERVER_URL: ${{ vars.OV_COMPUTERUSE_SERVER_URL }}
+          OV_COMPUTERUSE_TOKEN: ${{ vars.OV_COMPUTERUSE_TOKEN }}
         run: |
           test -n "$OV_COMPUTERUSE_SERVER_URL"
           test -n "$OV_COMPUTERUSE_TOKEN"
