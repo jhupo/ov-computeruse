@@ -28,24 +28,30 @@ type execError struct {
 }
 
 type execItem struct {
-	ID               string          `json:"id,omitempty"`
-	Type             string          `json:"type,omitempty"`
-	Text             string          `json:"text,omitempty"`
-	Summary          string          `json:"summary,omitempty"`
-	Name             string          `json:"name,omitempty"`
-	Server           string          `json:"server,omitempty"`
-	Tool             string          `json:"tool,omitempty"`
-	Status           string          `json:"status,omitempty"`
-	Command          string          `json:"command,omitempty"`
-	AggregatedOutput string          `json:"aggregated_output,omitempty"`
-	Output           string          `json:"output,omitempty"`
-	ExitCode         *int            `json:"exit_code,omitempty"`
-	Arguments        json.RawMessage `json:"arguments,omitempty"`
-	Result           json.RawMessage `json:"result,omitempty"`
-	Error            json.RawMessage `json:"error,omitempty"`
-	Changes          json.RawMessage `json:"changes,omitempty"`
-	Items            json.RawMessage `json:"items,omitempty"`
-	Raw              json.RawMessage `json:"-"`
+	ID                string          `json:"id,omitempty"`
+	Type              string          `json:"type,omitempty"`
+	Text              string          `json:"text,omitempty"`
+	Summary           string          `json:"summary,omitempty"`
+	Name              string          `json:"name,omitempty"`
+	Server            string          `json:"server,omitempty"`
+	Tool              string          `json:"tool,omitempty"`
+	Query             string          `json:"query,omitempty"`
+	Status            string          `json:"status,omitempty"`
+	Command           string          `json:"command,omitempty"`
+	AggregatedOutput  string          `json:"aggregated_output,omitempty"`
+	Output            string          `json:"output,omitempty"`
+	Action            json.RawMessage `json:"action,omitempty"`
+	Prompt            string          `json:"prompt,omitempty"`
+	SenderThreadID    string          `json:"sender_thread_id,omitempty"`
+	ExitCode          *int            `json:"exit_code,omitempty"`
+	Arguments         json.RawMessage `json:"arguments,omitempty"`
+	Result            json.RawMessage `json:"result,omitempty"`
+	Error             json.RawMessage `json:"error,omitempty"`
+	Changes           json.RawMessage `json:"changes,omitempty"`
+	Items             json.RawMessage `json:"items,omitempty"`
+	ReceiverThreadIDs json.RawMessage `json:"receiver_thread_ids,omitempty"`
+	AgentsStates      json.RawMessage `json:"agents_states,omitempty"`
+	Raw               json.RawMessage `json:"-"`
 }
 
 type completionSignal struct {

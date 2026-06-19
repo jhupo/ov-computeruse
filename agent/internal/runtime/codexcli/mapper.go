@@ -67,8 +67,10 @@ func (m *eventMapper) emitItem(ctx context.Context, command protocol.Command, ph
 		return emitUnsupportedApproval(ctx, command, item.Type, item.Raw, sink)
 	case "error":
 		return emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.item.error", "phase": phase, "error": rawJSON(item.Error), "item": rawJSON(item.Raw)})
-	case "web_search", "collab_tool_call":
-		return emitTool(ctx, command, phase, item, firstNonEmpty(item.Tool, item.Name, item.Type), genericToolPayload(item), sink)
+	case "web_search":
+		return emitTool(ctx, command, phase, item, "web_search", webSearchPayload(item), sink)
+	case "collab_tool_call":
+		return emitTool(ctx, command, phase, item, firstNonEmpty(item.Tool, item.Name, "collab"), collabToolPayload(item), sink)
 	default:
 		return emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.item", "phase": phase, "item_type": item.Type, "item": rawJSON(item.Raw)})
 	}
@@ -244,6 +246,29 @@ func fileChangePayload(item execItem) map[string]any {
 	return map[string]any{
 		"changes": rawJSON(item.Changes),
 		"output":  firstNonEmpty(rawText(item.Changes), item.Output, item.Text),
+	}
+}
+
+func webSearchPayload(item execItem) map[string]any {
+	return map[string]any{
+		"query":  item.Query,
+		"action": rawJSON(item.Action),
+		"output": firstNonEmpty(item.Output, item.Text, rawText(item.Result), rawText(item.Action)),
+		"result": rawJSON(item.Result),
+		"error":  rawJSON(item.Error),
+	}
+}
+
+func collabToolPayload(item execItem) map[string]any {
+	return map[string]any{
+		"tool":                item.Tool,
+		"sender_thread_id":    item.SenderThreadID,
+		"receiver_thread_ids": rawJSON(item.ReceiverThreadIDs),
+		"prompt":              item.Prompt,
+		"agents_states":       rawJSON(item.AgentsStates),
+		"output":              firstNonEmpty(item.Output, item.Text, rawText(item.Result), rawText(item.Error), rawText(item.AgentsStates)),
+		"result":              rawJSON(item.Result),
+		"error":               rawJSON(item.Error),
 	}
 }
 

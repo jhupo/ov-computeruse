@@ -225,6 +225,27 @@ func TestReadStdoutMapsCodexToolItems(t *testing.T) {
 	assertPayloadString(t, sink.events[10].Payload, "message", "boom")
 }
 
+func TestReadStdoutMapsCodexWebAndCollabToolItems(t *testing.T) {
+	adapter := New(Config{})
+	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1"}
+	input := strings.Join([]string{
+		`{"type":"item.completed","item":{"id":"web","type":"web_search","query":"codex exec json","action":{"type":"search"}}}`,
+		`{"type":"item.completed","item":{"id":"collab","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"thread_a","receiver_thread_ids":["thread_b"],"prompt":"inspect","agents_states":{"thread_b":{"status":"running","message":"ok"}},"status":"completed"}}`,
+	}, "\n")
+	sink := &captureSink{}
+	if err := adapter.readStdout(context.Background(), strings.NewReader(input), command, localstate.CommandContext{}, sink, &completionSignal{}); err != nil && err != io.EOF {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if len(sink.events) != 4 {
+		t.Fatalf("event count = %d, want 4: %+v", len(sink.events), sink.events)
+	}
+	assertPayloadString(t, sink.events[0].Payload, "tool_name", "web_search")
+	assertPayloadString(t, sink.events[0].Payload, "query", "codex exec json")
+	assertPayloadString(t, sink.events[2].Payload, "tool", "spawn_agent")
+	assertPayloadString(t, sink.events[2].Payload, "sender_thread_id", "thread_a")
+	assertPayloadString(t, sink.events[2].Payload, "prompt", "inspect")
+}
+
 func TestReadStdoutReturnsErrorForTurnFailed(t *testing.T) {
 	adapter := New(Config{})
 	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1"}
