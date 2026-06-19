@@ -1,0 +1,91 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    --background: 222 9% 9%;
+    --foreground: 210 18% 92%;
+    --card: 220 7% 15%;
+    --card-foreground: 210 18% 92%;
+    --popover: 220 7% 15%;
+    --popover-foreground: 210 18% 92%;
+    --primary: 202 90% 55%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 220 6% 20%;
+    --secondary-foreground: 210 18% 92%;
+    --muted: 220 6% 18%;
+    --muted-foreground: 220 7% 66%;
+    --accent: 214 10% 22%;
+    --accent-foreground: 210 18% 96%;
+    --destructive: 4 78% 58%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 220 6% 23%;
+    --input: 220 6% 22%;
+    --ring: 202 90% 55%;
+    --success: 151 72% 46%;
+    --warning: 38 92% 55%;
+    --radius: 0.5rem;
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    letter-spacing: 0;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+  .dark {
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+}
+
+@layer components {
+  .dash-grid {
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr) 300px;
+  }
+
+  .app-region-drag {
+    -webkit-app-region: drag;
+  }
+
+  .app-region-no-drag {
+    -webkit-app-region: no-drag;
+  }
+
+  .thin-scrollbar {
+    scrollbar-color: hsl(var(--muted-foreground) / 0.38) transparent;
+    scrollbar-width: thin;
+  }
+}
