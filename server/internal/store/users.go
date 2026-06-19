@@ -42,10 +42,15 @@ type UserKeyRecord struct {
 }
 
 type UserUpsert struct {
-	ID       string
-	Username string
-	Password string
-	Actor    string
+	ID                    string
+	Username              string
+	Password              string
+	Sub2APIAccessToken    string
+	Sub2APIRefreshToken   string
+	Sub2APITokenType      string
+	Sub2APITokenExpiresAt *time.Time
+	Sub2APIBalance        *float64
+	Actor                 string
 }
 
 type UserKeyUpsert struct {
@@ -131,6 +136,26 @@ func (s *Store) UpsertUser(ctx context.Context, input UserUpsert) (UserRecord, e
 			VALUES ($1,$2,$3,now())
 			ON CONFLICT (id) DO UPDATE SET username=EXCLUDED.username, password_hash=EXCLUDED.password_hash, updated_at=now()`,
 			userID, username, string(passwordHash))
+		if err != nil {
+			return UserRecord{}, err
+		}
+	}
+	if input.Sub2APIAccessToken != "" || input.Sub2APIRefreshToken != "" || input.Sub2APIBalance != nil {
+		_, err := s.pool.Exec(ctx, `UPDATE users SET
+			sub2api_access_token=COALESCE(NULLIF($2, ''), sub2api_access_token),
+			sub2api_refresh_token=COALESCE(NULLIF($3, ''), sub2api_refresh_token),
+			sub2api_token_type=COALESCE(NULLIF($4, ''), sub2api_token_type),
+			sub2api_token_expires_at=COALESCE($5, sub2api_token_expires_at),
+			sub2api_balance=COALESCE($6, sub2api_balance),
+			sub2api_synced_at=now(),
+			updated_at=now()
+			WHERE id=$1`,
+			userID,
+			strings.TrimSpace(input.Sub2APIAccessToken),
+			strings.TrimSpace(input.Sub2APIRefreshToken),
+			strings.TrimSpace(input.Sub2APITokenType),
+			input.Sub2APITokenExpiresAt,
+			input.Sub2APIBalance)
 		if err != nil {
 			return UserRecord{}, err
 		}

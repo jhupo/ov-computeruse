@@ -33,7 +33,8 @@ func New(cfg config.Config, st Repository, postgresPool *pgxpool.Pool, redisClie
 		logger = slog.Default()
 	}
 	hub := NewHub(redisClient, st, logger)
-	return &Server{cfg: cfg, store: st, postgres: postgresPool, redis: redisClient, hub: hub, log: logger, bind: NewBindService(st, cfg.PublicURL), sessions: NewSessionService(redisClient, st, logger), sub2api: NewSub2APIAuthenticator(cfg.Sub2APILoginUpstream), workspace: NewWorkspaceBroker(redisClient, hub, logger)}
+	sub2api := NewSub2APIAuthenticator(cfg.Sub2APILoginUpstream)
+	return &Server{cfg: cfg, store: st, postgres: postgresPool, redis: redisClient, hub: hub, log: logger, bind: NewBindService(st, sub2api, cfg.PublicURL), sessions: NewSessionService(redisClient, st, logger), sub2api: sub2api, workspace: NewWorkspaceBroker(redisClient, hub, logger)}
 }
 
 func (s *Server) Run(ctx context.Context) {

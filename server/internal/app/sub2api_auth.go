@@ -30,15 +30,18 @@ type sub2APILoginRequest struct {
 }
 
 type sub2APILoginResponse struct {
-	AccessToken string      `json:"access_token"`
-	TokenType   string      `json:"token_type"`
-	User        sub2APIUser `json:"user"`
+	AccessToken  string      `json:"access_token"`
+	RefreshToken string      `json:"refresh_token"`
+	ExpiresIn    int         `json:"expires_in"`
+	TokenType    string      `json:"token_type"`
+	User         sub2APIUser `json:"user"`
 }
 
 type sub2APIUser struct {
 	ID       json.Number `json:"id"`
 	Email    string      `json:"email"`
 	Username string      `json:"username"`
+	Balance  float64     `json:"balance"`
 }
 
 type sub2APIKey struct {
@@ -80,37 +83,52 @@ func NewSub2APIAuthenticator(baseURL string) Sub2APIAuthenticator {
 }
 
 func (a Sub2APIAuthenticator) Login(ctx context.Context, repo sub2APIRepository, username, password string) (DashPrincipal, error) {
+	record, err := a.SyncUser(ctx, repo, username, password)
+	if err != nil {
+		return DashPrincipal{}, err
+	}
+	return DashPrincipal{UserID: record.ID, Username: record.Username}, nil
+}
+
+func (a Sub2APIAuthenticator) SyncUser(ctx context.Context, repo sub2APIRepository, username, password string) (store.UserRecord, error) {
 	if a.baseURL == "" {
-		return DashPrincipal{}, errors.New("sub2api login upstream is not configured")
+		return store.UserRecord{}, errors.New("sub2api login upstream is not configured")
 	}
 	login, err := a.requestLogin(ctx, username, password)
 	if err != nil {
-		return DashPrincipal{}, err
+		return store.UserRecord{}, err
 	}
 	keys, err := a.requestKeys(ctx, login.AccessToken)
 	if err != nil {
-		return DashPrincipal{}, err
+		return store.UserRecord{}, err
 	}
 	baseURL, err := a.requestGatewayBaseURL(ctx)
 	if err != nil {
-		return DashPrincipal{}, err
+		return store.UserRecord{}, err
 	}
 	userID := firstNonBlank(login.User.ID.String(), "usr_"+security.FingerprintSecret(username)[:20])
+	expiresAt := tokenExpiresAt(login.ExpiresIn)
+	balance := login.User.Balance
 	upserted, err := repo.UpsertUser(ctx, store.UserUpsert{
-		ID:       userID,
-		Username: firstNonBlank(login.User.Email, login.User.Username, username),
-		Password: password,
-		Actor:    "sub2api",
+		ID:                    userID,
+		Username:              firstNonBlank(login.User.Email, login.User.Username, username),
+		Password:              password,
+		Sub2APIAccessToken:    login.AccessToken,
+		Sub2APIRefreshToken:   login.RefreshToken,
+		Sub2APITokenType:      firstNonBlank(login.TokenType, "Bearer"),
+		Sub2APITokenExpiresAt: expiresAt,
+		Sub2APIBalance:        &balance,
+		Actor:                 "sub2api",
 	})
 	if err != nil {
-		return DashPrincipal{}, err
+		return store.UserRecord{}, err
 	}
 	if len(keys) == 0 {
-		return DashPrincipal{}, errors.New("sub2api returned no keys")
+		return store.UserRecord{}, errors.New("sub2api returned no keys")
 	}
 	for _, key := range keys {
 		if strings.TrimSpace(key.Key) == "" {
-			return DashPrincipal{}, errors.New("sub2api returned incomplete key")
+			return store.UserRecord{}, errors.New("sub2api returned incomplete key")
 		}
 		keyID := firstNonBlank(key.ID.String(), "key_"+security.FingerprintSecret(upserted.ID, baseURL, key.Key)[:20])
 		if _, err := repo.UpsertUserKey(ctx, store.UserKeyUpsert{
@@ -122,10 +140,10 @@ func (a Sub2APIAuthenticator) Login(ctx context.Context, repo sub2APIRepository,
 			Provider:       keyProvider(key),
 			Actor:          "sub2api",
 		}); err != nil {
-			return DashPrincipal{}, err
+			return store.UserRecord{}, err
 		}
 	}
-	return DashPrincipal{UserID: upserted.ID, Username: upserted.Username}, nil
+	return upserted, nil
 }
 
 func (a Sub2APIAuthenticator) requestLogin(ctx context.Context, username, password string) (sub2APILoginResponse, error) {
@@ -245,6 +263,14 @@ func joinURL(baseURL, path string) string {
 
 func (a Sub2APIAuthenticator) gatewayBaseURL() string {
 	return joinURL(a.baseURL, "/v1")
+}
+
+func tokenExpiresAt(expiresIn int) *time.Time {
+	if expiresIn <= 0 {
+		return nil
+	}
+	value := time.Now().UTC().Add(time.Duration(expiresIn) * time.Second)
+	return &value
 }
 
 func firstNonBlank(values ...string) string {

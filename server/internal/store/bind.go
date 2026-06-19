@@ -27,6 +27,14 @@ type BindUser struct {
 	Model       string `json:"model,omitempty"`
 }
 
+var (
+	ErrInvalidCredentials = errors.New("invalid username or password")
+	ErrUserDisabled       = errors.New("user is disabled")
+	ErrCredentialMissing  = errors.New("codex credential is incomplete")
+	ErrCredentialInvalid  = errors.New("codex credential base_url is invalid")
+	ErrCredentialDenied   = errors.New("codex credential is not assigned to user")
+)
+
 type DeviceProfile struct {
 	InstallID    string `json:"install_id"`
 	MachineHash  string `json:"machine_hash"`
@@ -69,16 +77,16 @@ func (s *Store) AuthenticateUser(ctx context.Context, username, password string)
 	var disabledAt sql.NullTime
 	err := s.pool.QueryRow(ctx, `SELECT id, username, password_hash, disabled_at FROM users WHERE username=$1`, username).Scan(&user.UserID, &user.Username, &passwordHash, &disabledAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return UserIdentity{}, errors.New("invalid username or password")
+		return UserIdentity{}, ErrInvalidCredentials
 	}
 	if err != nil {
 		return UserIdentity{}, err
 	}
 	if disabledAt.Valid {
-		return UserIdentity{}, errors.New("user is disabled")
+		return UserIdentity{}, ErrUserDisabled
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)); err != nil {
-		return UserIdentity{}, errors.New("invalid username or password")
+		return UserIdentity{}, ErrInvalidCredentials
 	}
 	return user, nil
 }
@@ -91,19 +99,19 @@ func (s *Store) AuthenticateAndBind(ctx context.Context, username, password stri
 	}
 	if strings.TrimSpace(credential.Fingerprint) == "" || strings.TrimSpace(credential.BaseURL) == "" {
 		_ = s.SaveAuditLog(ctx, user.UserID, "", "agent.bind.rejected", map[string]any{"username": username, "reason": "credential_incomplete"})
-		return AgentIdentity{}, errors.New("codex credential is incomplete")
+		return AgentIdentity{}, ErrCredentialMissing
 	}
 	baseURL, err := normalizeBaseURL(credential.BaseURL)
 	if err != nil {
 		_ = s.SaveAuditLog(ctx, user.UserID, "", "agent.bind.rejected", map[string]any{"username": username, "reason": "invalid_base_url"})
-		return AgentIdentity{}, errors.New("codex credential base_url is invalid")
+		return AgentIdentity{}, ErrCredentialInvalid
 	}
 	baseURLFingerprint := security.FingerprintSecret(baseURL)
 	var keyID string
 	err = s.pool.QueryRow(ctx, `SELECT id FROM user_keys WHERE user_id=$1 AND key_fingerprint=$2 AND base_url_fingerprint=$3 AND disabled_at IS NULL LIMIT 1`, user.UserID, credential.Fingerprint, baseURLFingerprint).Scan(&keyID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_ = s.SaveAuditLog(ctx, user.UserID, "", "agent.bind.rejected", map[string]any{"username": username, "reason": "credential_not_assigned", "base_url_fingerprint": baseURLFingerprint, "key_fingerprint": credential.Fingerprint})
-		return AgentIdentity{}, errors.New("codex credential is not assigned to user")
+		return AgentIdentity{}, ErrCredentialDenied
 	}
 	if err != nil {
 		return AgentIdentity{}, err
