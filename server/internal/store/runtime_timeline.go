@@ -164,7 +164,10 @@ func runtimeTimelineSessionQuery() string {
 				LIMIT 1
 			) rs ON true
 			WHERE hi.agent_id=$1 AND hi.session_id=$2
-				AND NOT EXISTS (SELECT 1 FROM live)
+				AND NOT EXISTS (
+					SELECT 1 FROM live
+					WHERE live.item_id=COALESCE(NULLIF(hi.source_event_id, ''), hi.id)
+				)
 		)
 		SELECT id, agent_id, run_id, session_id, project_id, seq, runtime, thread_id, turn_id, item_id, item_type, phase, kind, role, text, status, payload, event_at, received_at FROM live
 		UNION ALL
