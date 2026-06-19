@@ -59,3 +59,19 @@ func TestListSessionsQueryOmitsHistoryOnlyFallbackWhenProjectFiltered(t *testing
 		t.Fatalf("args = %#v", args)
 	}
 }
+
+func TestSessionTargetQueryAcceptsHistoryOnlySessions(t *testing.T) {
+	query := sessionTargetQuery()
+	for _, want := range []string{"FROM history_items", "session_id AS id", "4 AS priority"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("session target query missing %q:\n%s", want, query)
+		}
+	}
+}
+
+func TestSessionExistsQueryAcceptsHistoryOnlySessions(t *testing.T) {
+	query := sessionExistsQuery()
+	if !strings.Contains(query, "EXISTS(SELECT 1 FROM history_items WHERE agent_id=$1 AND session_id=$2)") {
+		t.Fatalf("session exists query does not accept history-only sessions:\n%s", query)
+	}
+}

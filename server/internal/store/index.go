@@ -54,10 +54,15 @@ func (s *Store) SessionExists(ctx context.Context, agentID, sessionID string) (b
 		return false, nil
 	}
 	var exists bool
-	err := s.pool.QueryRow(ctx, `SELECT
-		EXISTS(SELECT 1 FROM codex_sessions WHERE agent_id=$1 AND id=$2 AND deleted_at IS NULL)
-		OR EXISTS(SELECT 1 FROM runtime_sessions WHERE agent_id=$1 AND (session_id=$2 OR native_session_id=$2))`, agentID, sessionID).Scan(&exists)
+	err := s.pool.QueryRow(ctx, sessionExistsQuery(), agentID, sessionID).Scan(&exists)
 	return exists, err
+}
+
+func sessionExistsQuery() string {
+	return `SELECT
+		EXISTS(SELECT 1 FROM codex_sessions WHERE agent_id=$1 AND id=$2 AND deleted_at IS NULL)
+		OR EXISTS(SELECT 1 FROM runtime_sessions WHERE agent_id=$1 AND (session_id=$2 OR native_session_id=$2))
+		OR EXISTS(SELECT 1 FROM history_items WHERE agent_id=$1 AND session_id=$2)`
 }
 
 func (s *Store) MarkIndexDeleted(ctx context.Context, agentID string, deleted protocol.DeletedIndex) error {

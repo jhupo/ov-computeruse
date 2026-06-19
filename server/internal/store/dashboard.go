@@ -415,7 +415,19 @@ func (s *Store) SessionTarget(ctx context.Context, agentID, sessionID string) (S
 	if sessionID == "" {
 		return SessionTarget{}, false, nil
 	}
-	row := s.pool.QueryRow(ctx, `WITH target AS (
+	row := s.pool.QueryRow(ctx, sessionTargetQuery(), agentID, sessionID)
+	var target SessionTarget
+	if err := row.Scan(&target.ID, &target.ProjectID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return SessionTarget{}, false, nil
+		}
+		return SessionTarget{}, false, err
+	}
+	return target, true, nil
+}
+
+func sessionTargetQuery() string {
+	return `WITH target AS (
 			SELECT id, COALESCE(project_id, '') AS project_id, 1 AS priority
 			FROM codex_sessions
 			WHERE agent_id=$1 AND id=$2 AND deleted_at IS NULL
@@ -427,19 +439,16 @@ func (s *Store) SessionTarget(ctx context.Context, agentID, sessionID string) (S
 			SELECT native_session_id AS id, COALESCE(project_id, '') AS project_id, 3 AS priority
 			FROM runtime_sessions
 			WHERE agent_id=$1 AND native_session_id=$2 AND native_session_id IS NOT NULL AND native_session_id <> ''
+			UNION ALL
+			SELECT session_id AS id, '' AS project_id, 4 AS priority
+			FROM history_items
+			WHERE agent_id=$1 AND session_id=$2
+			GROUP BY session_id
 		)
 		SELECT id, project_id
 		FROM target
 		ORDER BY priority
-		LIMIT 1`, agentID, sessionID)
-	var target SessionTarget
-	if err := row.Scan(&target.ID, &target.ProjectID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return SessionTarget{}, false, nil
-		}
-		return SessionTarget{}, false, err
-	}
-	return target, true, nil
+		LIMIT 1`
 }
 
 func (s *Store) RunTarget(ctx context.Context, agentID, runID string) (RunTarget, bool, error) {
