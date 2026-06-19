@@ -196,7 +196,9 @@ func (s *Server) handleAgentEnvelope(r *http.Request, agent *AgentConn, env prot
 		if err == nil {
 			if err := s.store.SaveHistoryItems(ctx, agent.AgentID, items); err == nil {
 				s.sendAgent(agent, "history.items.ack", protocol.HistoryItemsAck{SessionID: items.SessionID, Cursor: items.Cursor, UploadID: items.UploadID, BatchIndex: items.BatchIndex, Status: "acked", At: time.Now().UTC()})
-				s.hub.BroadcastDash(agent.UserID, dashEvent("history.items.updated", agent, map[string]any{"session_id": items.SessionID, "count": countAcceptedHistoryItems(items), "cursor": items.Cursor, "reset": items.Reset, "upload_id": items.UploadID, "batch_index": items.BatchIndex, "batch_count": items.BatchCount, "final": items.Final}))
+				update := historyItemsUpdate(items)
+				s.hub.BroadcastDash(agent.UserID, dashEvent("history.items.updated", agent, update))
+				s.hub.BroadcastDash(agent.UserID, dashEvent("runtime.timeline.updated", agent, runtimeTimelineUpdateFromHistory(update)))
 			} else {
 				s.log.WarnContext(ctx, "history items rejected", "agent_id", agent.AgentID, "session_id", items.SessionID, "error", err)
 				s.sendAgent(agent, "history.items.ack", protocol.HistoryItemsAck{SessionID: items.SessionID, Cursor: items.Cursor, UploadID: items.UploadID, BatchIndex: items.BatchIndex, Status: "failed", Message: err.Error(), At: time.Now().UTC()})
@@ -280,6 +282,33 @@ func countAcceptedHistoryItems(batch protocol.HistoryItems) int {
 		count++
 	}
 	return count
+}
+
+func historyItemsUpdate(items protocol.HistoryItems) map[string]any {
+	return map[string]any{
+		"session_id":  items.SessionID,
+		"count":       countAcceptedHistoryItems(items),
+		"cursor":      items.Cursor,
+		"reset":       items.Reset,
+		"upload_id":   items.UploadID,
+		"batch_index": items.BatchIndex,
+		"batch_count": items.BatchCount,
+		"final":       items.Final,
+	}
+}
+
+func runtimeTimelineUpdateFromHistory(history map[string]any) map[string]any {
+	return map[string]any{
+		"session_id":  history["session_id"],
+		"source":      "history.items",
+		"count":       history["count"],
+		"cursor":      history["cursor"],
+		"reset":       history["reset"],
+		"upload_id":   history["upload_id"],
+		"batch_index": history["batch_index"],
+		"batch_count": history["batch_count"],
+		"final":       history["final"],
+	}
 }
 
 func runtimeSessionFromRunEvent(event protocol.RunEvent) (protocol.RuntimeSession, bool) {

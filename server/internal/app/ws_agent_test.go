@@ -94,6 +94,42 @@ func TestDashEventWrapsRunEventPayloadForSubscriptionFilter(t *testing.T) {
 	}
 }
 
+func TestHistoryItemsUpdateDrivesRuntimeTimelineBroadcast(t *testing.T) {
+	history := historyItemsUpdate(protocol.HistoryItems{
+		SessionID:  "session_1",
+		Cursor:     "cursor_1",
+		Reset:      true,
+		UploadID:   "upload_1",
+		BatchIndex: 1,
+		BatchCount: 2,
+		Final:      true,
+		Items: []protocol.HistoryItem{
+			{Kind: "message", Role: "user", Text: "hello"},
+			{Kind: "usage", Text: "tokens"},
+			{Kind: "tool.call", Text: "git status"},
+		},
+	})
+	if history["count"] != 2 {
+		t.Fatalf("history item count = %#v, want 2", history["count"])
+	}
+	timeline := runtimeTimelineUpdateFromHistory(history)
+	if timeline["source"] != "history.items" || timeline["session_id"] != "session_1" || timeline["cursor"] != "cursor_1" || timeline["final"] != true {
+		t.Fatalf("timeline update = %#v", timeline)
+	}
+	data := dashEvent("runtime.timeline.updated", &AgentConn{AgentID: "agent_1", DeviceID: "device_1"}, timeline)
+	var wire struct {
+		Type    string         `json:"type"`
+		AgentID string         `json:"agent_id"`
+		Payload map[string]any `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		t.Fatalf("decode dash event: %v", err)
+	}
+	if wire.Type != "runtime.timeline.updated" || wire.AgentID != "agent_1" || wire.Payload["source"] != "history.items" {
+		t.Fatalf("wire event = %+v", wire)
+	}
+}
+
 func TestRunEventAckCarriesFailureDetails(t *testing.T) {
 	event := protocol.RunEvent{EventID: "evt_1", RunID: "run_1", Seq: 42, Kind: "run.done"}
 	ack := runEventAck(event, "failed", "ownership mismatch")
