@@ -86,9 +86,13 @@ func (s *Store) SaveAgentRegister(ctx context.Context, register protocol.AgentRe
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `UPDATE agents SET protocol_version=$1, capabilities=$2, credential=$3, registered_at=now(), last_seen_at=now() WHERE id=$4`,
-		protocol.Version, jsonRaw(register.Capabilities), jsonRaw(register.Credential), agentID)
+	_, err = s.pool.Exec(ctx, saveAgentRegisterSQL(),
+		protocol.Version, jsonRaw(register.Capabilities), agentID)
 	return err
+}
+
+func saveAgentRegisterSQL() string {
+	return `UPDATE agents SET protocol_version=$1, capabilities=$2, registered_at=now(), last_seen_at=now() WHERE id=$3`
 }
 
 func (s *Store) TouchAgent(ctx context.Context, agentID string) error {
