@@ -32,7 +32,9 @@ func (s *Server) handleDashWorkspaceTree(w http.ResponseWriter, r *http.Request)
 		writeWorkspaceResponseError(w, resp)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "path": req.Path, "entries": resp.Entries})
+	body := workspaceMeta(identity, req, resp)
+	body["entries"] = resp.Entries
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) handleDashWorkspaceFile(w http.ResponseWriter, r *http.Request) {
@@ -50,7 +52,9 @@ func (s *Server) handleDashWorkspaceFile(w http.ResponseWriter, r *http.Request)
 		writeWorkspaceResponseError(w, resp)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "path": req.Path, "file": resp.File})
+	body := workspaceMeta(identity, req, resp)
+	body["file"] = resp.File
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) handleDashWorkspaceSearch(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +81,10 @@ func (s *Server) handleDashWorkspaceSearch(w http.ResponseWriter, r *http.Reques
 		writeWorkspaceResponseError(w, resp)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "query": req.Query, "matches": resp.Matches})
+	body := workspaceMeta(identity, req, resp)
+	body["query"] = req.Query
+	body["matches"] = resp.Matches
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) handleDashWorkspaceGitStatus(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +102,9 @@ func (s *Server) handleDashWorkspaceGitStatus(w http.ResponseWriter, r *http.Req
 		writeWorkspaceResponseError(w, resp)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "git": resp.Git})
+	body := workspaceMeta(identity, req, resp)
+	body["git"] = resp.Git
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) handleDashWorkspaceGitDiff(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +123,9 @@ func (s *Server) handleDashWorkspaceGitDiff(w http.ResponseWriter, r *http.Reque
 		writeWorkspaceResponseError(w, resp)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agent_id": identity.AgentID, "project_id": req.ProjectID, "path": req.Path, "diff": resp.Diff})
+	body := workspaceMeta(identity, req, resp)
+	body["diff"] = resp.Diff
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) handleDashWorkspaceRequest(w http.ResponseWriter, r *http.Request) {
@@ -234,6 +245,20 @@ func workspaceErrorCode(status int) string {
 	default:
 		return "workspace_request_failed"
 	}
+}
+
+func workspaceMeta(identity store.AgentIdentity, req protocol.WorkspaceRequest, resp protocol.WorkspaceResponse) map[string]any {
+	body := map[string]any{
+		"agent_id":   identity.AgentID,
+		"project_id": req.ProjectID,
+		"path":       req.Path,
+		"request_id": req.RequestID,
+		"partial":    resp.Partial,
+	}
+	if len(resp.Warnings) > 0 {
+		body["warnings"] = resp.Warnings
+	}
+	return body
 }
 
 func writeWorkspaceResponseError(w http.ResponseWriter, resp protocol.WorkspaceResponse) {

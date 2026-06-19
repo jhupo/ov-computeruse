@@ -91,3 +91,21 @@ func TestWorkspaceResponseHTTPStatusPreservesBusinessErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkspaceMetaIncludesPartialWarnings(t *testing.T) {
+	body := workspaceMeta(
+		store.AgentIdentity{AgentID: "agent_1"},
+		protocol.WorkspaceRequest{RequestID: "wsreq_1", ProjectID: "project_1", Path: "internal"},
+		protocol.WorkspaceResponse{Partial: true, Warnings: []string{"workspace list limit reached"}},
+	)
+	if body["agent_id"] != "agent_1" || body["project_id"] != "project_1" || body["path"] != "internal" || body["request_id"] != "wsreq_1" {
+		t.Fatalf("workspace meta identity fields = %#v", body)
+	}
+	if body["partial"] != true {
+		t.Fatalf("partial = %#v, want true", body["partial"])
+	}
+	warnings, ok := body["warnings"].([]string)
+	if !ok || len(warnings) != 1 || warnings[0] != "workspace list limit reached" {
+		t.Fatalf("warnings = %#v", body["warnings"])
+	}
+}
