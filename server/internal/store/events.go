@@ -779,7 +779,7 @@ func (s *Store) markStopRequestedTx(ctx context.Context, tx pgx.Tx, agentID stri
 			LIMIT 1
 			FOR UPDATE`, agentID, command.SessionID).Scan(&runID)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return command, nil
+			return command, s.completeStopCommandTx(ctx, tx, agentID, command, "", "no active run for session")
 		}
 		if err != nil {
 			return protocol.Command{}, err
@@ -790,7 +790,7 @@ func (s *Store) markStopRequestedTx(ctx context.Context, tx pgx.Tx, agentID stri
 		}
 	}
 	if runID == "" {
-		return command, nil
+		return command, s.completeStopCommandTx(ctx, tx, agentID, command, "", "no active run to stop")
 	}
 	locallyStopped, err := s.stopUndispatchedRunTx(ctx, tx, agentID, command, runID)
 	if err != nil {
@@ -810,9 +810,30 @@ func (s *Store) markStopRequestedTx(ctx context.Context, tx pgx.Tx, agentID stri
 		return protocol.Command{}, err
 	}
 	if tag.RowsAffected() == 0 {
-		return command, nil
+		return command, s.completeStopCommandTx(ctx, tx, agentID, command, runID, "run is not active")
 	}
 	return command, s.saveCommandAttemptTx(ctx, tx, agentID, command.CommandID, "stop", "stopping", "stop requested", protocol.Raw(map[string]any{"run_id": runID, "session_id": command.SessionID}))
+}
+
+func (s *Store) completeStopCommandTx(ctx context.Context, tx pgx.Tx, agentID string, command protocol.Command, runID, reason string) error {
+	if strings.TrimSpace(reason) == "" {
+		reason = "stop completed"
+	}
+	if _, err := tx.Exec(ctx, `UPDATE commands
+		SET status='done',
+			status_reason=$3,
+			acked_at=COALESCE(acked_at, now()),
+			dispatch_claimed_by=NULL,
+			dispatch_claimed_at=NULL,
+			dispatch_claimed_until=NULL,
+			run_id=COALESCE(NULLIF($4, ''), run_id)
+		WHERE agent_id=$1
+			AND id=$2
+			AND status NOT IN ('done','expired','failed','rejected','stopped')`,
+		agentID, command.CommandID, reason, runID); err != nil {
+		return err
+	}
+	return s.saveCommandAttemptTx(ctx, tx, agentID, command.CommandID, "stop", "done", reason, protocol.Raw(map[string]any{"run_id": runID, "session_id": command.SessionID, "local": true}))
 }
 
 func (s *Store) stopUndispatchedRunTx(ctx context.Context, tx pgx.Tx, agentID string, command protocol.Command, runID string) (bool, error) {
