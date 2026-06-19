@@ -142,7 +142,12 @@ func runtimeTimelineSessionQuery() string {
 			FROM runtime_timeline
 			WHERE agent_id=$1 AND (session_id=$2 OR thread_id=$2)
 		), history AS (
-			SELECT hi.id, hi.agent_id, '' AS run_id, hi.session_id, COALESCE(rs.project_id, '') AS project_id, hi.item_index::BIGINT AS seq, 'codex.cli' AS runtime, COALESCE(NULLIF(rs.native_session_id, ''), hi.session_id) AS thread_id, '' AS turn_id, COALESCE(NULLIF(hi.source_event_id, ''), hi.id) AS item_id, hi.kind AS item_type, 'history.item' AS phase,
+			SELECT hi.id, hi.agent_id, '' AS run_id, hi.session_id, COALESCE(rs.project_id, '') AS project_id, hi.item_index::BIGINT AS seq, 'codex.cli' AS runtime, COALESCE(NULLIF(rs.native_session_id, ''), hi.session_id) AS thread_id, COALESCE(hi.payload->>'turn_id', '') AS turn_id, COALESCE(NULLIF(hi.source_event_id, ''), NULLIF(hi.payload->>'id', ''), NULLIF(hi.payload->>'call_id', ''), hi.id) AS item_id,
+				CASE
+					WHEN hi.kind='tool.call' THEN COALESCE(NULLIF(hi.payload->>'type', ''), NULLIF(hi.payload->>'tool_name', ''), NULLIF(hi.payload->>'tool', ''), hi.kind)
+					ELSE COALESCE(NULLIF(hi.payload->>'type', ''), hi.kind)
+				END AS item_type,
+				'history.item' AS phase,
 				CASE
 					WHEN hi.kind='message' AND COALESCE(hi.role, '')='user' THEN 'user.message'
 					WHEN hi.kind='message' THEN 'assistant.message.done'
@@ -150,11 +155,11 @@ func runtimeTimelineSessionQuery() string {
 					WHEN hi.kind='tool.call' THEN 'tool.call.done'
 					WHEN hi.kind='tool.output' THEN 'tool.output'
 					WHEN hi.kind='approval.requested' THEN 'approval.requested'
-					WHEN hi.kind='todo.list' THEN 'todo.list'
+					WHEN hi.kind='todo.list' THEN 'todo_list'
 					WHEN hi.kind='error' THEN 'run.error'
 					ELSE hi.kind
 				END AS kind,
-				COALESCE(hi.role, '') AS role, COALESCE(hi.text, '') AS text, '' AS status, hi.payload, COALESCE(hi.item_at, hi.received_at) AS event_at, hi.received_at
+				COALESCE(hi.role, '') AS role, COALESCE(hi.text, '') AS text, COALESCE(hi.payload->>'status', '') AS status, hi.payload, COALESCE(hi.item_at, hi.received_at) AS event_at, hi.received_at
 			FROM history_items hi
 			LEFT JOIN LATERAL (
 				SELECT project_id, native_session_id
@@ -166,7 +171,7 @@ func runtimeTimelineSessionQuery() string {
 			WHERE hi.agent_id=$1 AND hi.session_id=$2
 				AND NOT EXISTS (
 					SELECT 1 FROM live
-					WHERE live.item_id=COALESCE(NULLIF(hi.source_event_id, ''), hi.id)
+					WHERE live.item_id=COALESCE(NULLIF(hi.source_event_id, ''), NULLIF(hi.payload->>'id', ''), NULLIF(hi.payload->>'call_id', ''), hi.id)
 				)
 		)
 		SELECT id, agent_id, run_id, session_id, project_id, seq, runtime, thread_id, turn_id, item_id, item_type, phase, kind, role, text, status, payload, event_at, received_at FROM live
