@@ -46,6 +46,14 @@ type Credential struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
+type agentCredentialRecord struct {
+	BaseURLFingerprint string `json:"base_url_fingerprint"`
+	KeyFingerprint     string `json:"key_fingerprint"`
+	Provider           string `json:"provider,omitempty"`
+	Model              string `json:"model,omitempty"`
+	Source             string `json:"source,omitempty"`
+}
+
 func (s *Store) EnsureBindUser(ctx context.Context, user BindUser) error {
 	record, err := s.UpsertUser(ctx, UserUpsert{ID: user.ID, Username: user.Username, Password: user.Password, Actor: "bootstrap"})
 	if err != nil {
@@ -90,16 +98,16 @@ func (s *Store) AuthenticateAndBind(ctx context.Context, username, password stri
 		_ = s.SaveAuditLog(ctx, user.UserID, "", "agent.bind.rejected", map[string]any{"username": username, "reason": "invalid_base_url"})
 		return AgentIdentity{}, errors.New("codex credential base_url is invalid")
 	}
+	baseURLFingerprint := security.FingerprintSecret(baseURL)
 	var keyID string
-	err = s.pool.QueryRow(ctx, `SELECT id FROM user_keys WHERE user_id=$1 AND key_fingerprint=$2 AND lower(trim(trailing '/' from base_url))=$3 AND disabled_at IS NULL LIMIT 1`, user.UserID, credential.Fingerprint, baseURL).Scan(&keyID)
+	err = s.pool.QueryRow(ctx, `SELECT id FROM user_keys WHERE user_id=$1 AND key_fingerprint=$2 AND base_url_fingerprint=$3 AND disabled_at IS NULL LIMIT 1`, user.UserID, credential.Fingerprint, baseURLFingerprint).Scan(&keyID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		_ = s.SaveAuditLog(ctx, user.UserID, "", "agent.bind.rejected", map[string]any{"username": username, "reason": "credential_not_assigned", "base_url": baseURL, "key_fingerprint": credential.Fingerprint})
+		_ = s.SaveAuditLog(ctx, user.UserID, "", "agent.bind.rejected", map[string]any{"username": username, "reason": "credential_not_assigned", "base_url_fingerprint": baseURLFingerprint, "key_fingerprint": credential.Fingerprint})
 		return AgentIdentity{}, errors.New("codex credential is not assigned to user")
 	}
 	if err != nil {
 		return AgentIdentity{}, err
 	}
-	_, _ = s.pool.Exec(ctx, `UPDATE user_keys SET base_url_fingerprint=$1 WHERE id=$2 AND (base_url_fingerprint IS NULL OR base_url_fingerprint='')`, security.FingerprintSecret(baseURL), keyID)
 	deviceID, err := s.upsertDevice(ctx, user.UserID, device)
 	if err != nil {
 		if errors.Is(err, ErrDeviceDisabled) {
@@ -111,7 +119,14 @@ func (s *Store) AuthenticateAndBind(ctx context.Context, username, password stri
 	workspaceID := "wsp_" + user.UserID
 	agentSecret := "sec_" + randomHex(32)
 	var agentEpoch int64
-	err = s.pool.QueryRow(ctx, `INSERT INTO agents (id, workspace_id, user_id, device_id, agent_secret, server_key_id, agent_epoch, last_seen_at) VALUES ($1,$2,$3,$4,$5,$6,1,now()) ON CONFLICT (device_id) DO UPDATE SET agent_secret=EXCLUDED.agent_secret, server_key_id=EXCLUDED.server_key_id, agent_epoch=agents.agent_epoch+1, last_seen_at=now() RETURNING id, agent_epoch`, agentID, workspaceID, user.UserID, deviceID, agentSecret, serverKeyID).Scan(&agentID, &agentEpoch)
+	agentCredential := agentCredentialRecord{
+		BaseURLFingerprint: baseURLFingerprint,
+		KeyFingerprint:     credential.Fingerprint,
+		Provider:           strings.TrimSpace(credential.Provider),
+		Model:              strings.TrimSpace(credential.Model),
+		Source:             strings.TrimSpace(credential.Source),
+	}
+	err = s.pool.QueryRow(ctx, `INSERT INTO agents (id, workspace_id, user_id, device_id, agent_secret, server_key_id, credential, agent_epoch, last_seen_at) VALUES ($1,$2,$3,$4,$5,$6,$7,1,now()) ON CONFLICT (device_id) DO UPDATE SET agent_secret=EXCLUDED.agent_secret, server_key_id=EXCLUDED.server_key_id, credential=EXCLUDED.credential, agent_epoch=agents.agent_epoch+1, last_seen_at=now() RETURNING id, agent_epoch`, agentID, workspaceID, user.UserID, deviceID, agentSecret, serverKeyID, jsonRaw(agentCredential)).Scan(&agentID, &agentEpoch)
 	if err != nil {
 		return AgentIdentity{}, err
 	}
