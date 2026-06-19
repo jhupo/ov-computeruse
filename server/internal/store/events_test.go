@@ -111,6 +111,18 @@ func TestHeartbeatReconciliationDoesNotAdvanceRunEventSeq(t *testing.T) {
 	}
 }
 
+func TestHeartbeatStaleCandidatesRequireGraceWindow(t *testing.T) {
+	query := strings.ToLower(heartbeatStaleCandidateSQL)
+	for _, want := range []string{"coalesce(last_event_at, started_at)", "<= $2"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("heartbeat stale candidate query missing %q: %s", want, heartbeatStaleCandidateSQL)
+		}
+	}
+	if heartbeatRunStaleGrace < time.Minute {
+		t.Fatalf("heartbeat stale grace = %s, want at least one minute", heartbeatRunStaleGrace)
+	}
+}
+
 func TestStoreCommandCreatesRun(t *testing.T) {
 	for _, kind := range []string{"command.new_session", "new_session", "command.resume", "resume", "command.send", "send"} {
 		if !storeCommandCreatesRun(kind) {

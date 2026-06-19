@@ -1161,6 +1161,7 @@ func (s *Store) ExpireCommands(ctx context.Context, agentID string) error {
 }
 
 func (s *Store) ReconcileHeartbeatRuns(ctx context.Context, agentID string, heartbeat protocol.Heartbeat) error {
+	staleBefore := heartbeat.At.Add(-heartbeatRunStaleGrace)
 	running := map[string]struct{}{}
 	for _, runID := range heartbeat.RunningRuns {
 		if strings.TrimSpace(runID) != "" {
@@ -1172,7 +1173,7 @@ func (s *Store) ReconcileHeartbeatRuns(ctx context.Context, agentID string, hear
 			return err
 		}
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id, status FROM runs WHERE agent_id=$1 AND status IN ('running','awaiting_approval','stopping')`, agentID)
+	rows, err := s.pool.Query(ctx, heartbeatStaleCandidateSQL, agentID, staleBefore)
 	if err != nil {
 		return err
 	}
@@ -1199,7 +1200,11 @@ func (s *Store) ReconcileHeartbeatRuns(ctx context.Context, agentID string, hear
 	return s.ExpireCommands(ctx, agentID)
 }
 
+const heartbeatRunStaleGrace = 2 * time.Minute
+
 const heartbeatRunningRunUpdateSQL = `UPDATE runs SET status='running', status_reason='reported_by_agent_heartbeat', last_event_at=$3 WHERE agent_id=$1 AND id=$2 AND status IN ('queued','accepted','running','awaiting_approval','stale') AND status <> 'stopping'`
+
+const heartbeatStaleCandidateSQL = `SELECT id, status FROM runs WHERE agent_id=$1 AND status IN ('running','awaiting_approval','stopping') AND COALESCE(last_event_at, started_at) <= $2`
 
 const heartbeatStaleRunUpdateSQL = `UPDATE runs SET status='stale', status_reason='missing_from_agent_heartbeat', last_event_at=$3 WHERE agent_id=$1 AND id=$2 AND status IN ('running','awaiting_approval','stopping')`
 
