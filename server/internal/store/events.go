@@ -83,7 +83,13 @@ func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, even
 	if err := s.validateRunEventOwnership(ctx, agentID, event, true); err != nil {
 		return RunEventSaveResult{}, err
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO run_events (id, agent_id, device_id, run_id, command_id, session_id, project_id, seq, kind, payload, event_at)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return RunEventSaveResult{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `INSERT INTO run_events (id, agent_id, device_id, run_id, command_id, session_id, project_id, seq, kind, payload, event_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		`, event.EventID, agentID, deviceID, event.RunID, event.CommandID, event.SessionID, event.ProjectID, event.Seq, event.Kind, jsonRaw(event.Payload), event.At)
 	if err != nil {
@@ -92,25 +98,28 @@ func (s *Store) SaveRunEvent(ctx context.Context, agentID, deviceID string, even
 		}
 		return RunEventSaveResult{}, err
 	}
-	if err := s.advanceRunEventCursor(ctx, agentID, event); err != nil {
+	if err := s.advanceRunEventCursorTx(ctx, tx, agentID, event); err != nil {
 		return RunEventSaveResult{}, err
 	}
-	if err := s.projectApproval(ctx, agentID, event); err != nil {
+	if err := s.projectApprovalTx(ctx, tx, agentID, event); err != nil {
 		return RunEventSaveResult{}, err
 	}
-	if err := s.projectRunEvent(ctx, agentID, event); err != nil {
+	if err := s.projectRunEventTx(ctx, tx, agentID, event); err != nil {
 		return RunEventSaveResult{}, err
 	}
-	if err := s.projectRuntimeTimeline(ctx, agentID, event); err != nil {
+	if err := s.projectRuntimeTimelineTx(ctx, tx, agentID, event); err != nil {
 		return RunEventSaveResult{}, err
 	}
-	if err := s.projectRunState(ctx, agentID, event); err != nil {
+	if err := s.projectRunStateTx(ctx, tx, agentID, event); err != nil {
 		return RunEventSaveResult{}, err
 	}
-	if err := s.closePendingApprovalsFromRunEvent(ctx, agentID, event); err != nil {
+	if err := s.closePendingApprovalsFromRunEventTx(ctx, tx, agentID, event); err != nil {
 		return RunEventSaveResult{}, err
 	}
-	if err := s.projectCommandStateFromRunEvent(ctx, agentID, event, true); err != nil {
+	if err := s.projectCommandStateFromRunEventTx(ctx, tx, agentID, event, true); err != nil {
+		return RunEventSaveResult{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return RunEventSaveResult{}, err
 	}
 	return RunEventSaveResult{Status: RunEventInserted}, nil
@@ -408,10 +417,14 @@ func (s *Store) clearRunProjections(ctx context.Context, agentID, runID string) 
 }
 
 func (s *Store) advanceRunEventCursor(ctx context.Context, agentID string, event protocol.RunEvent) error {
+	return s.advanceRunEventCursorTx(ctx, s.pool, agentID, event)
+}
+
+func (s *Store) advanceRunEventCursorTx(ctx context.Context, tx execer, agentID string, event protocol.RunEvent) error {
 	if event.RunID == "" || event.Seq == 0 {
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at)
+	_, err := tx.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at)
 		VALUES ($1,$2,$3,$4,$5,'running','event_received',$6,$7,$7)
 		ON CONFLICT (agent_id, id) DO UPDATE SET
 			command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id),
@@ -477,6 +490,10 @@ func strconvUint(value uint64) string {
 }
 
 func (s *Store) projectApproval(ctx context.Context, agentID string, event protocol.RunEvent) error {
+	return s.projectApprovalTx(ctx, s.pool, agentID, event)
+}
+
+func (s *Store) projectApprovalTx(ctx context.Context, tx execer, agentID string, event protocol.RunEvent) error {
 	if event.Kind != "approval.requested" {
 		return nil
 	}
@@ -496,10 +513,14 @@ func (s *Store) projectApproval(ctx context.Context, agentID string, event proto
 	if len(request.Payload) == 0 {
 		request.Payload = event.Payload
 	}
-	return s.SaveApprovalRequest(ctx, agentID, request)
+	return s.saveApprovalRequestTx(ctx, tx, agentID, request)
 }
 
 func (s *Store) projectRunState(ctx context.Context, agentID string, event protocol.RunEvent) error {
+	return s.projectRunStateTx(ctx, s.pool, agentID, event)
+}
+
+func (s *Store) projectRunStateTx(ctx context.Context, tx execer, agentID string, event protocol.RunEvent) error {
 	if event.RunID == "" {
 		return nil
 	}
@@ -530,23 +551,31 @@ func (s *Store) projectRunState(ctx context.Context, agentID string, event proto
 		startedAt = time.Now().UTC()
 	}
 	if finished {
-		_, err := s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at, finished_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10) ON CONFLICT (agent_id, id) DO UPDATE SET status=EXCLUDED.status, status_reason=COALESCE(NULLIF(EXCLUDED.status_reason, ''), runs.status_reason), command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id), last_event_seq=GREATEST(runs.last_event_seq, EXCLUDED.last_event_seq), last_event_at=EXCLUDED.last_event_at, finished_at=EXCLUDED.finished_at`, event.RunID, agentID, event.CommandID, event.ProjectID, event.SessionID, status, statusReason, event.Seq, startedAt, startedAt)
+		_, err := tx.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at, finished_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10) ON CONFLICT (agent_id, id) DO UPDATE SET status=EXCLUDED.status, status_reason=COALESCE(NULLIF(EXCLUDED.status_reason, ''), runs.status_reason), command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id), last_event_seq=GREATEST(runs.last_event_seq, EXCLUDED.last_event_seq), last_event_at=EXCLUDED.last_event_at, finished_at=EXCLUDED.finished_at`, event.RunID, agentID, event.CommandID, event.ProjectID, event.SessionID, status, statusReason, event.Seq, startedAt, startedAt)
 		return err
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (agent_id, id) DO UPDATE SET status=EXCLUDED.status, status_reason=COALESCE(NULLIF(EXCLUDED.status_reason, ''), runs.status_reason), command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id), last_event_seq=GREATEST(runs.last_event_seq, EXCLUDED.last_event_seq), last_event_at=EXCLUDED.last_event_at`, event.RunID, agentID, event.CommandID, event.ProjectID, event.SessionID, status, statusReason, event.Seq, startedAt, startedAt)
+	_, err := tx.Exec(ctx, `INSERT INTO runs (id, agent_id, command_id, project_id, session_id, status, status_reason, last_event_seq, last_event_at, started_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (agent_id, id) DO UPDATE SET status=EXCLUDED.status, status_reason=COALESCE(NULLIF(EXCLUDED.status_reason, ''), runs.status_reason), command_id=COALESCE(NULLIF(EXCLUDED.command_id, ''), runs.command_id), project_id=COALESCE(NULLIF(EXCLUDED.project_id, ''), runs.project_id), session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runs.session_id), last_event_seq=GREATEST(runs.last_event_seq, EXCLUDED.last_event_seq), last_event_at=EXCLUDED.last_event_at`, event.RunID, agentID, event.CommandID, event.ProjectID, event.SessionID, status, statusReason, event.Seq, startedAt, startedAt)
 	return err
 }
 
 func (s *Store) closePendingApprovalsFromRunEvent(ctx context.Context, agentID string, event protocol.RunEvent) error {
+	return s.closePendingApprovalsFromRunEventTx(ctx, s.pool, agentID, event)
+}
+
+func (s *Store) closePendingApprovalsFromRunEventTx(ctx context.Context, tx execer, agentID string, event protocol.RunEvent) error {
 	switch event.Kind {
 	case "run.done", "run.completed", "run.error", "run.failed", "run.stopped":
-		return s.closePendingApprovalsForRun(ctx, agentID, event.RunID, "run finished: "+event.Kind)
+		return s.closePendingApprovalsForRunTx(ctx, tx, agentID, event.RunID, "run finished: "+event.Kind)
 	default:
 		return nil
 	}
 }
 
 func (s *Store) projectCommandStateFromRunEvent(ctx context.Context, agentID string, event protocol.RunEvent, audit bool) error {
+	return s.projectCommandStateFromRunEventTx(ctx, s.pool, agentID, event, audit)
+}
+
+func (s *Store) projectCommandStateFromRunEventTx(ctx context.Context, tx queryExecer, agentID string, event protocol.RunEvent, audit bool) error {
 	if event.RunID == "" {
 		return nil
 	}
@@ -579,7 +608,7 @@ func (s *Store) projectCommandStateFromRunEvent(ctx context.Context, agentID str
 	}
 	commandID := strings.TrimSpace(event.CommandID)
 	if commandID == "" {
-		if err := s.pool.QueryRow(ctx, `SELECT COALESCE(command_id, '') FROM runs WHERE agent_id=$1 AND id=$2`, agentID, event.RunID).Scan(&commandID); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(command_id, '') FROM runs WHERE agent_id=$1 AND id=$2`, agentID, event.RunID).Scan(&commandID); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil
 			}
@@ -589,7 +618,7 @@ func (s *Store) projectCommandStateFromRunEvent(ctx context.Context, agentID str
 	if commandID == "" {
 		return nil
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE commands SET status=$1, status_reason=$2, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL
+	tag, err := tx.Exec(ctx, `UPDATE commands SET status=$1, status_reason=$2, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL
 		WHERE agent_id=$3 AND id=$4
 			AND (run_id IS NULL OR run_id='' OR run_id=$5)
 			AND status NOT IN ('done','expired','failed','rejected','stopped')`, status, reason, agentID, commandID, event.RunID)
@@ -602,7 +631,7 @@ func (s *Store) projectCommandStateFromRunEvent(ctx context.Context, agentID str
 	if !audit {
 		return nil
 	}
-	return s.SaveCommandAttempt(ctx, agentID, commandID, "run", status, reason, protocol.Raw(event))
+	return s.saveCommandAttemptTx(ctx, tx, agentID, commandID, "run", status, reason, protocol.Raw(event))
 }
 
 func runEventReason(event protocol.RunEvent) string {
@@ -1172,13 +1201,17 @@ func (s *Store) markStopCommandAck(ctx context.Context, agentID string, command 
 }
 
 func (s *Store) closePendingApprovalsForRun(ctx context.Context, agentID, runID, reason string) error {
+	return s.closePendingApprovalsForRunTx(ctx, s.pool, agentID, runID, reason)
+}
+
+func (s *Store) closePendingApprovalsForRunTx(ctx context.Context, tx execer, agentID, runID, reason string) error {
 	if strings.TrimSpace(runID) == "" {
 		return nil
 	}
 	if strings.TrimSpace(reason) == "" {
 		reason = "run finished"
 	}
-	_, err := s.pool.Exec(ctx, `UPDATE approval_requests
+	_, err := tx.Exec(ctx, `UPDATE approval_requests
 		SET status='cancelled',
 			decision_reason=$3,
 			decided_at=COALESCE(decided_at, now())

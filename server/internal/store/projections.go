@@ -126,6 +126,10 @@ func (s *Store) projectHistoryMessage(ctx context.Context, agentID string, messa
 }
 
 func (s *Store) projectRunEvent(ctx context.Context, agentID string, event protocol.RunEvent) error {
+	return s.projectRunEventTx(ctx, s.pool, agentID, event)
+}
+
+func (s *Store) projectRunEventTx(ctx context.Context, tx queryExecer, agentID string, event protocol.RunEvent) error {
 	if event.RunID == "" {
 		return nil
 	}
@@ -134,79 +138,91 @@ func (s *Store) projectRunEvent(ctx context.Context, agentID string, event proto
 	}
 	switch event.Kind {
 	case "assistant.message.delta":
-		return s.appendAssistantRunMessage(ctx, agentID, event)
+		return s.appendAssistantRunMessageTx(ctx, tx, agentID, event)
 	case "assistant.message.done":
-		return s.finishAssistantRunMessage(ctx, agentID, event)
+		return s.finishAssistantRunMessageTx(ctx, tx, agentID, event)
 	case "user.message":
-		return s.upsertRunMessage(ctx, agentID, event, "user", "done", true)
+		return s.upsertRunMessageTx(ctx, tx, agentID, event, "user", "done", true)
 	case "tool.call.started", "tool.call.delta", "tool.call.done", "tool.output":
-		return s.upsertToolCall(ctx, agentID, event)
+		return s.upsertToolCallTx(ctx, tx, agentID, event)
 	case "approval.requested":
-		if err := s.upsertRunStep(ctx, agentID, event, "approval", "Approval requested", "pending", false); err != nil {
+		if err := s.upsertRunStepTx(ctx, tx, agentID, event, "approval", "Approval requested", "pending", false); err != nil {
 			return err
 		}
-		return s.upsertToolCall(ctx, agentID, event)
+		return s.upsertToolCallTx(ctx, tx, agentID, event)
 	case "terminal.output":
 		if shouldProjectTerminalOutputAsToolCall(event.Payload) {
-			if err := s.upsertToolCall(ctx, agentID, event); err != nil {
+			if err := s.upsertToolCallTx(ctx, tx, agentID, event); err != nil {
 				return err
 			}
 		}
-		return s.upsertRunStep(ctx, agentID, event, event.Kind, stepTitle(event), stepStatus(event), true)
+		return s.upsertRunStepTx(ctx, tx, agentID, event, event.Kind, stepTitle(event), stepStatus(event), true)
 	case "diff.created", "run.status", "session.created", "session.updated", "session.resumed":
 		kind, title, status := statusStepProjection(event)
 		if kind != "" {
-			return s.upsertRunStep(ctx, agentID, event, kind, title, status, true)
+			return s.upsertRunStepTx(ctx, tx, agentID, event, kind, title, status, true)
 		}
-		return s.upsertRunStep(ctx, agentID, event, event.Kind, stepTitle(event), stepStatus(event), true)
+		return s.upsertRunStepTx(ctx, tx, agentID, event, event.Kind, stepTitle(event), stepStatus(event), true)
 	case "run.started":
-		return s.upsertRunStep(ctx, agentID, event, "run", "Run started", "running", false)
+		return s.upsertRunStepTx(ctx, tx, agentID, event, "run", "Run started", "running", false)
 	case "run.done", "run.completed":
-		return s.upsertRunStep(ctx, agentID, event, "run", "Run completed", "done", true)
+		return s.upsertRunStepTx(ctx, tx, agentID, event, "run", "Run completed", "done", true)
 	case "run.error", "run.failed":
-		return s.upsertRunStep(ctx, agentID, event, "run", "Run failed", "error", true)
+		return s.upsertRunStepTx(ctx, tx, agentID, event, "run", "Run failed", "error", true)
 	case "run.stopped":
-		return s.upsertRunStep(ctx, agentID, event, "run", "Run stopped", "stopped", true)
+		return s.upsertRunStepTx(ctx, tx, agentID, event, "run", "Run stopped", "stopped", true)
 	default:
-		return s.upsertRunStep(ctx, agentID, event, event.Kind, stepTitle(event), "done", true)
+		return s.upsertRunStepTx(ctx, tx, agentID, event, event.Kind, stepTitle(event), "done", true)
 	}
 }
 
 func (s *Store) appendAssistantRunMessage(ctx context.Context, agentID string, event protocol.RunEvent) error {
+	return s.appendAssistantRunMessageTx(ctx, s.pool, agentID, event)
+}
+
+func (s *Store) appendAssistantRunMessageTx(ctx context.Context, tx queryExecer, agentID string, event protocol.RunEvent) error {
 	content := payloadText(event.Payload)
 	if content == "" {
 		return nil
 	}
-	existingID, existingContent, ok, err := s.lastRunMessage(ctx, agentID, event.RunID, "assistant")
+	existingID, existingContent, ok, err := s.lastRunMessageTx(ctx, tx, agentID, event.RunID, "assistant")
 	if err != nil {
 		return err
 	}
 	if ok {
-		_, err := s.pool.Exec(ctx, `UPDATE run_messages SET seq_end=$1, content=$2, payload=$3, status='streaming' WHERE id=$4 AND agent_id=$5`,
+		_, err := tx.Exec(ctx, `UPDATE run_messages SET seq_end=$1, content=$2, payload=$3, status='streaming' WHERE id=$4 AND agent_id=$5`,
 			event.Seq, existingContent+content, jsonRaw(event.Payload), existingID, agentID)
 		return err
 	}
-	return s.upsertRunMessage(ctx, agentID, event, "assistant", "streaming", false)
+	return s.upsertRunMessageTx(ctx, tx, agentID, event, "assistant", "streaming", false)
 }
 
 func (s *Store) finishAssistantRunMessage(ctx context.Context, agentID string, event protocol.RunEvent) error {
+	return s.finishAssistantRunMessageTx(ctx, s.pool, agentID, event)
+}
+
+func (s *Store) finishAssistantRunMessageTx(ctx context.Context, tx queryExecer, agentID string, event protocol.RunEvent) error {
 	content := payloadText(event.Payload)
-	existingID, _, ok, err := s.lastRunMessage(ctx, agentID, event.RunID, "assistant")
+	existingID, _, ok, err := s.lastRunMessageTx(ctx, tx, agentID, event.RunID, "assistant")
 	if err != nil {
 		return err
 	}
 	if ok {
-		_, err := s.pool.Exec(ctx, `UPDATE run_messages SET seq_end=$1, content=COALESCE(NULLIF($2, ''), content), payload=$3, status='done', finished_at=$4 WHERE id=$5 AND agent_id=$6`,
+		_, err := tx.Exec(ctx, `UPDATE run_messages SET seq_end=$1, content=COALESCE(NULLIF($2, ''), content), payload=$3, status='done', finished_at=$4 WHERE id=$5 AND agent_id=$6`,
 			event.Seq, content, jsonRaw(event.Payload), eventTime(event), existingID, agentID)
 		return err
 	}
-	return s.upsertRunMessage(ctx, agentID, event, "assistant", "done", true)
+	return s.upsertRunMessageTx(ctx, tx, agentID, event, "assistant", "done", true)
 }
 
 func (s *Store) lastRunMessage(ctx context.Context, agentID, runID, role string) (string, string, bool, error) {
+	return s.lastRunMessageTx(ctx, s.pool, agentID, runID, role)
+}
+
+func (s *Store) lastRunMessageTx(ctx context.Context, tx queryExecer, agentID, runID, role string) (string, string, bool, error) {
 	var id string
 	var content string
-	err := s.pool.QueryRow(ctx, `SELECT id, COALESCE(content, '') FROM run_messages WHERE agent_id=$1 AND run_id=$2 AND role=$3 ORDER BY seq_start DESC LIMIT 1`, agentID, runID, role).Scan(&id, &content)
+	err := tx.QueryRow(ctx, `SELECT id, COALESCE(content, '') FROM run_messages WHERE agent_id=$1 AND run_id=$2 AND role=$3 ORDER BY seq_start DESC LIMIT 1`, agentID, runID, role).Scan(&id, &content)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", "", false, nil
@@ -217,10 +233,14 @@ func (s *Store) lastRunMessage(ctx context.Context, agentID, runID, role string)
 }
 
 func (s *Store) upsertRunMessage(ctx context.Context, agentID string, event protocol.RunEvent, role, status string, finished bool) error {
+	return s.upsertRunMessageTx(ctx, s.pool, agentID, event, role, status, finished)
+}
+
+func (s *Store) upsertRunMessageTx(ctx context.Context, tx queryExecer, agentID string, event protocol.RunEvent, role, status string, finished bool) error {
 	content := payloadText(event.Payload)
 	id := projectionID(agentID, event.RunID, strconv.FormatUint(event.Seq, 10), "message", role)
 	finishedAt := nullableTime(event.At, finished)
-	_, err := s.pool.Exec(ctx, `INSERT INTO run_messages (id, agent_id, run_id, seq_start, seq_end, role, content, payload, status, started_at, finished_at)
+	_, err := tx.Exec(ctx, `INSERT INTO run_messages (id, agent_id, run_id, seq_start, seq_end, role, content, payload, status, started_at, finished_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		ON CONFLICT (agent_id, run_id, seq_start, role) DO UPDATE SET seq_end=EXCLUDED.seq_end, content=COALESCE(NULLIF(EXCLUDED.content, ''), run_messages.content), payload=EXCLUDED.payload, status=EXCLUDED.status, finished_at=EXCLUDED.finished_at`,
 		id, agentID, event.RunID, event.Seq, event.Seq, role, content, jsonRaw(event.Payload), status, eventTime(event), finishedAt)
@@ -228,9 +248,13 @@ func (s *Store) upsertRunMessage(ctx context.Context, agentID string, event prot
 }
 
 func (s *Store) upsertRunStep(ctx context.Context, agentID string, event protocol.RunEvent, kind, title, status string, finished bool) error {
+	return s.upsertRunStepTx(ctx, s.pool, agentID, event, kind, title, status, finished)
+}
+
+func (s *Store) upsertRunStepTx(ctx context.Context, tx queryExecer, agentID string, event protocol.RunEvent, kind, title, status string, finished bool) error {
 	id := projectionID(agentID, event.RunID, strconv.FormatUint(event.Seq, 10), "step", kind)
 	finishedAt := nullableTime(event.At, finished)
-	_, err := s.pool.Exec(ctx, `INSERT INTO run_steps (id, agent_id, run_id, seq_start, seq_end, kind, title, status, payload, started_at, finished_at)
+	_, err := tx.Exec(ctx, `INSERT INTO run_steps (id, agent_id, run_id, seq_start, seq_end, kind, title, status, payload, started_at, finished_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		ON CONFLICT (agent_id, run_id, seq_start, kind) DO UPDATE SET seq_end=EXCLUDED.seq_end, title=EXCLUDED.title, status=EXCLUDED.status, payload=EXCLUDED.payload, finished_at=EXCLUDED.finished_at`,
 		id, agentID, event.RunID, event.Seq, event.Seq, kind, title, status, jsonRaw(event.Payload), eventTime(event), finishedAt)
@@ -238,6 +262,10 @@ func (s *Store) upsertRunStep(ctx context.Context, agentID string, event protoco
 }
 
 func (s *Store) upsertToolCall(ctx context.Context, agentID string, event protocol.RunEvent) error {
+	return s.upsertToolCallTx(ctx, s.pool, agentID, event)
+}
+
+func (s *Store) upsertToolCallTx(ctx context.Context, tx queryExecer, agentID string, event protocol.RunEvent) error {
 	toolCallID := payloadString(event.Payload, "tool_call_id", "call_id", "id")
 	if toolCallID == "" {
 		toolCallID = projectionID(agentID, event.RunID, strconv.FormatUint(event.Seq, 10), "tool", event.Kind)
@@ -250,7 +278,7 @@ func (s *Store) upsertToolCall(ctx context.Context, agentID string, event protoc
 	id := projectionID(agentID, event.RunID, toolCallID, "tool_call")
 	finished := status == "done" || status == "output"
 	finishedAt := nullableTime(event.At, finished)
-	_, err := s.pool.Exec(ctx, `INSERT INTO tool_calls (id, agent_id, run_id, seq_start, seq_end, tool_call_id, tool_name, arguments, output, status, approval_request_id, started_at, finished_at)
+	_, err := tx.Exec(ctx, `INSERT INTO tool_calls (id, agent_id, run_id, seq_start, seq_end, tool_call_id, tool_name, arguments, output, status, approval_request_id, started_at, finished_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		ON CONFLICT (agent_id, run_id, tool_call_id) DO UPDATE SET seq_end=EXCLUDED.seq_end, tool_name=COALESCE(NULLIF(EXCLUDED.tool_name, ''), tool_calls.tool_name), arguments=COALESCE(EXCLUDED.arguments, tool_calls.arguments), output=COALESCE(EXCLUDED.output, tool_calls.output), status=EXCLUDED.status, approval_request_id=COALESCE(NULLIF(EXCLUDED.approval_request_id, ''), tool_calls.approval_request_id), finished_at=COALESCE(EXCLUDED.finished_at, tool_calls.finished_at)`,
 		id, agentID, event.RunID, event.Seq, event.Seq, toolCallID, toolName, jsonRaw(arguments), jsonRaw(output), status, approvalID, eventTime(event), finishedAt)

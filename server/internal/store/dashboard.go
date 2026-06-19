@@ -730,7 +730,7 @@ func (s *Store) SaveCommandAttempt(ctx context.Context, agentID, commandID, phas
 	return s.saveCommandAttemptTx(ctx, s.pool, agentID, commandID, phase, status, reason, payload)
 }
 
-func (s *Store) saveCommandAttemptTx(ctx context.Context, tx commandAttemptWriter, agentID, commandID, phase, status, reason string, payload json.RawMessage) error {
+func (s *Store) saveCommandAttemptTx(ctx context.Context, tx queryExecer, agentID, commandID, phase, status, reason string, payload json.RawMessage) error {
 	var attemptNo int
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(attempt_no), 0) + 1 FROM command_attempts WHERE agent_id=$1 AND command_id=$2`, agentID, commandID).Scan(&attemptNo); err != nil {
 		return err
@@ -740,9 +740,13 @@ func (s *Store) saveCommandAttemptTx(ctx context.Context, tx commandAttemptWrite
 	return err
 }
 
-type commandAttemptWriter interface {
+type queryExecer interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+type execer interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 }
 
 func (s *Store) ListCommandAttempts(ctx context.Context, agentID, commandID string, limit int) ([]CommandAttempt, error) {
@@ -919,13 +923,17 @@ func (s *Store) ListRuntimeSessions(ctx context.Context, agentID, sessionID stri
 }
 
 func (s *Store) SaveApprovalRequest(ctx context.Context, agentID string, request protocol.ApprovalRequest) error {
+	return s.saveApprovalRequestTx(ctx, s.pool, agentID, request)
+}
+
+func (s *Store) saveApprovalRequestTx(ctx context.Context, tx execer, agentID string, request protocol.ApprovalRequest) error {
 	if request.ID == "" {
 		request.ID = protocol.NewID("apr")
 	}
 	if request.At.IsZero() {
 		request.At = time.Now().UTC()
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO approval_requests (id, agent_id, run_id, project_id, session_id, category, action, risk_level, payload, status, requested_at)
+	_, err := tx.Exec(ctx, `INSERT INTO approval_requests (id, agent_id, run_id, project_id, session_id, category, action, risk_level, payload, status, requested_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10)
 		ON CONFLICT (agent_id, id) DO NOTHING`, request.ID, agentID, request.RunID, request.ProjectID, request.SessionID, request.Category, request.Action, request.RiskLevel, jsonRaw(request.Payload), request.At)
 	return err

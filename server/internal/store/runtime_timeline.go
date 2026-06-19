@@ -32,6 +32,10 @@ type RuntimeTimelineItem struct {
 }
 
 func (s *Store) projectRuntimeTimeline(ctx context.Context, agentID string, event protocol.RunEvent) error {
+	return s.projectRuntimeTimelineTx(ctx, s.pool, agentID, event)
+}
+
+func (s *Store) projectRuntimeTimelineTx(ctx context.Context, tx execer, agentID string, event protocol.RunEvent) error {
 	if event.RunID == "" || protocol.IsUsageKind(event.Kind) {
 		return nil
 	}
@@ -39,7 +43,7 @@ func (s *Store) projectRuntimeTimeline(ctx context.Context, agentID string, even
 	if timeline.Runtime == "" {
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO runtime_timeline (id, agent_id, run_id, session_id, project_id, seq, runtime, thread_id, turn_id, item_id, item_type, phase, kind, role, text, status, payload, event_at)
+	_, err := tx.Exec(ctx, `INSERT INTO runtime_timeline (id, agent_id, run_id, session_id, project_id, seq, runtime, thread_id, turn_id, item_id, item_type, phase, kind, role, text, status, payload, event_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 		ON CONFLICT (agent_id, run_id, seq, kind, item_id, phase) DO UPDATE SET
 			session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runtime_timeline.session_id),
