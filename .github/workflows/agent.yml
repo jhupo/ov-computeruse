@@ -228,8 +228,6 @@ jobs:
 
       - name: Build deb and rpm
         working-directory: agent
-        env:
-          ARCH: amd64
         run: |
           export VERSION="$PACKAGE_VERSION"
           nfpm pkg --packager deb --config packaging/linux/nfpm.yaml --target dist/ov-agent-linux-amd64.deb

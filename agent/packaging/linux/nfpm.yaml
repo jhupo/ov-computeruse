@@ -1,5 +1,5 @@
 name: ov-agent
-arch: ${ARCH}
+arch: amd64
 platform: linux
 version: ${VERSION}
 section: default
@@ -10,7 +10,7 @@ homepage: https://github.com/Amber-Chiang/ov-computeruse
 license: MIT
 
 contents:
-  - src: ./dist/ov-agent-linux-${ARCH}
+  - src: ./dist/ov-agent-linux-amd64
     dst: /usr/local/bin/ov-agent
     file_info:
       mode: 0755
