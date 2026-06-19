@@ -53,6 +53,8 @@ On Windows, `identity.json` is protected with DPAPI before it is written to disk
 ```toml
 server_url = "https://api.example.com"
 codex_home = "C:/Users/me/.codex"
+codex_model = "gpt-5.1-codex-max"
+codex_profile = "work"
 scan_roots = ["C:/Users/me/.codex", "D:/work"]
 upload_history = false
 allow_sensitive = false

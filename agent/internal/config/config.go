@@ -26,6 +26,8 @@ type Config struct {
 	LogDir            string
 	CacheDir          string
 	CodexHome         string
+	CodexModel        string
+	CodexProfile      string
 	LogLevel          string
 	ScanRoots         []string
 	ScanMaxBytes      int64
@@ -97,6 +99,8 @@ func Load(opts Options) (Config, error) {
 	fs.StringVar(&cfg.LogDir, "log-dir", cfg.LogDir, "agent log directory")
 	fs.StringVar(&cfg.CacheDir, "cache-dir", cfg.CacheDir, "agent cache directory")
 	fs.StringVar(&cfg.CodexHome, "codex-home", cfg.CodexHome, "codex home override")
+	fs.StringVar(&cfg.CodexModel, "codex-model", cfg.CodexModel, "codex cli model override")
+	fs.StringVar(&cfg.CodexProfile, "codex-profile", cfg.CodexProfile, "codex cli profile override")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
 	fs.Var((*stringList)(&cfg.ScanRoots), "scan-root", "local Codex root to scan; repeatable")
 	fs.Int64Var(&cfg.ScanMaxBytes, "scan-max-bytes", cfg.ScanMaxBytes, "maximum file size considered by scanner")
@@ -126,6 +130,8 @@ func Load(opts Options) (Config, error) {
 	cfg.LogDir = cleanPath(cfg.LogDir)
 	cfg.CacheDir = cleanPath(cfg.CacheDir)
 	cfg.CodexHome = cleanPath(cfg.CodexHome)
+	cfg.CodexModel = strings.TrimSpace(cfg.CodexModel)
+	cfg.CodexProfile = strings.TrimSpace(cfg.CodexProfile)
 	cfg.ScanRoots = cleanPaths(cfg.ScanRoots)
 	if cfg.DeviceSalt == "" {
 		cfg.DeviceSalt = cfg.ConfigDir
@@ -296,6 +302,10 @@ func applyConfigValue(cfg *Config, key, value string) {
 		cfg.CacheDir = value
 	case "codex_home":
 		cfg.CodexHome = value
+	case "codex_model":
+		cfg.CodexModel = value
+	case "codex_profile":
+		cfg.CodexProfile = value
 	case "log_level":
 		cfg.LogLevel = value
 	case "scan_roots", "scan_root":
@@ -434,6 +444,12 @@ func applyEnv(cfg *Config, lookup func(string) (string, bool), explicit map[stri
 	}
 	if value, ok := lookup(envKey("CODEX_HOME")); ok {
 		cfg.CodexHome = value
+	}
+	if value, ok := lookup(envKey("CODEX_MODEL")); ok {
+		cfg.CodexModel = value
+	}
+	if value, ok := lookup(envKey("CODEX_PROFILE")); ok {
+		cfg.CodexProfile = value
 	}
 	if value, ok := lookup(envKey("LOG_LEVEL")); ok {
 		cfg.LogLevel = value

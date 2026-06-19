@@ -212,8 +212,8 @@ func runAgent(args []string) {
 	defer state.Close()
 	rt := runtime.Runtime(runtime.NewNoop())
 	if bin, err := codexcli.ResolveBin(""); err == nil {
-		rt = codexcli.New(codexcli.Config{BinPath: bin, State: state})
-		logger.Info("codex cli runtime enabled", "path", bin)
+		rt = codexcli.New(codexcli.Config{BinPath: bin, Model: cfg.CodexModel, Profile: cfg.CodexProfile, State: state})
+		logger.Info("codex cli runtime enabled", "path", bin, "model", cfg.CodexModel, "profile", cfg.CodexProfile)
 	} else {
 		logger.Warn("codex cli runtime unavailable; runtime is noop", "error", err)
 	}
