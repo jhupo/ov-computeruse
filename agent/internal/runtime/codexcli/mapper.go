@@ -30,7 +30,11 @@ func (m *eventMapper) emitEvent(ctx context.Context, command protocol.Command, r
 	case "turn.completed":
 		return emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.turn.completed", "usage": rawJSON(event.Usage), "raw": event.Raw})
 	case "turn.failed":
-		return emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.turn.failed", "message": firstNonEmpty(event.Message, event.Error.Message), "raw": event.Raw})
+		message := firstNonEmpty(event.Message, event.Error.Message)
+		if err := emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.turn.failed", "message": message, "raw": event.Raw}); err != nil {
+			return err
+		}
+		return fmt.Errorf("codex CLI turn failed: %s", firstNonEmpty(message, string(event.Raw)))
 	case "error":
 		return fmt.Errorf("codex CLI error: %s", firstNonEmpty(event.Message, event.Error.Message, string(event.Raw)))
 	case "codex/event/exec_approval_request", "codex/event/apply_patch_approval_request", "codex/event/elicitation_request", "exec_approval_request", "apply_patch_approval_request", "elicitation_request":

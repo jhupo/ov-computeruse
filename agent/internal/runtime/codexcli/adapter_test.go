@@ -122,8 +122,8 @@ func TestReadStdoutMapsCodexToolItems(t *testing.T) {
 	}, "\n")
 	sink := &captureSink{}
 	completion := &completionSignal{}
-	if err := adapter.readStdout(context.Background(), strings.NewReader(input), command, localstate.CommandContext{}, sink, completion); err != nil && err != io.EOF {
-		t.Fatalf("read stdout: %v", err)
+	if err := adapter.readStdout(context.Background(), strings.NewReader(input), command, localstate.CommandContext{}, sink, completion); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("read stdout error = %v, want turn failure", err)
 	}
 	if !completion.Done() {
 		t.Fatal("expected completion signal after turn.failed")
@@ -153,6 +153,28 @@ func TestReadStdoutMapsCodexToolItems(t *testing.T) {
 	assertPayloadString(t, sink.events[4].Payload, "output", "clean")
 	assertPayloadString(t, sink.events[6].Payload, "tool", "read")
 	assertPayloadString(t, sink.events[10].Payload, "message", "boom")
+}
+
+func TestReadStdoutReturnsErrorForTurnFailed(t *testing.T) {
+	adapter := New(Config{})
+	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1"}
+	sink := &captureSink{}
+	completion := &completionSignal{}
+	err := adapter.readStdout(context.Background(), strings.NewReader(`{"type":"turn.failed","error":{"message":"boom"}}`), command, localstate.CommandContext{}, sink, completion)
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("read stdout error = %v, want turn failure", err)
+	}
+	if !completion.Done() {
+		t.Fatal("expected completion signal after turn.failed")
+	}
+	if len(sink.events) != 1 {
+		t.Fatalf("event count = %d, want 1", len(sink.events))
+	}
+	if sink.events[0].Kind != "run.status" {
+		t.Fatalf("event kind = %q, want run.status", sink.events[0].Kind)
+	}
+	assertPayloadString(t, sink.events[0].Payload, "status", "codex.turn.failed")
+	assertPayloadString(t, sink.events[0].Payload, "message", "boom")
 }
 
 func TestReadStdoutEmitsTerminalOutputDelta(t *testing.T) {
