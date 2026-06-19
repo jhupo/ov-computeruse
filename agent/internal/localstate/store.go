@@ -743,6 +743,46 @@ func (s *Store) MarkRunEventError(ctx context.Context, event protocol.RunEvent, 
 	return err
 }
 
+func (s *Store) MarkRunEventAckError(ctx context.Context, ack protocol.Ack) error {
+	if s == nil {
+		return nil
+	}
+	message := runEventAckErrorMessage(ack)
+	if message == "" {
+		return nil
+	}
+	if strings.TrimSpace(ack.EventID) != "" {
+		_, err := s.db.ExecContext(ctx, `
+			UPDATE run_events
+			SET last_error = ?, updated_at = ?
+			WHERE event_id = ? AND acked_at IS NULL
+		`, message, now(), ack.EventID)
+		return err
+	}
+	if strings.TrimSpace(ack.RunID) == "" || ack.AckSeq == 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE run_events
+		SET last_error = ?, updated_at = ?
+		WHERE run_id = ? AND seq = ? AND acked_at IS NULL
+	`, message, now(), ack.RunID, ack.AckSeq)
+	return err
+}
+
+func runEventAckErrorMessage(ack protocol.Ack) string {
+	status := strings.TrimSpace(ack.Status)
+	message := strings.TrimSpace(ack.Message)
+	switch {
+	case message != "":
+		return "run event ack failed: " + message
+	case status != "":
+		return "run event ack " + status
+	default:
+		return ""
+	}
+}
+
 func (s *Store) MarkRunEventAcked(ctx context.Context, ack protocol.Ack) error {
 	if s == nil {
 		return nil

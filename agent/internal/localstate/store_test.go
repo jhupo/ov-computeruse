@@ -357,6 +357,46 @@ func TestMarkRunEventAckedPrefersEventID(t *testing.T) {
 	}
 }
 
+func TestMarkRunEventAckErrorRecordsServerFailure(t *testing.T) {
+	state, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer state.Close()
+	ctx := context.Background()
+	event := protocol.RunEvent{
+		EventID: "evt_failed_ack",
+		RunID:   "run_ack",
+		Seq:     8,
+		Kind:    "assistant.message.delta",
+		At:      time.Now().UTC(),
+	}
+	if err := state.SaveRunEvent(ctx, event); err != nil {
+		t.Fatalf("save event: %v", err)
+	}
+	if err := state.MarkRunEventAckError(ctx, protocol.Ack{EventID: "evt_missing", RunID: "run_ack", AckSeq: 8, Status: "failed", Message: "database unavailable", At: time.Now().UTC()}); err != nil {
+		t.Fatalf("record missing event ack error: %v", err)
+	}
+	var lastError string
+	err = state.db.QueryRowContext(ctx, `SELECT COALESCE(last_error, '') FROM run_events WHERE event_id = ?`, event.EventID).Scan(&lastError)
+	if err != nil {
+		t.Fatalf("query event error: %v", err)
+	}
+	if lastError != "" {
+		t.Fatal("event error was recorded through run_id+seq even though ack carried a different event_id")
+	}
+	if err := state.MarkRunEventAckError(ctx, protocol.Ack{RunID: "run_ack", AckSeq: 8, Status: "failed", Message: "database unavailable", At: time.Now().UTC()}); err != nil {
+		t.Fatalf("record ack error: %v", err)
+	}
+	err = state.db.QueryRowContext(ctx, `SELECT COALESCE(last_error, '') FROM run_events WHERE event_id = ?`, event.EventID).Scan(&lastError)
+	if err != nil {
+		t.Fatalf("query event error after ack: %v", err)
+	}
+	if lastError != "run event ack failed: database unavailable" {
+		t.Fatalf("last_error = %q", lastError)
+	}
+}
+
 func TestMarkRunEventSentReportsFirstSend(t *testing.T) {
 	state, err := Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {

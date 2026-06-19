@@ -1167,6 +1167,8 @@ func (c *Client) readLoop(ctx context.Context, conn Conn) error {
 			}
 			if runEventAckTerminal(ack.Status) {
 				_ = c.state.MarkRunEventAcked(ctx, ack)
+			} else {
+				_ = c.state.MarkRunEventAckError(ctx, ack)
 			}
 		}
 	}
