@@ -50,7 +50,7 @@ func TestRuntimeSessionFromRunEventRejectsRunEventsAndOtherRuntimes(t *testing.T
 func TestDashAcceptsSubscribedRunEventBroadcast(t *testing.T) {
 	dash := &DashConn{
 		Subscriptions: map[string]DashSubscription{
-			dashSubscriptionKey("agent_1", "run_1"): {AgentID: "agent_1", RunID: "run_1", AfterSeq: 4},
+			dashRunSubscriptionKey("agent_1", "run_1"): {AgentID: "agent_1", RunID: "run_1", AfterSeq: 4},
 		},
 	}
 	event := protocol.RunEvent{RunID: "run_1", Seq: 5, Kind: "assistant.message.done"}
@@ -63,7 +63,7 @@ func TestDashAcceptsSubscribedRunEventBroadcast(t *testing.T) {
 func TestDashRejectsUnsubscribedOrOldRunEventBroadcast(t *testing.T) {
 	dash := &DashConn{
 		Subscriptions: map[string]DashSubscription{
-			dashSubscriptionKey("agent_1", "run_1"): {AgentID: "agent_1", RunID: "run_1", AfterSeq: 5},
+			dashRunSubscriptionKey("agent_1", "run_1"): {AgentID: "agent_1", RunID: "run_1", AfterSeq: 5},
 		},
 	}
 	cases := []protocol.RunEvent{
@@ -91,6 +91,35 @@ func TestDashEventWrapsRunEventPayloadForSubscriptionFilter(t *testing.T) {
 	}
 	if wire.Type != "run.event" || wire.AgentID != "agent_1" || wire.Payload.RunID != "run_1" || wire.Payload.Seq != 3 {
 		t.Fatalf("wire event = %+v", wire)
+	}
+}
+
+func TestDashAcceptsSubscribedSessionRunEventBroadcast(t *testing.T) {
+	dash := &DashConn{
+		Subscriptions: map[string]DashSubscription{
+			dashSessionSubscriptionKey("agent_1", "session_1"): {AgentID: "agent_1", SessionID: "session_1"},
+		},
+	}
+	event := protocol.RunEvent{RunID: "run_1", SessionID: "session_1", Seq: 1, Kind: "assistant.message.delta"}
+	data := dashEvent("run.event", &AgentConn{AgentID: "agent_1", DeviceID: "device_1"}, event)
+	if !dashAcceptsBroadcast(dash, data) {
+		t.Fatal("expected subscribed session dash to accept run event")
+	}
+}
+
+func TestDashFiltersRuntimeTimelineUpdateBySessionSubscription(t *testing.T) {
+	dash := &DashConn{
+		Subscriptions: map[string]DashSubscription{
+			dashSessionSubscriptionKey("agent_1", "session_1"): {AgentID: "agent_1", SessionID: "session_1"},
+		},
+	}
+	accepted := dashEvent("runtime.timeline.updated", &AgentConn{AgentID: "agent_1", DeviceID: "device_1"}, map[string]any{"session_id": "session_1"})
+	if !dashAcceptsBroadcast(dash, accepted) {
+		t.Fatal("expected subscribed session runtime timeline update")
+	}
+	rejected := dashEvent("runtime.timeline.updated", &AgentConn{AgentID: "agent_1", DeviceID: "device_1"}, map[string]any{"session_id": "session_2"})
+	if dashAcceptsBroadcast(dash, rejected) {
+		t.Fatal("unexpected runtime timeline update for another session")
 	}
 }
 

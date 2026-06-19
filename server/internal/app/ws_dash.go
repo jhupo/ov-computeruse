@@ -11,11 +11,12 @@ import (
 )
 
 type dashWSMessage struct {
-	Type     string `json:"type"`
-	AgentID  string `json:"agent_id,omitempty"`
-	RunID    string `json:"run_id,omitempty"`
-	AfterSeq uint64 `json:"after_seq,omitempty"`
-	Limit    int    `json:"limit,omitempty"`
+	Type      string `json:"type"`
+	AgentID   string `json:"agent_id,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	AfterSeq  uint64 `json:"after_seq,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
 }
 
 func (s *Server) handleDashWS(w http.ResponseWriter, r *http.Request) {
@@ -67,9 +68,18 @@ func (s *Server) handleDashWSMessage(r *http.Request, dash *DashConn, message da
 		agentID := strings.TrimSpace(message.AgentID)
 		runID := strings.TrimSpace(message.RunID)
 		dash.mu.Lock()
-		delete(dash.Subscriptions, dashSubscriptionKey(agentID, runID))
+		delete(dash.Subscriptions, dashRunSubscriptionKey(agentID, runID))
 		dash.mu.Unlock()
 		s.sendDash(dash, "run.unsubscribed", map[string]any{"agent_id": agentID, "run_id": runID})
+	case "session.subscribe":
+		s.handleDashSessionSubscribe(r, dash, message)
+	case "session.unsubscribe":
+		agentID := strings.TrimSpace(message.AgentID)
+		sessionID := strings.TrimSpace(message.SessionID)
+		dash.mu.Lock()
+		delete(dash.Subscriptions, dashSessionSubscriptionKey(agentID, sessionID))
+		dash.mu.Unlock()
+		s.sendDash(dash, "session.unsubscribed", map[string]any{"agent_id": agentID, "session_id": sessionID})
 	case "ping":
 		s.sendDash(dash, "pong", map[string]any{"at": time.Now().UTC()})
 	default:
@@ -102,7 +112,7 @@ func (s *Server) handleDashRunSubscribe(r *http.Request, dash *DashConn, message
 	if limit <= 0 || limit > 1000 {
 		limit = 300
 	}
-	subscriptionKey := dashSubscriptionKey(agentID, runID)
+	subscriptionKey := dashRunSubscriptionKey(agentID, runID)
 	dash.mu.Lock()
 	dash.Subscriptions[subscriptionKey] = DashSubscription{AgentID: agentID, RunID: runID, AfterSeq: message.AfterSeq}
 	dash.mu.Unlock()
@@ -173,6 +183,68 @@ func (s *Server) handleDashRunSubscribe(r *http.Request, dash *DashConn, message
 	})
 }
 
+func (s *Server) handleDashSessionSubscribe(r *http.Request, dash *DashConn, message dashWSMessage) {
+	agentID := strings.TrimSpace(message.AgentID)
+	sessionID := strings.TrimSpace(message.SessionID)
+	if agentID == "" || sessionID == "" {
+		s.sendDashError(dash, "missing_session_subscription", "agent_id and session_id are required")
+		return
+	}
+	if _, _, ok := s.authorizeDashWSAgent(r, dash, agentID); !ok {
+		s.sendDashError(dash, "forbidden", "agent does not belong to this user")
+		return
+	}
+	target, exists, err := s.store.SessionTarget(r.Context(), agentID, sessionID)
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "dash session subscribe lookup failed", "dash_id", dash.ID, "agent_id", agentID, "session_id", sessionID, "error", err)
+		s.sendDashError(dash, "session_snapshot_failed", "unable to load session")
+		return
+	}
+	if !exists {
+		s.sendDashError(dash, "session_not_found", "session not found")
+		return
+	}
+	limit := message.Limit
+	if limit <= 0 || limit > 2000 {
+		limit = 500
+	}
+	subscriptionKey := dashSessionSubscriptionKey(agentID, sessionID)
+	dash.mu.Lock()
+	dash.Subscriptions[subscriptionKey] = DashSubscription{AgentID: agentID, SessionID: sessionID}
+	dash.mu.Unlock()
+	removeSubscriptionOnError := true
+	defer func() {
+		if !removeSubscriptionOnError {
+			return
+		}
+		dash.mu.Lock()
+		if current := dash.Subscriptions[subscriptionKey]; current.AgentID == agentID && current.SessionID == sessionID {
+			delete(dash.Subscriptions, subscriptionKey)
+		}
+		dash.mu.Unlock()
+	}()
+	runtimeSessions, err := s.store.ListRuntimeSessions(r.Context(), agentID, sessionID)
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "dash session subscribe runtime sessions failed", "dash_id", dash.ID, "agent_id", agentID, "session_id", sessionID, "error", err)
+		s.sendDashError(dash, "session_snapshot_failed", "unable to load runtime sessions")
+		return
+	}
+	runtimeTimeline, err := s.store.ListSessionRuntimeTimeline(r.Context(), agentID, sessionID, limit)
+	if err != nil {
+		s.log.ErrorContext(r.Context(), "dash session subscribe runtime timeline failed", "dash_id", dash.ID, "agent_id", agentID, "session_id", sessionID, "error", err)
+		s.sendDashError(dash, "session_snapshot_failed", "unable to load runtime timeline")
+		return
+	}
+	removeSubscriptionOnError = false
+	s.sendDash(dash, "session.snapshot", map[string]any{
+		"agent_id":         agentID,
+		"session_id":       sessionID,
+		"project_id":       target.ProjectID,
+		"runtime_sessions": runtimeSessions,
+		"runtime_timeline": runtimeTimeline,
+	})
+}
+
 func (s *Server) authorizeDashWSAgent(r *http.Request, dash *DashConn, agentID string) (DashPrincipal, string, bool) {
 	identity, err := s.store.AgentByID(r.Context(), agentID)
 	if err != nil {
@@ -211,8 +283,12 @@ func (s *Server) sendDashError(dash *DashConn, code, message string) {
 	s.sendDash(dash, "error", map[string]string{"code": code, "message": message})
 }
 
-func dashSubscriptionKey(agentID, runID string) string {
+func dashRunSubscriptionKey(agentID, runID string) string {
 	return strings.TrimSpace(agentID) + "\x00" + strings.TrimSpace(runID)
+}
+
+func dashSessionSubscriptionKey(agentID, sessionID string) string {
+	return strings.TrimSpace(agentID) + "\x00session\x00" + strings.TrimSpace(sessionID)
 }
 
 func maxSeq(left, right uint64) uint64 {

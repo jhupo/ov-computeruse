@@ -38,9 +38,10 @@ type DashConn struct {
 }
 
 type DashSubscription struct {
-	AgentID  string
-	RunID    string
-	AfterSeq uint64
+	AgentID   string
+	RunID     string
+	SessionID string
+	AfterSeq  uint64
 }
 
 type AgentCommandEnvelope struct {
@@ -395,17 +396,50 @@ func dashAcceptsBroadcast(dash *DashConn, data []byte) bool {
 		return true
 	}
 	var event struct {
-		Type    string `json:"type"`
-		AgentID string `json:"agent_id"`
-		Payload struct {
-			RunID string `json:"run_id"`
-			Seq   uint64 `json:"seq"`
-		} `json:"payload"`
+		Type    string         `json:"type"`
+		AgentID string         `json:"agent_id"`
+		Payload map[string]any `json:"payload"`
 	}
 	if json.Unmarshal(data, &event) != nil {
 		return true
 	}
-	if event.Type != "run.event" {
+	switch event.Type {
+	case "run.event":
+		return dashAcceptsRunEventBroadcast(dash, event.AgentID, event.Payload)
+	case "runtime.timeline.updated":
+		return dashAcceptsSessionUpdateBroadcast(dash, event.AgentID, event.Payload)
+	default:
+		return true
+	}
+}
+
+func dashAcceptsRunEventBroadcast(dash *DashConn, agentID string, payload map[string]any) bool {
+	runID, _ := payload["run_id"].(string)
+	sessionID, _ := payload["session_id"].(string)
+	seq := uint64FromPayload(payload["seq"])
+	dash.mu.RLock()
+	subscriptions := make([]DashSubscription, 0, len(dash.Subscriptions))
+	for _, subscription := range dash.Subscriptions {
+		subscriptions = append(subscriptions, subscription)
+	}
+	dash.mu.RUnlock()
+	for _, subscription := range subscriptions {
+		if subscription.AgentID != agentID {
+			continue
+		}
+		if subscription.RunID != "" && subscription.RunID == runID && seq > subscription.AfterSeq {
+			return true
+		}
+		if subscription.SessionID != "" && subscription.SessionID == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
+func dashAcceptsSessionUpdateBroadcast(dash *DashConn, agentID string, payload map[string]any) bool {
+	sessionID, _ := payload["session_id"].(string)
+	if sessionID == "" {
 		return true
 	}
 	dash.mu.RLock()
@@ -415,11 +449,36 @@ func dashAcceptsBroadcast(dash *DashConn, data []byte) bool {
 	}
 	dash.mu.RUnlock()
 	for _, subscription := range subscriptions {
-		if subscription.AgentID == event.AgentID && subscription.RunID == event.Payload.RunID && event.Payload.Seq > subscription.AfterSeq {
+		if subscription.AgentID == agentID && subscription.SessionID == sessionID {
 			return true
 		}
 	}
 	return false
+}
+
+func uint64FromPayload(value any) uint64 {
+	switch typed := value.(type) {
+	case float64:
+		if typed <= 0 {
+			return 0
+		}
+		return uint64(typed)
+	case uint64:
+		return typed
+	case int:
+		if typed <= 0 {
+			return 0
+		}
+		return uint64(typed)
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err != nil || parsed <= 0 {
+			return 0
+		}
+		return uint64(parsed)
+	default:
+		return 0
+	}
 }
 
 func (h *Hub) dispatchCommandLocal(agentID, userID, connectionID string, epoch int64, data []byte) CommandDispatchStatus {
