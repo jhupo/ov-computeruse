@@ -9,6 +9,8 @@ import (
 	"strings"
 )
 
+var ErrProjectNotIndexed = workspaceErr("project_not_indexed", "project is not indexed locally")
+
 type Target struct {
 	Root string
 	Path string
@@ -70,7 +72,7 @@ func (r Resolver) projectRoot(ctx context.Context, projectID string) (string, er
 	}
 	root, err := r.state.ProjectPath(ctx, projectID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", errors.New("project is not indexed locally")
+		return "", ErrProjectNotIndexed
 	}
 	if err != nil {
 		return "", err

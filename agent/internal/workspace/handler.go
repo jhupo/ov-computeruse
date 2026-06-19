@@ -15,14 +15,25 @@ type State interface {
 	ProjectPath(context.Context, string) (string, error)
 }
 
+type IndexRefresher interface {
+	RefreshWorkspaceIndex(context.Context) error
+}
+
 type Handler struct {
-	resolver Resolver
-	fs       Filesystem
-	git      GitStatus
+	resolver  Resolver
+	refresher IndexRefresher
+	fs        Filesystem
+	git       GitStatus
 }
 
 func New(state State) Handler {
 	return Handler{resolver: NewResolver(state), fs: Filesystem{Policy: DefaultPolicy{}}, git: GitStatus{}}
+}
+
+func NewWithRefresher(state State, refresher IndexRefresher) Handler {
+	handler := New(state)
+	handler.refresher = refresher
+	return handler
 }
 
 func FeatureName() string {
@@ -109,12 +120,27 @@ func (h Handler) Handle(ctx context.Context, req protocol.WorkspaceRequest) prot
 }
 
 func (h Handler) resolveTarget(ctx context.Context, operation string, req protocol.WorkspaceRequest) (Target, error) {
+	target, err := h.resolveTargetOnce(ctx, operation, req)
+	if err == nil || h.refresher == nil || !isMissingLocalIndex(err) {
+		return target, err
+	}
+	if refreshErr := h.refresher.RefreshWorkspaceIndex(ctx); refreshErr != nil {
+		return target, errors.Join(err, refreshErr)
+	}
+	return h.resolveTargetOnce(ctx, operation, req)
+}
+
+func (h Handler) resolveTargetOnce(ctx context.Context, operation string, req protocol.WorkspaceRequest) (Target, error) {
 	switch operation {
 	case "git_status", "git_diff":
 		return h.resolver.ResolveGit(ctx, strings.TrimSpace(req.ProjectID), req.Path)
 	default:
 		return h.resolver.Resolve(ctx, strings.TrimSpace(req.ProjectID), req.Path)
 	}
+}
+
+func isMissingLocalIndex(err error) bool {
+	return errors.Is(err, ErrProjectNotIndexed)
 }
 
 func workspaceErrorCode(err error, fallback string) string {

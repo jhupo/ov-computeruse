@@ -23,6 +23,26 @@ func (s fakeState) ProjectPath(context.Context, string) (string, error) {
 	return path, nil
 }
 
+type refreshableState struct {
+	projectID string
+	path      string
+	missing   bool
+	refreshes int
+}
+
+func (s *refreshableState) ProjectPath(_ context.Context, projectID string) (string, error) {
+	if projectID != s.projectID || s.missing {
+		return "", sql.ErrNoRows
+	}
+	return s.path, nil
+}
+
+func (s *refreshableState) RefreshWorkspaceIndex(context.Context) error {
+	s.refreshes++
+	s.missing = false
+	return nil
+}
+
 func TestWorkspaceErrorCodeMapsContextCancellationToTimeout(t *testing.T) {
 	if got := workspaceErrorCode(context.DeadlineExceeded, "fallback"); got != "timeout" {
 		t.Fatalf("deadline code = %q, want timeout", got)
@@ -48,6 +68,22 @@ func TestHandlerListsAndReadsProjectFiles(t *testing.T) {
 	read := handler.Handle(context.Background(), protocol.WorkspaceRequest{RequestID: "req_2", Operation: "read", ProjectID: "project_1", Path: "main.go"})
 	if read.Status != "ok" || read.File == nil || read.File.Content != "package main\n" {
 		t.Fatalf("read response = %+v", read)
+	}
+}
+
+func TestHandlerRefreshesMissingLocalProjectIndex(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := &refreshableState{projectID: "project_1", path: root, missing: true}
+	handler := NewWithRefresher(state, state)
+	resp := handler.Handle(context.Background(), protocol.WorkspaceRequest{RequestID: "req_1", Operation: "read", ProjectID: "project_1", Path: "main.go"})
+	if resp.Status != "ok" || resp.File == nil || resp.File.Content != "package main\n" {
+		t.Fatalf("read response = %+v", resp)
+	}
+	if state.refreshes != 1 {
+		t.Fatalf("refreshes = %d, want 1", state.refreshes)
 	}
 }
 

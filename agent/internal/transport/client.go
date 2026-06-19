@@ -67,7 +67,7 @@ func newClient(identity securestore.Identity, manager *runs.Manager, scanner sca
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Client{
+	client := &Client{
 		identity:          identity,
 		manager:           manager,
 		scanner:           scanner,
@@ -79,9 +79,21 @@ func newClient(identity securestore.Identity, manager *runs.Manager, scanner sca
 		startedAt:         time.Now().UTC(),
 		logger:            logger,
 		dialer:            WebSocketDialer{},
-		workspace:         workspace.New(state),
 		pendingHistoryAck: map[string]chan protocol.HistoryItemsAck{},
 	}
+	client.workspace = workspace.NewWithRefresher(state, workspaceIndexRefresher{refresh: client.refreshWorkspaceIndex})
+	return client
+}
+
+type workspaceIndexRefresher struct {
+	refresh func(context.Context) error
+}
+
+func (r workspaceIndexRefresher) RefreshWorkspaceIndex(ctx context.Context) error {
+	if r.refresh == nil {
+		return nil
+	}
+	return r.refresh(ctx)
 }
 
 func (c *Client) Run(ctx context.Context) error {
@@ -627,120 +639,9 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 			"at":       time.Now().UTC(),
 		})
 	}
-	result, err := c.scanner.Scan(ctx)
+	result, roots, projects, sessions, err := c.refreshIndexSnapshot(ctx)
 	if err != nil {
-		c.recordScan(time.Time{}, err)
 		return err
-	}
-	c.recordScan(time.Now().UTC(), nil)
-	var deleted localstate.DeletedIndex
-	if c.state != nil {
-		var err error
-		deleted, err = c.state.SaveScanResult(ctx, result)
-		if err != nil {
-			return err
-		}
-	}
-	roots := make([]protocol.Root, 0, len(result.Roots))
-	for _, root := range result.Roots {
-		roots = append(roots, protocol.Root{
-			Path:   root.Path,
-			Kind:   root.Kind,
-			Source: root.Source,
-			Exists: root.Exists,
-		})
-	}
-	if err := c.send(ctx, "index.roots", protocol.RootIndex{Roots: roots}); err != nil {
-		return err
-	}
-	projects := make([]protocol.Project, 0, len(result.Projects))
-	for _, project := range result.Projects {
-		projects = append(projects, protocol.Project{
-			ID:           project.ID,
-			Name:         project.Name,
-			Path:         project.Path,
-			LastActiveAt: project.LastActiveAt,
-			HasAgentsMD:  project.HasAgentsMD,
-			GitBranch:    project.GitBranch,
-		})
-	}
-	if err := c.send(ctx, "index.projects", protocol.ProjectIndex{Projects: projects}); err != nil {
-		return err
-	}
-	sessions := make([]protocol.Session, 0, len(result.Sessions))
-	for _, session := range result.Sessions {
-		sessions = append(sessions, protocol.Session{
-			ID:            session.ID,
-			IDSource:      session.IDSource,
-			ProjectID:     session.ProjectID,
-			Title:         session.Title,
-			Path:          session.Path,
-			CWD:           session.CWD,
-			UpdatedAt:     session.UpdatedAt,
-			Size:          session.Size,
-			ContentSHA256: session.ContentSHA256,
-		})
-	}
-	if err := c.send(ctx, "index.sessions", protocol.SessionIndex{Sessions: sessions}); err != nil {
-		return err
-	}
-	runtimeSessions := make([]protocol.RuntimeSession, 0, len(result.RuntimeSessions))
-	for _, session := range result.RuntimeSessions {
-		runtimeSessions = append(runtimeSessions, protocol.RuntimeSession{
-			Runtime:         session.Runtime,
-			ProjectID:       session.ProjectID,
-			SessionID:       session.SessionID,
-			NativeSessionID: session.NativeSessionID,
-			ResumeMode:      session.ResumeMode,
-			Title:           session.Title,
-			CWD:             session.CWD,
-			Model:           session.Model,
-			ApprovalPolicy:  session.ApprovalPolicy,
-			SandboxMode:     session.SandboxMode,
-			ReasoningEffort: session.ReasoningEffort,
-			LastTurnID:      session.LastTurnID,
-			UpdatedAt:       session.UpdatedAt,
-		})
-	}
-	if c.state != nil {
-		localRuntimeSessions, err := c.state.RuntimeSessions(ctx)
-		if err != nil {
-			return err
-		}
-		for _, session := range localRuntimeSessions {
-			runtimeSessions = append(runtimeSessions, protocol.RuntimeSession{
-				Runtime:         session.Runtime,
-				ProjectID:       session.ProjectID,
-				SessionID:       session.SessionID,
-				NativeSessionID: session.NativeSessionID,
-				ResumeMode:      session.ResumeMode,
-				LastRunID:       session.LastRunID,
-				Title:           session.Title,
-				CWD:             session.CWD,
-				Model:           session.Model,
-				Profile:         session.Profile,
-				ApprovalPolicy:  session.ApprovalPolicy,
-				SandboxMode:     session.SandboxMode,
-				ReasoningEffort: session.ReasoningEffort,
-				LastTurnID:      session.LastTurnID,
-				LastItemIndex:   session.LastItemIndex,
-				UpdatedAt:       session.UpdatedAt,
-			})
-		}
-	}
-	runtimeSessions = uniqueRuntimeSessions(runtimeSessions)
-	if len(runtimeSessions) > 0 {
-		if err := c.send(ctx, "index.runtime_sessions", protocol.RuntimeSessionIndex{RuntimeSessions: runtimeSessions}); err != nil {
-			return err
-		}
-	}
-	if len(deleted.Projects) > 0 || len(deleted.Sessions) > 0 {
-		if err := c.send(ctx, "index.deleted", protocol.DeletedIndex{
-			Projects: protocolDeletedRefs(deleted.Projects),
-			Sessions: protocolDeletedRefs(deleted.Sessions),
-		}); err != nil {
-			return err
-		}
 	}
 	for _, session := range result.Sessions {
 		if err := c.uploadHistoryItems(ctx, session); err != nil {
@@ -749,9 +650,9 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 	}
 	if !c.uploadHistory {
 		return c.send(ctx, "index.updated", map[string]any{
-			"roots":          len(roots),
-			"projects":       len(projects),
-			"sessions":       len(sessions),
+			"roots":          roots,
+			"projects":       projects,
+			"sessions":       sessions,
 			"history_upload": false,
 			"at":             time.Now().UTC(),
 		})
@@ -793,11 +694,164 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 		}
 	}
 	return c.send(ctx, "index.updated", map[string]any{
-		"roots":    len(roots),
-		"projects": len(projects),
-		"sessions": len(sessions),
+		"roots":    roots,
+		"projects": projects,
+		"sessions": sessions,
 		"at":       time.Now().UTC(),
 	})
+}
+
+func (c *Client) refreshWorkspaceIndex(ctx context.Context) error {
+	if c.noScan {
+		return nil
+	}
+	_, roots, projects, sessions, err := c.refreshIndexSnapshot(ctx)
+	if err != nil {
+		return err
+	}
+	return c.send(ctx, "index.updated", map[string]any{
+		"roots":          roots,
+		"projects":       projects,
+		"sessions":       sessions,
+		"history_upload": false,
+		"source":         "workspace.request",
+		"at":             time.Now().UTC(),
+	})
+}
+
+func (c *Client) refreshIndexSnapshot(ctx context.Context) (codexscan.Result, int, int, int, error) {
+	result, deleted, err := c.scanAndSaveIndex(ctx)
+	if err != nil {
+		return codexscan.Result{}, 0, 0, 0, err
+	}
+	roots, projects, sessions, err := c.uploadIndexSnapshot(ctx, result, deleted)
+	if err != nil {
+		return codexscan.Result{}, 0, 0, 0, err
+	}
+	return result, roots, projects, sessions, nil
+}
+
+func (c *Client) scanAndSaveIndex(ctx context.Context) (codexscan.Result, localstate.DeletedIndex, error) {
+	result, err := c.scanner.Scan(ctx)
+	if err != nil {
+		c.recordScan(time.Time{}, err)
+		return codexscan.Result{}, localstate.DeletedIndex{}, err
+	}
+	c.recordScan(time.Now().UTC(), nil)
+	var deleted localstate.DeletedIndex
+	if c.state != nil {
+		var err error
+		deleted, err = c.state.SaveScanResult(ctx, result)
+		if err != nil {
+			return codexscan.Result{}, localstate.DeletedIndex{}, err
+		}
+	}
+	return result, deleted, nil
+}
+
+func (c *Client) uploadIndexSnapshot(ctx context.Context, result codexscan.Result, deleted localstate.DeletedIndex) (int, int, int, error) {
+	roots := make([]protocol.Root, 0, len(result.Roots))
+	for _, root := range result.Roots {
+		roots = append(roots, protocol.Root{
+			Path:   root.Path,
+			Kind:   root.Kind,
+			Source: root.Source,
+			Exists: root.Exists,
+		})
+	}
+	if err := c.send(ctx, "index.roots", protocol.RootIndex{Roots: roots}); err != nil {
+		return 0, 0, 0, err
+	}
+	projects := make([]protocol.Project, 0, len(result.Projects))
+	for _, project := range result.Projects {
+		projects = append(projects, protocol.Project{
+			ID:           project.ID,
+			Name:         project.Name,
+			Path:         project.Path,
+			LastActiveAt: project.LastActiveAt,
+			HasAgentsMD:  project.HasAgentsMD,
+			GitBranch:    project.GitBranch,
+		})
+	}
+	if err := c.send(ctx, "index.projects", protocol.ProjectIndex{Projects: projects}); err != nil {
+		return 0, 0, 0, err
+	}
+	sessions := make([]protocol.Session, 0, len(result.Sessions))
+	for _, session := range result.Sessions {
+		sessions = append(sessions, protocol.Session{
+			ID:            session.ID,
+			IDSource:      session.IDSource,
+			ProjectID:     session.ProjectID,
+			Title:         session.Title,
+			Path:          session.Path,
+			CWD:           session.CWD,
+			UpdatedAt:     session.UpdatedAt,
+			Size:          session.Size,
+			ContentSHA256: session.ContentSHA256,
+		})
+	}
+	if err := c.send(ctx, "index.sessions", protocol.SessionIndex{Sessions: sessions}); err != nil {
+		return 0, 0, 0, err
+	}
+	runtimeSessions := make([]protocol.RuntimeSession, 0, len(result.RuntimeSessions))
+	for _, session := range result.RuntimeSessions {
+		runtimeSessions = append(runtimeSessions, protocol.RuntimeSession{
+			Runtime:         session.Runtime,
+			ProjectID:       session.ProjectID,
+			SessionID:       session.SessionID,
+			NativeSessionID: session.NativeSessionID,
+			ResumeMode:      session.ResumeMode,
+			Title:           session.Title,
+			CWD:             session.CWD,
+			Model:           session.Model,
+			ApprovalPolicy:  session.ApprovalPolicy,
+			SandboxMode:     session.SandboxMode,
+			ReasoningEffort: session.ReasoningEffort,
+			LastTurnID:      session.LastTurnID,
+			UpdatedAt:       session.UpdatedAt,
+		})
+	}
+	if c.state != nil {
+		localRuntimeSessions, err := c.state.RuntimeSessions(ctx)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		for _, session := range localRuntimeSessions {
+			runtimeSessions = append(runtimeSessions, protocol.RuntimeSession{
+				Runtime:         session.Runtime,
+				ProjectID:       session.ProjectID,
+				SessionID:       session.SessionID,
+				NativeSessionID: session.NativeSessionID,
+				ResumeMode:      session.ResumeMode,
+				LastRunID:       session.LastRunID,
+				Title:           session.Title,
+				CWD:             session.CWD,
+				Model:           session.Model,
+				Profile:         session.Profile,
+				ApprovalPolicy:  session.ApprovalPolicy,
+				SandboxMode:     session.SandboxMode,
+				ReasoningEffort: session.ReasoningEffort,
+				LastTurnID:      session.LastTurnID,
+				LastItemIndex:   session.LastItemIndex,
+				UpdatedAt:       session.UpdatedAt,
+			})
+		}
+	}
+	runtimeSessions = uniqueRuntimeSessions(runtimeSessions)
+	if len(runtimeSessions) > 0 {
+		if err := c.send(ctx, "index.runtime_sessions", protocol.RuntimeSessionIndex{RuntimeSessions: runtimeSessions}); err != nil {
+			return 0, 0, 0, err
+		}
+	}
+	if len(deleted.Projects) > 0 || len(deleted.Sessions) > 0 {
+		if err := c.send(ctx, "index.deleted", protocol.DeletedIndex{
+			Projects: protocolDeletedRefs(deleted.Projects),
+			Sessions: protocolDeletedRefs(deleted.Sessions),
+		}); err != nil {
+			return 0, 0, 0, err
+		}
+	}
+	return len(roots), len(projects), len(sessions), nil
 }
 
 func protocolDeletedRefs(items []localstate.DeletedRef) []protocol.DeletedRef {

@@ -285,6 +285,55 @@ func TestRefreshIndexCommandAckIsPersistedAndReplayed(t *testing.T) {
 	}
 }
 
+func TestWorkspaceRequestRefreshesIndexWithoutHistoryUpload(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := localstate.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open state: %v", err)
+	}
+	defer state.Close()
+
+	conn := newMemoryConn()
+	client := newClient(
+		securestore.Identity{AgentID: "agent_1", DeviceID: "device_1", AgentSecret: "secret", ServerURL: "https://server.test"},
+		nil,
+		staticScanner{result: codexscan.Result{
+			Projects: []codexscan.Project{{ID: "project_1", Name: "repo", Path: root, LastActiveAt: time.Now().UTC()}},
+			Sessions: []codexscan.Session{{ID: "session_1", ProjectID: "project_1", Path: filepath.Join(root, "history.jsonl"), CWD: root, UpdatedAt: time.Now().UTC()}},
+		}},
+		protocolDevice(),
+		defaultConfig(),
+		state,
+		false,
+		true,
+		nil,
+	)
+	client.setConn(conn)
+
+	request := protocol.WorkspaceRequest{RequestID: "wsreq_1", Operation: "read", ProjectID: "project_1", Path: "main.go"}
+	go client.handleWorkspaceRequest(ctx, request)
+
+	waitForWrittenType(t, conn, "index.roots")
+	waitForWrittenType(t, conn, "index.projects")
+	waitForWrittenType(t, conn, "index.sessions")
+	indexUpdated := decryptEnvelopeData[map[string]any](t, waitForWrittenEnvelope(t, conn, "index.updated"))
+	if indexUpdated["source"] != "workspace.request" || indexUpdated["history_upload"] != false {
+		t.Fatalf("index updated payload = %#v", indexUpdated)
+	}
+	resp := decryptEnvelopeData[protocol.WorkspaceResponse](t, waitForWrittenEnvelope(t, conn, "workspace.response"))
+	if resp.Status != "ok" || resp.File == nil || resp.File.Content != "package main\n" {
+		t.Fatalf("workspace response = %+v", resp)
+	}
+	assertNoWrittenType(t, conn, "history.items", 150*time.Millisecond)
+	assertNoWrittenType(t, conn, "history.chunk", 150*time.Millisecond)
+}
+
 func TestApprovalDecisionCommandAckIsPersistedAndReplayed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
