@@ -15,7 +15,7 @@ type Config struct {
 	Sub2APILoginUpstream string
 	PostgresURL          string
 	RedisURL             string
-	InstallSecret        string
+	Token                string
 	DashToken            string
 	BindUsersJSON        string
 	ReadTimeout          time.Duration
@@ -30,7 +30,7 @@ func Load() (Config, error) {
 		Sub2APILoginUpstream: strings.TrimRight(os.Getenv("OV_SERVER_SUB2API_LOGIN_UPSTREAM"), "/"),
 		PostgresURL:          os.Getenv("OV_SERVER_POSTGRES_URL"),
 		RedisURL:             firstEnv("OV_SERVER_REDIS_URL", "redis://localhost:6379/0"),
-		InstallSecret:        firstNonEmpty(os.Getenv("OV_COMPUTERUSE_INSTALL_SECRET"), os.Getenv("OV_SERVER_INSTALL_SECRET")),
+		Token:                os.Getenv("OV_COMPUTERUSE_TOKEN"),
 		DashToken:            os.Getenv("OV_SERVER_DASH_TOKEN"),
 		BindUsersJSON:        os.Getenv("OV_SERVER_BIND_USERS_JSON"),
 		ReadTimeout:          15 * time.Second,
@@ -56,8 +56,8 @@ func Load() (Config, error) {
 	if strings.TrimSpace(cfg.RedisURL) == "" {
 		return Config{}, errors.New("OV_SERVER_REDIS_URL is required")
 	}
-	if strings.TrimSpace(cfg.InstallSecret) == "" {
-		return Config{}, errors.New("OV_COMPUTERUSE_INSTALL_SECRET is required")
+	if strings.TrimSpace(cfg.Token) == "" {
+		return Config{}, errors.New("OV_COMPUTERUSE_TOKEN is required")
 	}
 	return cfg, nil
 }
@@ -67,13 +67,4 @@ func firstEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }

@@ -17,8 +17,8 @@ type EncryptedPayload struct {
 	Ciphertext       string `json:"ciphertext"`
 }
 
-func EncryptForServer(installSecret string, plaintext []byte) (EncryptedPayload, error) {
-	key, err := installSecretKey(installSecret)
+func EncryptForServer(token string, plaintext []byte) (EncryptedPayload, error) {
+	key, err := tokenKey(token)
 	if err != nil {
 		return EncryptedPayload{}, err
 	}
@@ -37,19 +37,19 @@ func EncryptForServer(installSecret string, plaintext []byte) (EncryptedPayload,
 
 	ciphertext := aead.Seal(nil, nonce, plaintext, bindAAD())
 	return EncryptedPayload{
-		Algorithm:        "OV-INSTALL-SECRET+A256GCM",
+		Algorithm:        "OV-TOKEN+A256GCM",
 		ContentAlgorithm: "A256GCM",
 		Nonce:            base64.StdEncoding.EncodeToString(nonce),
 		Ciphertext:       base64.StdEncoding.EncodeToString(ciphertext),
 	}, nil
 }
 
-func installSecretKey(secret string) ([]byte, error) {
-	secret = strings.TrimSpace(secret)
-	if secret == "" {
-		return nil, errors.New("install secret is required")
+func tokenKey(token string) ([]byte, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, errors.New("token is required")
 	}
-	hash := sha256.Sum256([]byte("ov-computeruse/install-secret/v1\x00" + secret))
+	hash := sha256.Sum256([]byte("ov-computeruse/token/v1\x00" + token))
 	return hash[:], nil
 }
 

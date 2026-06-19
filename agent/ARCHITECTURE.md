@@ -18,7 +18,7 @@ agent 不接受公网入站连接，不绕过 server 做设备策略。用量和
 
 安装组件在本地收集用户名和密码，不打开浏览器。agent 从本机 Codex auth/config 提取 `base_url`、`api_key`、模型和来源信息，生成或复用本机 `install_id`，采集设备画像，然后向 server 发起绑定。
 
-绑定明文只在本机内存中组装，包含用户凭据、Codex credential、设备画像、请求时间和随机 nonce。传输前使用部署级安装密钥派生 AES-256-GCM key 加密。agent 编译时注入 server URL 和 `OV_COMPUTERUSE_INSTALL_SECRET`，server 运行时使用同一个安装密钥解密绑定请求。
+绑定明文只在本机内存中组装，包含用户凭据、Codex credential、设备画像、请求时间和随机 nonce。传输前使用部署级 token 派生 AES-256-GCM key 加密。agent 编译时注入 server URL 和 `OV_COMPUTERUSE_TOKEN`，server 运行时使用同一个 token 解密绑定请求。
 
 server 解密后校验 `requested_at` 是否在允许时间窗口内，并用 Redis 记录 nonce，拒绝重放的绑定 payload。随后 server 完成用户名密码校验、用户 key 可用性校验、Codex key fingerprint 与 base URL fingerprint 校验、设备策略校验，并返回 `agent_id`、`workspace_id`、`device_id`、`agent_secret`。
 
@@ -83,6 +83,6 @@ Codex CLI 负责写真实本地历史。run 完成、失败或停止后，agent 
 CI 从 secret 注入安装包需要的公开连接地址和部署级安装密钥：
 
 - `OV_COMPUTERUSE_SERVER_URL`
-- `OV_COMPUTERUSE_INSTALL_SECRET`
+- `OV_COMPUTERUSE_TOKEN`
 
 用户 key、agent secret 都不能进入构建产物。Windows job 产出 Inno `.exe`，macOS job 产出 `.pkg`，Linux job 产出 `.deb/.rpm`，同时保留裸二进制归档用于 CLI installer。

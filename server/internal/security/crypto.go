@@ -16,7 +16,7 @@ type EncryptedPayload struct {
 	Ciphertext       string `json:"ciphertext"`
 }
 
-func DecryptFromAgent(installSecret string, payload EncryptedPayload) ([]byte, error) {
+func DecryptFromAgent(token string, payload EncryptedPayload) ([]byte, error) {
 	nonce, err := base64.StdEncoding.DecodeString(payload.Nonce)
 	if err != nil {
 		return nil, err
@@ -25,7 +25,7 @@ func DecryptFromAgent(installSecret string, payload EncryptedPayload) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
-	key, err := installSecretKey(installSecret)
+	key, err := tokenKey(token)
 	if err != nil {
 		return nil, err
 	}
@@ -40,12 +40,12 @@ func DecryptFromAgent(installSecret string, payload EncryptedPayload) ([]byte, e
 	return aead.Open(nil, nonce, ciphertext, bindAAD())
 }
 
-func installSecretKey(secret string) ([]byte, error) {
-	secret = strings.TrimSpace(secret)
-	if secret == "" {
-		return nil, errors.New("install secret is required")
+func tokenKey(token string) ([]byte, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, errors.New("token is required")
 	}
-	hash := sha256.Sum256([]byte("ov-computeruse/install-secret/v1\x00" + secret))
+	hash := sha256.Sum256([]byte("ov-computeruse/token/v1\x00" + token))
 	return hash[:], nil
 }
 

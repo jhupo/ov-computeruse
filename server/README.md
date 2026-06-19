@@ -6,7 +6,7 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 
 - Postgres stores users, user keys, devices, agents, Codex project/session indexes, commands, approvals, audit logs, and run events.
 - Redis stores dash sessions, short-lived online agent state, and cross-instance pub/sub for dash broadcasts, agent command routing, and forced agent disconnects.
-- The Docker image is stateless. Database URLs, install secrets, and runtime tokens are runtime environment, not baked into the image.
+- The Docker image is stateless. Database URLs, deployment tokens, and runtime tokens are runtime environment, not baked into the image.
 
 ## Required environment
 
@@ -15,7 +15,7 @@ Postgres + Redis backed multi-user control plane for local ov-computeruse agents
 - `OV_SERVER_SUB2API_LOGIN_UPSTREAM`, base URL for the sub2api login upstream used by dash. Server posts `POST <upstream>/api/login`.
 - `OV_SERVER_POSTGRES_URL`
 - `OV_SERVER_REDIS_URL`
-- `OV_COMPUTERUSE_INSTALL_SECRET`
+- `OV_COMPUTERUSE_TOKEN`
 - `OV_SERVER_DASH_TOKEN`, optional internal/admin bearer token; normal users should use `/api/dash/login`
 - `OV_SERVER_BIND_USERS_JSON`, optional bootstrap users for local/dev binding
 
@@ -74,7 +74,7 @@ Expected response:
 
 ## Endpoints
 
-- `POST /api/agents/bind`: installer bind flow, decrypts agent payload with `OV_COMPUTERUSE_INSTALL_SECRET`.
+- `POST /api/agents/bind`: installer bind flow, decrypts agent payload with `OV_COMPUTERUSE_TOKEN`.
 - `GET /ws/agent`: outbound agent websocket, bearer token is the per-agent secret.
 - `POST /api/dash/login`: username/password login, returns a short-lived dash session token.
 - `GET /api/dash/me`: return the current dash principal.
@@ -111,7 +111,7 @@ Expected response:
 
 The image serves the embedded dash build at `/`. Unknown non-API GET/HEAD paths fall back to `index.html` for SPA routing. GitHub Actions and the Dockerfile build `dash/dist` first, copy it into the server source tree during the image build, and embed it into the `ov-server` binary.
 
-Agent websocket envelopes encrypt `data` with AES-256-GCM derived from the per-agent secret and then sign the encrypted envelope with HMAC-SHA256. Bind requests use the deployment install secret because they happen before an agent secret exists.
+Agent websocket envelopes encrypt `data` with AES-256-GCM derived from the per-agent secret and then sign the encrypted envelope with HMAC-SHA256. Bind requests use the deployment token because they happen before an agent secret exists.
 
 ## Dash websocket
 
@@ -145,5 +145,5 @@ Runtime secrets are set on the deployed container, not at image build time:
 
 - `OV_SERVER_PUBLIC_URL`: public HTTPS service URL used by agent installers.
 - `OV_SERVER_SUB2API_LOGIN_UPSTREAM`: sub2api login upstream base URL.
-- `OV_COMPUTERUSE_INSTALL_SECRET`: deployment install secret shared with the agent package.
+- `OV_COMPUTERUSE_TOKEN`: deployment bind token shared with the agent package.
 - `OV_SERVER_DASH_TOKEN`: optional internal/admin bearer token.

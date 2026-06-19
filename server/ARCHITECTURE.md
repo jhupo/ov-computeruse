@@ -62,7 +62,7 @@ Redis 是低延迟协调层：
 
 ## 安全模型
 
-安装绑定 payload 使用部署级 `OV_COMPUTERUSE_INSTALL_SECRET` 派生 AES-256-GCM key 加密。agent 包内包含 server URL 和安装密钥，server 运行时配置同一个安装密钥。
+安装绑定 payload 使用部署级 `OV_COMPUTERUSE_TOKEN` 派生 AES-256-GCM key 加密。agent 包内包含 server URL 和 token，server 运行时配置同一个 token。
 
 绑定明文包含 `requested_at` 和随机 `nonce`。server 只接受 5 分钟窗口内的请求，并使用 Redis `SETNX + TTL` 记录 nonce，防止加密 payload 被重放。
 

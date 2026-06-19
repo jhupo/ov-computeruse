@@ -1,7 +1,7 @@
 package buildinfo
 
 var (
-	Version       = "dev"
-	ServerURL     = ""
-	InstallSecret = ""
+	Version   = "dev"
+	ServerURL = ""
+	Token     = ""
 )

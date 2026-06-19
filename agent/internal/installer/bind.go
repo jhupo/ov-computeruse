@@ -64,9 +64,9 @@ type errorResponse struct {
 }
 
 type Binder struct {
-	ServerURL     string
-	InstallSecret string
-	HTTPClient    *http.Client
+	ServerURL  string
+	Token      string
+	HTTPClient *http.Client
 }
 
 func (b Binder) Bind(ctx context.Context, username, password string, device DeviceProfile, credential Credential) (securestore.Identity, error) {
@@ -95,7 +95,7 @@ func (b Binder) Bind(ctx context.Context, username, password string, device Devi
 	if err != nil {
 		return securestore.Identity{}, err
 	}
-	encrypted, err := security.EncryptForServer(b.InstallSecret, raw)
+	encrypted, err := security.EncryptForServer(b.Token, raw)
 	if err != nil {
 		return securestore.Identity{}, err
 	}

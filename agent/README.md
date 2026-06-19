@@ -92,6 +92,6 @@ GitHub Actions builds:
 Required repository secrets:
 
 - `OV_COMPUTERUSE_SERVER_URL`
-- `OV_COMPUTERUSE_INSTALL_SECRET`
+- `OV_COMPUTERUSE_TOKEN`
 
-The build injects the server URL and install shared secret. User keys and per-device `agent_secret` are never included in the package.
+The build injects the server URL and deployment bind token. User keys and per-device `agent_secret` are never included in the package.

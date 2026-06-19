@@ -39,7 +39,7 @@ func (s *Server) handleBind(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_json", "invalid bind payload")
 		return
 	}
-	data, err := security.DecryptFromAgent(s.cfg.InstallSecret, req.Payload)
+	data, err := security.DecryptFromAgent(s.cfg.Token, req.Payload)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_encrypted_payload", "invalid encrypted payload")
 		return
