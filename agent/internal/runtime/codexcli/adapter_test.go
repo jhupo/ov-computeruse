@@ -182,11 +182,11 @@ func TestReadStdoutMapsCodexToolItems(t *testing.T) {
 	adapter := New(Config{})
 	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1"}
 	input := strings.Join([]string{
-		`{"type":"item.started","item":{"id":"cmd","type":"command_execution","command":"git status","status":"running"}}`,
-		`{"type":"item.updated","item":{"id":"cmd","type":"command_execution","command":"git status","aggregated_output":"still running","status":"running"}}`,
-		`{"type":"item.completed","item":{"id":"cmd","type":"command_execution","command":"git status","aggregated_output":"clean","exit_code":0,"status":"succeeded"}}`,
-		`{"type":"item.completed","item":{"id":"mcp","type":"mcp_tool_call","server":"fs","tool":"read","arguments":{"path":"README.md"},"result":{"content":"ok"},"status":"succeeded"}}`,
-		`{"type":"item.completed","item":{"id":"file","type":"file_change","changes":[{"path":"a.go","kind":"modified"}],"status":"succeeded"}}`,
+		`{"type":"item.started","item":{"id":"cmd","type":"command_execution","command":"git status","aggregated_output":"","status":"in_progress"}}`,
+		`{"type":"item.updated","item":{"id":"cmd","type":"command_execution","command":"git status","aggregated_output":"still running","status":"in_progress"}}`,
+		`{"type":"item.completed","item":{"id":"cmd","type":"command_execution","command":"git status","aggregated_output":"clean","exit_code":0,"status":"completed"}}`,
+		`{"type":"item.completed","item":{"id":"mcp","type":"mcp_tool_call","server":"fs","tool":"read","arguments":{"path":"README.md"},"result":{"content":[{"type":"text","text":"ok"}],"_meta":{"source":"fixture"},"structured_content":{"value":"ok"}},"error":null,"status":"completed"}}`,
+		`{"type":"item.completed","item":{"id":"file","type":"file_change","changes":[{"path":"a.go","kind":"update"}],"status":"completed"}}`,
 		`{"type":"item.updated","item":{"id":"todo","type":"todo_list","items":[{"text":"ship","completed":false}]}}`,
 		`{"type":"turn.failed","error":{"message":"boom"}}`,
 	}, "\n")
@@ -222,7 +222,37 @@ func TestReadStdoutMapsCodexToolItems(t *testing.T) {
 	assertPayloadString(t, sink.events[2].Payload, "tool_call_id", "cmd")
 	assertPayloadString(t, sink.events[4].Payload, "output", "clean")
 	assertPayloadString(t, sink.events[6].Payload, "tool", "read")
+	assertPayloadString(t, sink.events[6].Payload, "output", `{"value":"ok"}`)
 	assertPayloadString(t, sink.events[10].Payload, "message", "boom")
+}
+
+func TestReadStdoutMapsMcpNullResultToErrorMessage(t *testing.T) {
+	adapter := New(Config{})
+	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1"}
+	input := `{"type":"item.completed","item":{"id":"mcp","type":"mcp_tool_call","server":"fs","tool":"write","arguments":{"path":"README.md"},"result":null,"error":{"message":"permission denied"},"status":"failed"}}`
+	sink := &captureSink{}
+	if err := adapter.readStdout(context.Background(), strings.NewReader(input), command, localstate.CommandContext{}, sink, &completionSignal{}); err != nil && err != io.EOF {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if len(sink.events) != 2 {
+		t.Fatalf("event count = %d, want 2: %+v", len(sink.events), sink.events)
+	}
+	assertPayloadString(t, sink.events[0].Payload, "error_message", "permission denied")
+	assertPayloadString(t, sink.events[0].Payload, "output", "permission denied")
+}
+
+func TestReadStdoutMapsErrorItemMessage(t *testing.T) {
+	adapter := New(Config{})
+	command := protocol.Command{CommandID: "cmd_1", RunID: "run_1"}
+	input := `{"type":"item.completed","item":{"id":"err","type":"error","message":"non fatal problem"}}`
+	sink := &captureSink{}
+	if err := adapter.readStdout(context.Background(), strings.NewReader(input), command, localstate.CommandContext{}, sink, &completionSignal{}); err != nil && err != io.EOF {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if len(sink.events) != 1 {
+		t.Fatalf("event count = %d, want 1: %+v", len(sink.events), sink.events)
+	}
+	assertPayloadString(t, sink.events[0].Payload, "message", "non fatal problem")
 }
 
 func TestReadStdoutMapsCodexWebAndCollabToolItems(t *testing.T) {

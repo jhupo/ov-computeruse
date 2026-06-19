@@ -66,7 +66,13 @@ func (m *eventMapper) emitItem(ctx context.Context, command protocol.Command, ph
 	case "mcp_approval_request", "exec_approval_request", "apply_patch_approval_request", "elicitation_request":
 		return emitUnsupportedApproval(ctx, command, item.Type, item.Raw, sink)
 	case "error":
-		return emit(ctx, sink, command, "run.status", map[string]any{"status": "codex.item.error", "phase": phase, "error": rawJSON(item.Error), "item": rawJSON(item.Raw)})
+		return emit(ctx, sink, command, "run.status", map[string]any{
+			"status":  "codex.item.error",
+			"phase":   phase,
+			"message": firstNonEmpty(item.Message, item.McpError.Message, rawText(item.Error)),
+			"error":   rawJSON(item.Error),
+			"item":    rawJSON(item.Raw),
+		})
 	case "web_search":
 		return emitTool(ctx, command, phase, item, "web_search", webSearchPayload(item), sink)
 	case "collab_tool_call":
@@ -233,12 +239,24 @@ func commandExecutionPayload(item execItem) map[string]any {
 
 func mcpToolPayload(item execItem) map[string]any {
 	return map[string]any{
-		"server":    item.Server,
-		"tool":      item.Tool,
-		"arguments": rawJSON(item.Arguments),
-		"output":    firstNonEmpty(rawText(item.Result), rawText(item.Error), item.Output, item.Text),
-		"result":    rawJSON(item.Result),
-		"error":     rawJSON(item.Error),
+		"server":             item.Server,
+		"tool":               item.Tool,
+		"arguments":          rawJSON(item.Arguments),
+		"content":            rawJSON(item.McpResult.Content),
+		"meta":               rawJSON(item.McpResult.Meta),
+		"structured_content": rawJSON(item.McpResult.StructuredContent),
+		"error_message":      item.McpError.Message,
+		"output": firstNonEmpty(
+			item.Output,
+			item.Text,
+			item.McpError.Message,
+			rawText(item.McpResult.StructuredContent),
+			rawText(item.McpResult.Content),
+			rawText(item.Result),
+			rawText(item.Error),
+		),
+		"result": rawJSON(item.Result),
+		"error":  rawJSON(item.Error),
 	}
 }
 
@@ -291,7 +309,7 @@ func hasToolOutput(payload map[string]any) bool {
 }
 
 func rawText(raw json.RawMessage) string {
-	if len(raw) == 0 {
+	if len(raw) == 0 || isJSONNull(raw) {
 		return ""
 	}
 	return string(raw)

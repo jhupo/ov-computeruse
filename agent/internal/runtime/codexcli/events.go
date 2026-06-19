@@ -27,10 +27,21 @@ type execError struct {
 	Message string `json:"message,omitempty"`
 }
 
+type mcpResult struct {
+	Content           json.RawMessage `json:"content,omitempty"`
+	Meta              json.RawMessage `json:"_meta,omitempty"`
+	StructuredContent json.RawMessage `json:"structured_content,omitempty"`
+}
+
+type mcpError struct {
+	Message string `json:"message,omitempty"`
+}
+
 type execItem struct {
 	ID                string          `json:"id,omitempty"`
 	Type              string          `json:"type,omitempty"`
 	Text              string          `json:"text,omitempty"`
+	Message           string          `json:"message,omitempty"`
 	Summary           string          `json:"summary,omitempty"`
 	Name              string          `json:"name,omitempty"`
 	Server            string          `json:"server,omitempty"`
@@ -46,7 +57,9 @@ type execItem struct {
 	ExitCode          *int            `json:"exit_code,omitempty"`
 	Arguments         json.RawMessage `json:"arguments,omitempty"`
 	Result            json.RawMessage `json:"result,omitempty"`
+	McpResult         mcpResult       `json:"-"`
 	Error             json.RawMessage `json:"error,omitempty"`
+	McpError          mcpError        `json:"-"`
 	Changes           json.RawMessage `json:"changes,omitempty"`
 	Items             json.RawMessage `json:"items,omitempty"`
 	ReceiverThreadIDs json.RawMessage `json:"receiver_thread_ids,omitempty"`
@@ -121,12 +134,22 @@ func readStderr(ctx context.Context, stderr io.Reader, command protocol.Command,
 func decodeItem(raw json.RawMessage) execItem {
 	item := execItem{Raw: append(json.RawMessage(nil), raw...)}
 	_ = json.Unmarshal(raw, &item)
+	if !isJSONNull(item.Result) {
+		_ = json.Unmarshal(item.Result, &item.McpResult)
+	}
+	if !isJSONNull(item.Error) {
+		_ = json.Unmarshal(item.Error, &item.McpError)
+	}
 	return item
 }
 
 func rawJSON(raw json.RawMessage) json.RawMessage {
-	if len(raw) == 0 {
+	if len(raw) == 0 || isJSONNull(raw) {
 		return nil
 	}
 	return append(json.RawMessage(nil), raw...)
+}
+
+func isJSONNull(raw json.RawMessage) bool {
+	return strings.EqualFold(strings.TrimSpace(string(raw)), "null")
 }
