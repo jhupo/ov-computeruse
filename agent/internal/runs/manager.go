@@ -252,8 +252,16 @@ func (m *Manager) start(ctx context.Context, command protocol.Command) protocol.
 	m.active[command.RunID] = &activeRun{command: command, cancel: cancel, state: StateStarting, approvals: map[string]chan protocol.ApprovalDecision{}}
 	m.mu.Unlock()
 
+	if err := m.emitRunStarted(ctx, command); err != nil {
+		m.mu.Lock()
+		delete(m.active, command.RunID)
+		m.mu.Unlock()
+		cancel()
+		return m.remember(protocol.Ack{CommandID: command.CommandID, RunID: command.RunID, Status: "rejected", Message: err.Error(), At: time.Now().UTC()})
+	}
+	ack := m.remember(protocol.Ack{CommandID: command.CommandID, RunID: command.RunID, Status: "ok", Message: "run accepted", At: time.Now().UTC()})
 	go m.execute(runCtx, command)
-	return m.remember(protocol.Ack{CommandID: command.CommandID, RunID: command.RunID, Status: "ok", Message: "run accepted", At: time.Now().UTC()})
+	return ack
 }
 
 func (m *Manager) AwaitApproval(ctx context.Context, request protocol.ApprovalRequest) (protocol.ApprovalDecision, error) {
@@ -356,13 +364,6 @@ func (m *Manager) stop(ctx context.Context, command protocol.Command) protocol.A
 
 func (m *Manager) execute(ctx context.Context, command protocol.Command) {
 	m.setState(command.RunID, StateRunning)
-	_ = m.Emit(ctx, protocol.RunEvent{
-		RunID:     command.RunID,
-		CommandID: command.CommandID,
-		ProjectID: command.ProjectID,
-		SessionID: command.SessionID,
-		Kind:      "run.started",
-	})
 	if prompt := commandPrompt(command); prompt != "" {
 		_ = m.Emit(ctx, protocol.RunEvent{
 			RunID:     command.RunID,
@@ -411,6 +412,16 @@ func (m *Manager) execute(ctx context.Context, command protocol.Command) {
 	m.mu.Lock()
 	delete(m.active, command.RunID)
 	m.mu.Unlock()
+}
+
+func (m *Manager) emitRunStarted(ctx context.Context, command protocol.Command) error {
+	return m.Emit(ctx, protocol.RunEvent{
+		RunID:     command.RunID,
+		CommandID: command.CommandID,
+		ProjectID: command.ProjectID,
+		SessionID: command.SessionID,
+		Kind:      "run.started",
+	})
 }
 
 func commandPrompt(command protocol.Command) string {
