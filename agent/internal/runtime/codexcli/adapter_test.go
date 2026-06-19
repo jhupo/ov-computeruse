@@ -38,7 +38,7 @@ func TestBuildArgsForNewSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build args: %v", err)
 	}
-	want := []string{"exec", "--json", "--skip-git-repo-check", "-c", "approval_policy=never", "-C", `C:\repo`, "-"}
+	want := []string{"exec", "-C", `C:\repo`, "--json", "--skip-git-repo-check", "-c", "approval_policy=never", "-"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", args, want)
 	}
@@ -53,7 +53,7 @@ func TestBuildArgsForResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build resume args: %v", err)
 	}
-	want := []string{"exec", "resume", "--json", "--skip-git-repo-check", "-c", "approval_policy=never", "-m", "gpt-5.1-codex-max", "-p", "work", "--all", "thread_1", "-"}
+	want := []string{"exec", "-p", "work", "resume", "--json", "--skip-git-repo-check", "-c", "approval_policy=never", "-m", "gpt-5.1-codex-max", "--all", "thread_1", "-"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", args, want)
 	}
@@ -70,6 +70,23 @@ func TestBuildArgsForResumePrefersRuntimeNativeSessionID(t *testing.T) {
 	}
 	if got := args[len(args)-2]; got != "native_thread" {
 		t.Fatalf("resume session arg = %q, want native_thread; args=%#v", got, args)
+	}
+}
+
+func TestBuildArgsForResumeKeepsExecRootFlagsBeforeSubcommand(t *testing.T) {
+	adapter := New(Config{Profile: "work"})
+	args, cwd, err := adapter.buildArgs(protocol.Command{SessionID: "thread_1"}, localstate.CommandContext{
+		Project: localstate.ProjectRecord{Path: `C:\repo`},
+	}, true)
+	if err != nil {
+		t.Fatalf("build resume args: %v", err)
+	}
+	want := []string{"exec", "-p", "work", "-C", `C:\repo`, "resume", "--json", "--skip-git-repo-check", "-c", "approval_policy=never", "--all", "thread_1", "-"}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args = %#v, want %#v", args, want)
+	}
+	if cwd != `C:\repo` {
+		t.Fatalf("cwd = %q, want C:\\repo", cwd)
 	}
 }
 

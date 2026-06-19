@@ -32,18 +32,18 @@ func promptFromCommand(command protocol.Command) (string, error) {
 func (a *Adapter) buildArgs(command protocol.Command, resolved localstate.CommandContext, resume bool) ([]string, string, error) {
 	cwd := firstNonEmpty(resolved.Project.Path, resolved.Session.CWD)
 	args := []string{"exec"}
+	if a.cfg.Profile != "" {
+		args = append(args, "-p", a.cfg.Profile)
+	}
+	if cwd != "" {
+		args = append(args, "-C", cwd)
+	}
 	if resume {
 		args = append(args, "resume")
 	}
 	args = append(args, "--json", "--skip-git-repo-check", "-c", "approval_policy=never")
 	if a.cfg.Model != "" {
 		args = append(args, "-m", a.cfg.Model)
-	}
-	if a.cfg.Profile != "" {
-		args = append(args, "-p", a.cfg.Profile)
-	}
-	if cwd != "" {
-		args = append(args, "-C", cwd)
 	}
 	if resume {
 		nativeSessionID := firstNonEmpty(resolved.RuntimeSession.NativeSessionID, resolved.RuntimeSession.SessionID, resolved.Session.ID, command.SessionID)
