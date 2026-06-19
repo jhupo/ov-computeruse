@@ -141,6 +141,15 @@ type RuntimeSession struct {
 	NativeSessionID string    `json:"native_session_id,omitempty"`
 	ResumeMode      string    `json:"resume_mode,omitempty"`
 	LastRunID       string    `json:"last_run_id,omitempty"`
+	Title           string    `json:"title,omitempty"`
+	CWD             string    `json:"cwd,omitempty"`
+	Model           string    `json:"model,omitempty"`
+	Profile         string    `json:"profile,omitempty"`
+	ApprovalPolicy  string    `json:"approval_policy,omitempty"`
+	SandboxMode     string    `json:"sandbox_mode,omitempty"`
+	ReasoningEffort string    `json:"reasoning_effort,omitempty"`
+	LastTurnID      string    `json:"last_turn_id,omitempty"`
+	LastItemIndex   int       `json:"last_item_index,omitempty"`
 	UpdatedAt       time.Time `json:"updated_at,omitempty"`
 }
 

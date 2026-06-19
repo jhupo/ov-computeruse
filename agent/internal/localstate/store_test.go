@@ -84,6 +84,14 @@ func TestResolveCommandContextAcceptsRuntimeSession(t *testing.T) {
 		NativeSessionID: "codex_native",
 		ResumeMode:      "codex_cli_exec",
 		LastRunID:       "run_1",
+		Title:           "Fix bug",
+		CWD:             projectPath,
+		Model:           "gpt-5.1-codex-max",
+		Profile:         "work",
+		ApprovalPolicy:  "never",
+		SandboxMode:     "read-only",
+		ReasoningEffort: "high",
+		LastTurnID:      "turn_1",
 		UpdatedAt:       updatedAt,
 	})
 	if err != nil {
@@ -96,6 +104,9 @@ func TestResolveCommandContextAcceptsRuntimeSession(t *testing.T) {
 	}
 	if resolved.Session.ID != "codex_session" || resolved.Session.IDSource != "runtime_session" {
 		t.Fatalf("runtime session = %+v, want codex_session runtime_session", resolved.Session)
+	}
+	if resolved.Session.Title != "Fix bug" || resolved.Session.CWD != projectPath {
+		t.Fatalf("runtime session context was not resolved: %+v", resolved.Session)
 	}
 	if resolved.Project.ID != "project_1" {
 		t.Fatalf("project id = %q, want project_1", resolved.Project.ID)
@@ -111,6 +122,9 @@ func TestResolveCommandContextAcceptsRuntimeSession(t *testing.T) {
 	}
 	if byNative.SessionID != "codex_session" || byNative.NativeSessionID != "codex_native" {
 		t.Fatalf("runtime session by native id = %+v", byNative)
+	}
+	if byNative.Model != "gpt-5.1-codex-max" || byNative.Profile != "work" || byNative.ApprovalPolicy != "never" || byNative.SandboxMode != "read-only" || byNative.ReasoningEffort != "high" || byNative.LastTurnID != "turn_1" {
+		t.Fatalf("runtime session metadata not preserved: %+v", byNative)
 	}
 	byRun, err := state.RuntimeSessionByRun(context.Background(), "run_1", protocol.RuntimeCodexCLI)
 	if err != nil {

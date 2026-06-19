@@ -14,7 +14,8 @@ func TestRuntimeSessionFromFileUsesCodexSessionMeta(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 	content := "" +
-		`{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"id":"sess_native"}}` + "\n" +
+		`{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"id":"sess_native","cwd":"C:\\repo","model_provider":"openai"}}` + "\n" +
+		`{"timestamp":"2026-06-18T01:01:00Z","type":"turn_context","payload":{"turn_id":"turn_1","cwd":"C:\\repo","model":"gpt-5.1-codex-max","approval_policy":"never","permission_profile":"read-only","effort":"high"}}` + "\n" +
 		`{"timestamp":"2026-06-18T01:02:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}` + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -22,6 +23,7 @@ func TestRuntimeSessionFromFileUsesCodexSessionMeta(t *testing.T) {
 	session := Session{
 		ID:        "sess_local",
 		ProjectID: "project_1",
+		Title:     "Fix bug",
 		Path:      path,
 		UpdatedAt: time.Date(2026, 6, 18, 1, 0, 0, 0, time.UTC),
 	}
@@ -37,6 +39,12 @@ func TestRuntimeSessionFromFileUsesCodexSessionMeta(t *testing.T) {
 	}
 	if runtimeSession.ResumeMode != "codex_cli_history_index" {
 		t.Fatalf("resume mode = %q, want codex_cli_history_index", runtimeSession.ResumeMode)
+	}
+	if runtimeSession.Title != "Fix bug" || runtimeSession.CWD != filepath.Clean(`C:\repo`) {
+		t.Fatalf("runtime session context title/cwd = %q/%q", runtimeSession.Title, runtimeSession.CWD)
+	}
+	if runtimeSession.Model != "gpt-5.1-codex-max" || runtimeSession.ApprovalPolicy != "never" || runtimeSession.SandboxMode != "read-only" || runtimeSession.ReasoningEffort != "high" || runtimeSession.LastTurnID != "turn_1" {
+		t.Fatalf("runtime session context = %+v", runtimeSession)
 	}
 }
 

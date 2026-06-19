@@ -96,6 +96,11 @@ func (a *Adapter) emitRuntimeSession(ctx context.Context, command protocol.Comma
 		NativeSessionID: threadID,
 		ResumeMode:      "codex_cli_exec",
 		LastRunID:       command.RunID,
+		Title:           firstNonEmpty(resolved.Session.Title, threadID),
+		CWD:             firstNonEmpty(resolved.Session.CWD, resolved.Project.Path),
+		Model:           a.cfg.Model,
+		Profile:         a.cfg.Profile,
+		ApprovalPolicy:  "never",
 		UpdatedAt:       time.Now().UTC(),
 	}
 	if a.cfg.State != nil {
@@ -106,6 +111,11 @@ func (a *Adapter) emitRuntimeSession(ctx context.Context, command protocol.Comma
 			NativeSessionID: runtimeSession.NativeSessionID,
 			ResumeMode:      runtimeSession.ResumeMode,
 			LastRunID:       runtimeSession.LastRunID,
+			Title:           runtimeSession.Title,
+			CWD:             runtimeSession.CWD,
+			Model:           runtimeSession.Model,
+			Profile:         runtimeSession.Profile,
+			ApprovalPolicy:  runtimeSession.ApprovalPolicy,
 			UpdatedAt:       runtimeSession.UpdatedAt,
 		})
 	}

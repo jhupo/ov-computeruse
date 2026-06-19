@@ -287,6 +287,15 @@ func (c *Client) runHistoryTarget(ctx context.Context, trigger protocol.RunEvent
 				NativeSessionID: session.NativeSessionID,
 				ResumeMode:      session.ResumeMode,
 				LastRunID:       session.LastRunID,
+				Title:           session.Title,
+				CWD:             session.CWD,
+				Model:           session.Model,
+				Profile:         session.Profile,
+				ApprovalPolicy:  session.ApprovalPolicy,
+				SandboxMode:     session.SandboxMode,
+				ReasoningEffort: session.ReasoningEffort,
+				LastTurnID:      session.LastTurnID,
+				LastItemIndex:   session.LastItemIndex,
 				UpdatedAt:       session.UpdatedAt,
 			}, nil
 		}
@@ -308,6 +317,15 @@ func (c *Client) runHistoryTarget(ctx context.Context, trigger protocol.RunEvent
 				NativeSessionID: session.NativeSessionID,
 				ResumeMode:      session.ResumeMode,
 				LastRunID:       session.LastRunID,
+				Title:           session.Title,
+				CWD:             session.CWD,
+				Model:           session.Model,
+				Profile:         session.Profile,
+				ApprovalPolicy:  session.ApprovalPolicy,
+				SandboxMode:     session.SandboxMode,
+				ReasoningEffort: session.ReasoningEffort,
+				LastTurnID:      session.LastTurnID,
+				LastItemIndex:   session.LastItemIndex,
 				UpdatedAt:       session.UpdatedAt,
 			}, nil
 		}
@@ -362,6 +380,15 @@ func runtimeSessionForHistorySession(result codexscan.Result, target protocol.Ru
 		NativeSessionID: firstNonEmpty(target.NativeSessionID, target.SessionID, session.ID),
 		ResumeMode:      firstNonEmpty(target.ResumeMode, "codex_cli_history_index"),
 		LastRunID:       target.LastRunID,
+		Title:           firstNonEmpty(session.Title, target.Title),
+		CWD:             firstNonEmpty(session.CWD, target.CWD),
+		Model:           target.Model,
+		Profile:         target.Profile,
+		ApprovalPolicy:  target.ApprovalPolicy,
+		SandboxMode:     target.SandboxMode,
+		ReasoningEffort: target.ReasoningEffort,
+		LastTurnID:      target.LastTurnID,
+		LastItemIndex:   target.LastItemIndex,
 		UpdatedAt:       session.UpdatedAt,
 	}
 	for _, candidate := range result.RuntimeSessions {
@@ -371,6 +398,13 @@ func runtimeSessionForHistorySession(result codexscan.Result, target protocol.Ru
 		runtimeSession.ProjectID = firstNonEmpty(candidate.ProjectID, runtimeSession.ProjectID)
 		runtimeSession.NativeSessionID = firstNonEmpty(candidate.NativeSessionID, runtimeSession.NativeSessionID)
 		runtimeSession.ResumeMode = firstNonEmpty(candidate.ResumeMode, runtimeSession.ResumeMode)
+		runtimeSession.Title = firstNonEmpty(candidate.Title, runtimeSession.Title)
+		runtimeSession.CWD = firstNonEmpty(candidate.CWD, runtimeSession.CWD)
+		runtimeSession.Model = firstNonEmpty(candidate.Model, runtimeSession.Model)
+		runtimeSession.ApprovalPolicy = firstNonEmpty(candidate.ApprovalPolicy, runtimeSession.ApprovalPolicy)
+		runtimeSession.SandboxMode = firstNonEmpty(candidate.SandboxMode, runtimeSession.SandboxMode)
+		runtimeSession.ReasoningEffort = firstNonEmpty(candidate.ReasoningEffort, runtimeSession.ReasoningEffort)
+		runtimeSession.LastTurnID = firstNonEmpty(candidate.LastTurnID, runtimeSession.LastTurnID)
 		if candidate.UpdatedAt.After(runtimeSession.UpdatedAt) {
 			runtimeSession.UpdatedAt = candidate.UpdatedAt
 		}
@@ -655,6 +689,13 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 			SessionID:       session.SessionID,
 			NativeSessionID: session.NativeSessionID,
 			ResumeMode:      session.ResumeMode,
+			Title:           session.Title,
+			CWD:             session.CWD,
+			Model:           session.Model,
+			ApprovalPolicy:  session.ApprovalPolicy,
+			SandboxMode:     session.SandboxMode,
+			ReasoningEffort: session.ReasoningEffort,
+			LastTurnID:      session.LastTurnID,
 			UpdatedAt:       session.UpdatedAt,
 		})
 	}
@@ -671,6 +712,15 @@ func (c *Client) uploadIndex(ctx context.Context) error {
 				NativeSessionID: session.NativeSessionID,
 				ResumeMode:      session.ResumeMode,
 				LastRunID:       session.LastRunID,
+				Title:           session.Title,
+				CWD:             session.CWD,
+				Model:           session.Model,
+				Profile:         session.Profile,
+				ApprovalPolicy:  session.ApprovalPolicy,
+				SandboxMode:     session.SandboxMode,
+				ReasoningEffort: session.ReasoningEffort,
+				LastTurnID:      session.LastTurnID,
+				LastItemIndex:   session.LastItemIndex,
 				UpdatedAt:       session.UpdatedAt,
 			})
 		}

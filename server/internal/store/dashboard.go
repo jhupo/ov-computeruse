@@ -326,7 +326,7 @@ func listSessionsQuery(agentID, projectID string, limit int) (string, []any) {
 	}
 	query += ` GROUP BY cs.agent_id, cs.id, cs.id_source, cs.project_id, cs.title, cs.path, cs.cwd, cs.updated_at, cs.size_bytes, cs.content_sha256
 		), runtime_only AS (
-			SELECT rs.agent_id, rs.session_id AS id, 'runtime_session' AS id_source, COALESCE(rs.project_id, '') AS project_id, COALESCE(NULLIF(rs.session_id, ''), NULLIF(rs.native_session_id, ''), rs.id) AS title, '' AS path, '' AS cwd, rs.updated_at, 0::BIGINT AS size_bytes, '' AS content_sha256, 0::BIGINT AS message_count, NULL::TIMESTAMPTZ AS last_message_at
+			SELECT rs.agent_id, rs.session_id AS id, 'runtime_session' AS id_source, COALESCE(rs.project_id, '') AS project_id, COALESCE(NULLIF(rs.title, ''), NULLIF(rs.session_id, ''), NULLIF(rs.native_session_id, ''), rs.id) AS title, '' AS path, COALESCE(rs.cwd, '') AS cwd, rs.updated_at, 0::BIGINT AS size_bytes, '' AS content_sha256, 0::BIGINT AS message_count, NULL::TIMESTAMPTZ AS last_message_at
 			FROM runtime_sessions rs
 			WHERE rs.agent_id=$1 AND rs.session_id IS NOT NULL AND rs.session_id <> ''
 				AND NOT EXISTS (SELECT 1 FROM codex_sessions cs WHERE cs.agent_id=rs.agent_id AND cs.id=rs.session_id AND cs.deleted_at IS NULL)`
@@ -846,8 +846,8 @@ func (s *Store) UpsertRuntimeSession(ctx context.Context, agentID string, runtim
 			runtime.ID = existingID
 		}
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO runtime_sessions (id, agent_id, runtime, native_session_id, project_id, session_id, resume_mode, last_run_id, updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now())
+	_, err = tx.Exec(ctx, `INSERT INTO runtime_sessions (id, agent_id, runtime, native_session_id, project_id, session_id, resume_mode, last_run_id, title, cwd, model, profile, approval_policy, sandbox_mode, reasoning_effort, last_turn_id, last_item_index, updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,now())
 			ON CONFLICT (id) DO UPDATE SET
 				runtime=EXCLUDED.runtime,
 				native_session_id=COALESCE(NULLIF(EXCLUDED.native_session_id, ''), runtime_sessions.native_session_id),
@@ -855,8 +855,17 @@ func (s *Store) UpsertRuntimeSession(ctx context.Context, agentID string, runtim
 				session_id=COALESCE(NULLIF(EXCLUDED.session_id, ''), runtime_sessions.session_id),
 				resume_mode=COALESCE(NULLIF(EXCLUDED.resume_mode, ''), runtime_sessions.resume_mode),
 				last_run_id=COALESCE(NULLIF(EXCLUDED.last_run_id, ''), runtime_sessions.last_run_id),
+				title=COALESCE(NULLIF(EXCLUDED.title, ''), runtime_sessions.title),
+				cwd=COALESCE(NULLIF(EXCLUDED.cwd, ''), runtime_sessions.cwd),
+				model=COALESCE(NULLIF(EXCLUDED.model, ''), runtime_sessions.model),
+				profile=COALESCE(NULLIF(EXCLUDED.profile, ''), runtime_sessions.profile),
+				approval_policy=COALESCE(NULLIF(EXCLUDED.approval_policy, ''), runtime_sessions.approval_policy),
+				sandbox_mode=COALESCE(NULLIF(EXCLUDED.sandbox_mode, ''), runtime_sessions.sandbox_mode),
+				reasoning_effort=COALESCE(NULLIF(EXCLUDED.reasoning_effort, ''), runtime_sessions.reasoning_effort),
+				last_turn_id=COALESCE(NULLIF(EXCLUDED.last_turn_id, ''), runtime_sessions.last_turn_id),
+				last_item_index=CASE WHEN EXCLUDED.last_item_index > 0 THEN EXCLUDED.last_item_index ELSE runtime_sessions.last_item_index END,
 				updated_at=now()`,
-		runtime.ID, agentID, runtime.Runtime, runtime.NativeSessionID, runtime.ProjectID, runtime.SessionID, runtime.ResumeMode, runtime.LastRunID)
+		runtime.ID, agentID, runtime.Runtime, runtime.NativeSessionID, runtime.ProjectID, runtime.SessionID, runtime.ResumeMode, runtime.LastRunID, runtime.Title, runtime.CWD, runtime.Model, runtime.Profile, runtime.ApprovalPolicy, runtime.SandboxMode, runtime.ReasoningEffort, runtime.LastTurnID, runtime.LastItemIndex)
 	if err != nil {
 		return false, err
 	}
@@ -884,7 +893,9 @@ func (s *Store) linkRuntimeSessionToRun(ctx context.Context, agentID string, run
 }
 
 func (s *Store) ListRuntimeSessions(ctx context.Context, agentID, sessionID string) ([]protocol.RuntimeSession, error) {
-	query := `SELECT id, runtime, COALESCE(project_id, ''), COALESCE(session_id, ''), COALESCE(native_session_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''), updated_at FROM runtime_sessions WHERE agent_id=$1`
+	query := `SELECT id, runtime, COALESCE(project_id, ''), COALESCE(session_id, ''), COALESCE(native_session_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''),
+		COALESCE(title, ''), COALESCE(cwd, ''), COALESCE(model, ''), COALESCE(profile, ''), COALESCE(approval_policy, ''), COALESCE(sandbox_mode, ''), COALESCE(reasoning_effort, ''), COALESCE(last_turn_id, ''), COALESCE(last_item_index, 0), updated_at
+		FROM runtime_sessions WHERE agent_id=$1`
 	args := []any{agentID}
 	if sessionID != "" {
 		query += ` AND (session_id=$2 OR native_session_id=$2)`
@@ -899,7 +910,7 @@ func (s *Store) ListRuntimeSessions(ctx context.Context, agentID, sessionID stri
 	out := []protocol.RuntimeSession{}
 	for rows.Next() {
 		var item protocol.RuntimeSession
-		if err := rows.Scan(&item.ID, &item.Runtime, &item.ProjectID, &item.SessionID, &item.NativeSessionID, &item.ResumeMode, &item.LastRunID, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Runtime, &item.ProjectID, &item.SessionID, &item.NativeSessionID, &item.ResumeMode, &item.LastRunID, &item.Title, &item.CWD, &item.Model, &item.Profile, &item.ApprovalPolicy, &item.SandboxMode, &item.ReasoningEffort, &item.LastTurnID, &item.LastItemIndex, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, item)

@@ -89,6 +89,13 @@ type RuntimeSession struct {
 	SessionID       string    `json:"session_id,omitempty"`
 	NativeSessionID string    `json:"native_session_id,omitempty"`
 	ResumeMode      string    `json:"resume_mode,omitempty"`
+	Title           string    `json:"title,omitempty"`
+	CWD             string    `json:"cwd,omitempty"`
+	Model           string    `json:"model,omitempty"`
+	ApprovalPolicy  string    `json:"approval_policy,omitempty"`
+	SandboxMode     string    `json:"sandbox_mode,omitempty"`
+	ReasoningEffort string    `json:"reasoning_effort,omitempty"`
+	LastTurnID      string    `json:"last_turn_id,omitempty"`
 	UpdatedAt       time.Time `json:"updated_at,omitempty"`
 }
 
@@ -589,8 +596,13 @@ func sessionFromFile(path string, info os.FileInfo, maxBytes int64, titles map[s
 }
 
 type sessionMeta struct {
-	ID  string
-	CWD string
+	ID              string
+	CWD             string
+	Model           string
+	ApprovalPolicy  string
+	SandboxMode     string
+	ReasoningEffort string
+	LastTurnID      string
 }
 
 func readSessionMeta(path string) sessionMeta {
@@ -602,17 +614,14 @@ func readSessionMeta(path string) sessionMeta {
 	scanner := newJSONLScanner(io.LimitReader(file, 512<<10))
 	for scanner.Scan() {
 		var raw struct {
-			Type    string `json:"type"`
-			Payload struct {
-				ID  string `json:"id"`
-				CWD string `json:"cwd"`
-			} `json:"payload"`
+			Type    string          `json:"type"`
+			Payload json.RawMessage `json:"payload"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
 			continue
 		}
 		if raw.Type == "session_meta" {
-			return sessionMeta{ID: strings.TrimSpace(raw.Payload.ID), CWD: cleanExistingPath(raw.Payload.CWD)}
+			return sessionMetaFromPayload(raw.Payload)
 		}
 	}
 	return sessionMeta{}
@@ -629,6 +638,7 @@ func runtimeSessionFromFile(session Session) RuntimeSession {
 	defer file.Close()
 	scanner := newJSONLScanner(file)
 	nativeSessionID := session.ID
+	context := sessionMeta{CWD: session.CWD}
 	updatedAt := session.UpdatedAt
 	for scanner.Scan() {
 		var row struct {
@@ -644,11 +654,22 @@ func runtimeSessionFromFile(session Session) RuntimeSession {
 			updatedAt = row.Timestamp
 		}
 		if row.Type == "session_meta" {
-			var meta struct {
-				ID string `json:"id"`
+			meta := sessionMetaFromPayload(row.Payload)
+			if meta.ID != "" {
+				nativeSessionID = meta.ID
 			}
-			if json.Unmarshal(row.Payload, &meta) == nil && strings.TrimSpace(meta.ID) != "" {
-				nativeSessionID = strings.TrimSpace(meta.ID)
+			context = mergeSessionMeta(context, meta)
+			continue
+		}
+		if row.Type == "turn_context" || row.Type == "session_configured" {
+			context = mergeSessionMeta(context, sessionMetaFromPayload(row.Payload))
+			continue
+		}
+		var payload map[string]any
+		if json.Unmarshal(row.Payload, &payload) == nil {
+			payloadType := stringFromAny(payload["type"])
+			if payloadType == "turn_context" || payloadType == "session_configured" {
+				context = mergeSessionMeta(context, sessionMetaFromAny(payload))
 			}
 		}
 	}
@@ -661,7 +682,68 @@ func runtimeSessionFromFile(session Session) RuntimeSession {
 		SessionID:       session.ID,
 		NativeSessionID: nativeSessionID,
 		ResumeMode:      "codex_cli_history_index",
+		Title:           session.Title,
+		CWD:             firstNonEmpty(context.CWD, session.CWD),
+		Model:           context.Model,
+		ApprovalPolicy:  context.ApprovalPolicy,
+		SandboxMode:     context.SandboxMode,
+		ReasoningEffort: context.ReasoningEffort,
+		LastTurnID:      context.LastTurnID,
 		UpdatedAt:       updatedAt,
+	}
+}
+
+func sessionMetaFromPayload(raw json.RawMessage) sessionMeta {
+	var payload map[string]any
+	if json.Unmarshal(raw, &payload) != nil {
+		return sessionMeta{}
+	}
+	return sessionMetaFromAny(payload)
+}
+
+func sessionMetaFromAny(payload map[string]any) sessionMeta {
+	if nested, ok := payload["meta"].(map[string]any); ok {
+		payload = mergeStringAnyMaps(payload, nested)
+	}
+	return sessionMeta{
+		ID:              stringFromAny(payload["id"]),
+		CWD:             cleanExistingPath(firstNonEmpty(stringFromAny(payload["cwd"]), pathStringFromAny(payload["cwd"]))),
+		Model:           firstNonEmpty(stringFromAny(payload["model"]), stringFromAny(payload["model_slug"])),
+		ApprovalPolicy:  stringFromAny(payload["approval_policy"]),
+		SandboxMode:     firstNonEmpty(stringFromAny(payload["sandbox_mode"]), stringFromAny(payload["permission_profile"]), stringFromAny(payload["sandbox_policy"])),
+		ReasoningEffort: firstNonEmpty(stringFromAny(payload["reasoning_effort"]), stringFromAny(payload["effort"])),
+		LastTurnID:      firstNonEmpty(stringFromAny(payload["turn_id"]), stringFromAny(payload["sub_id"])),
+	}
+}
+
+func mergeSessionMeta(existing, incoming sessionMeta) sessionMeta {
+	existing.ID = firstNonEmpty(incoming.ID, existing.ID)
+	existing.CWD = firstNonEmpty(incoming.CWD, existing.CWD)
+	existing.Model = firstNonEmpty(incoming.Model, existing.Model)
+	existing.ApprovalPolicy = firstNonEmpty(incoming.ApprovalPolicy, existing.ApprovalPolicy)
+	existing.SandboxMode = firstNonEmpty(incoming.SandboxMode, existing.SandboxMode)
+	existing.ReasoningEffort = firstNonEmpty(incoming.ReasoningEffort, existing.ReasoningEffort)
+	existing.LastTurnID = firstNonEmpty(incoming.LastTurnID, existing.LastTurnID)
+	return existing
+}
+
+func mergeStringAnyMaps(base, overlay map[string]any) map[string]any {
+	merged := make(map[string]any, len(base)+len(overlay))
+	for key, value := range base {
+		merged[key] = value
+	}
+	for key, value := range overlay {
+		merged[key] = value
+	}
+	return merged
+}
+
+func pathStringFromAny(value any) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		return firstNonEmpty(stringFromAny(typed["path"]), stringFromAny(typed["display_path"]))
+	default:
+		return ""
 	}
 }
 

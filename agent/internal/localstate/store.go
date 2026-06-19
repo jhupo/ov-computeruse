@@ -265,7 +265,8 @@ func (s *Store) ResolveCommandContext(ctx context.Context, command protocol.Comm
 					ID:        runtimeSession.SessionID,
 					IDSource:  "runtime_session",
 					ProjectID: runtimeSession.ProjectID,
-					Title:     firstNonEmpty(runtimeSession.NativeSessionID, runtimeSession.SessionID),
+					Title:     firstNonEmpty(runtimeSession.Title, runtimeSession.NativeSessionID, runtimeSession.SessionID),
+					CWD:       runtimeSession.CWD,
 				}
 				resolved.RuntimeSession = runtimeSession
 				if strings.TrimSpace(command.ProjectID) != "" && strings.TrimSpace(runtimeSession.ProjectID) != "" && command.ProjectID != runtimeSession.ProjectID {
@@ -430,15 +431,24 @@ func (s *Store) SaveRuntimeSession(ctx context.Context, session RuntimeSession) 
 	}
 	session = s.mergeRuntimeSessionByNativeID(ctx, session)
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO runtime_sessions(session_id, runtime, project_id, native_session_id, resume_mode, last_run_id, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO runtime_sessions(session_id, runtime, project_id, native_session_id, resume_mode, last_run_id, title, cwd, model, profile, approval_policy, sandbox_mode, reasoning_effort, last_turn_id, last_item_index, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(session_id, runtime) DO UPDATE SET
 			project_id = COALESCE(NULLIF(excluded.project_id, ''), runtime_sessions.project_id),
 			native_session_id = COALESCE(NULLIF(excluded.native_session_id, ''), runtime_sessions.native_session_id),
 			resume_mode = COALESCE(NULLIF(excluded.resume_mode, ''), runtime_sessions.resume_mode),
 			last_run_id = COALESCE(NULLIF(excluded.last_run_id, ''), runtime_sessions.last_run_id),
+			title = COALESCE(NULLIF(excluded.title, ''), runtime_sessions.title),
+			cwd = COALESCE(NULLIF(excluded.cwd, ''), runtime_sessions.cwd),
+			model = COALESCE(NULLIF(excluded.model, ''), runtime_sessions.model),
+			profile = COALESCE(NULLIF(excluded.profile, ''), runtime_sessions.profile),
+			approval_policy = COALESCE(NULLIF(excluded.approval_policy, ''), runtime_sessions.approval_policy),
+			sandbox_mode = COALESCE(NULLIF(excluded.sandbox_mode, ''), runtime_sessions.sandbox_mode),
+			reasoning_effort = COALESCE(NULLIF(excluded.reasoning_effort, ''), runtime_sessions.reasoning_effort),
+			last_turn_id = COALESCE(NULLIF(excluded.last_turn_id, ''), runtime_sessions.last_turn_id),
+			last_item_index = CASE WHEN excluded.last_item_index > 0 THEN excluded.last_item_index ELSE runtime_sessions.last_item_index END,
 			updated_at = excluded.updated_at
-	`, session.SessionID, session.Runtime, session.ProjectID, session.NativeSessionID, session.ResumeMode, session.LastRunID, updatedAt.UTC().Format(time.RFC3339Nano))
+	`, session.SessionID, session.Runtime, session.ProjectID, session.NativeSessionID, session.ResumeMode, session.LastRunID, session.Title, session.CWD, session.Model, session.Profile, session.ApprovalPolicy, session.SandboxMode, session.ReasoningEffort, session.LastTurnID, session.LastItemIndex, updatedAt.UTC().Format(time.RFC3339Nano))
 	return err
 }
 
@@ -465,13 +475,14 @@ func (s *Store) RuntimeSession(ctx context.Context, sessionID, runtime string) (
 	var session RuntimeSession
 	var updatedAt string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT session_id, runtime, COALESCE(project_id, ''), COALESCE(native_session_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''), updated_at
+		SELECT session_id, runtime, COALESCE(project_id, ''), COALESCE(native_session_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''),
+			COALESCE(title, ''), COALESCE(cwd, ''), COALESCE(model, ''), COALESCE(profile, ''), COALESCE(approval_policy, ''), COALESCE(sandbox_mode, ''), COALESCE(reasoning_effort, ''), COALESCE(last_turn_id, ''), COALESCE(last_item_index, 0), updated_at
 		FROM runtime_sessions
 		WHERE runtime = ?
 			AND (session_id = ? OR native_session_id = ?)
 		ORDER BY updated_at DESC
 		LIMIT 1
-	`, runtime, sessionID, sessionID).Scan(&session.SessionID, &session.Runtime, &session.ProjectID, &session.NativeSessionID, &session.ResumeMode, &session.LastRunID, &updatedAt)
+	`, runtime, sessionID, sessionID).Scan(&session.SessionID, &session.Runtime, &session.ProjectID, &session.NativeSessionID, &session.ResumeMode, &session.LastRunID, &session.Title, &session.CWD, &session.Model, &session.Profile, &session.ApprovalPolicy, &session.SandboxMode, &session.ReasoningEffort, &session.LastTurnID, &session.LastItemIndex, &updatedAt)
 	if parsed, parseErr := time.Parse(time.RFC3339Nano, updatedAt); parseErr == nil {
 		session.UpdatedAt = parsed.UTC()
 	}
@@ -490,12 +501,13 @@ func (s *Store) RuntimeSessionByRun(ctx context.Context, runID, runtime string) 
 	var session RuntimeSession
 	var updatedAt string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT session_id, runtime, COALESCE(project_id, ''), COALESCE(native_session_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''), updated_at
+		SELECT session_id, runtime, COALESCE(project_id, ''), COALESCE(native_session_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''),
+			COALESCE(title, ''), COALESCE(cwd, ''), COALESCE(model, ''), COALESCE(profile, ''), COALESCE(approval_policy, ''), COALESCE(sandbox_mode, ''), COALESCE(reasoning_effort, ''), COALESCE(last_turn_id, ''), COALESCE(last_item_index, 0), updated_at
 		FROM runtime_sessions
 		WHERE runtime = ? AND last_run_id = ?
 		ORDER BY updated_at DESC
 		LIMIT 1
-	`, runtime, runID).Scan(&session.SessionID, &session.Runtime, &session.ProjectID, &session.NativeSessionID, &session.ResumeMode, &session.LastRunID, &updatedAt)
+	`, runtime, runID).Scan(&session.SessionID, &session.Runtime, &session.ProjectID, &session.NativeSessionID, &session.ResumeMode, &session.LastRunID, &session.Title, &session.CWD, &session.Model, &session.Profile, &session.ApprovalPolicy, &session.SandboxMode, &session.ReasoningEffort, &session.LastTurnID, &session.LastItemIndex, &updatedAt)
 	if parsed, parseErr := time.Parse(time.RFC3339Nano, updatedAt); parseErr == nil {
 		session.UpdatedAt = parsed.UTC()
 	}
@@ -507,7 +519,8 @@ func (s *Store) RuntimeSessions(ctx context.Context) ([]RuntimeSession, error) {
 		return nil, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT session_id, runtime, COALESCE(project_id, ''), COALESCE(native_session_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''), updated_at
+		SELECT session_id, runtime, COALESCE(project_id, ''), COALESCE(native_session_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''),
+			COALESCE(title, ''), COALESCE(cwd, ''), COALESCE(model, ''), COALESCE(profile, ''), COALESCE(approval_policy, ''), COALESCE(sandbox_mode, ''), COALESCE(reasoning_effort, ''), COALESCE(last_turn_id, ''), COALESCE(last_item_index, 0), updated_at
 		FROM runtime_sessions
 		ORDER BY updated_at DESC
 	`)
@@ -519,7 +532,7 @@ func (s *Store) RuntimeSessions(ctx context.Context) ([]RuntimeSession, error) {
 	for rows.Next() {
 		var session RuntimeSession
 		var updatedAt string
-		if err := rows.Scan(&session.SessionID, &session.Runtime, &session.ProjectID, &session.NativeSessionID, &session.ResumeMode, &session.LastRunID, &updatedAt); err != nil {
+		if err := rows.Scan(&session.SessionID, &session.Runtime, &session.ProjectID, &session.NativeSessionID, &session.ResumeMode, &session.LastRunID, &session.Title, &session.CWD, &session.Model, &session.Profile, &session.ApprovalPolicy, &session.SandboxMode, &session.ReasoningEffort, &session.LastTurnID, &session.LastItemIndex, &updatedAt); err != nil {
 			return nil, err
 		}
 		if parsed, parseErr := time.Parse(time.RFC3339Nano, updatedAt); parseErr == nil {
@@ -1174,6 +1187,15 @@ type RuntimeSession struct {
 	NativeSessionID string
 	ResumeMode      string
 	LastRunID       string
+	Title           string
+	CWD             string
+	Model           string
+	Profile         string
+	ApprovalPolicy  string
+	SandboxMode     string
+	ReasoningEffort string
+	LastTurnID      string
+	LastItemIndex   int
 	UpdatedAt       time.Time
 }
 
@@ -1278,6 +1300,15 @@ func (s *Store) migrate(ctx context.Context) error {
 			PRIMARY KEY(session_id, runtime)
 		)`,
 		`ALTER TABLE runtime_sessions ADD COLUMN project_id TEXT`,
+		`ALTER TABLE runtime_sessions ADD COLUMN title TEXT`,
+		`ALTER TABLE runtime_sessions ADD COLUMN cwd TEXT`,
+		`ALTER TABLE runtime_sessions ADD COLUMN model TEXT`,
+		`ALTER TABLE runtime_sessions ADD COLUMN profile TEXT`,
+		`ALTER TABLE runtime_sessions ADD COLUMN approval_policy TEXT`,
+		`ALTER TABLE runtime_sessions ADD COLUMN sandbox_mode TEXT`,
+		`ALTER TABLE runtime_sessions ADD COLUMN reasoning_effort TEXT`,
+		`ALTER TABLE runtime_sessions ADD COLUMN last_turn_id TEXT`,
+		`ALTER TABLE runtime_sessions ADD COLUMN last_item_index INTEGER NOT NULL DEFAULT 0`,
 		`CREATE INDEX IF NOT EXISTS idx_runtime_sessions_native ON runtime_sessions(runtime, native_session_id)`,
 		`DROP INDEX IF EXISTS idx_runtime_sessions_response`,
 		`CREATE TABLE IF NOT EXISTS command_acks (
@@ -1473,15 +1504,24 @@ func upsertRuntimeSessions(ctx context.Context, tx queryTxLike, sessions []codex
 		}
 		merged := mergeRuntimeSessionRecords(ctx, tx, runtimeSessionFromCodexScan(session), runtimeSessionFromCodexScan(session))
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO runtime_sessions(session_id, runtime, project_id, native_session_id, resume_mode, last_run_id, updated_at)
-			VALUES(?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO runtime_sessions(session_id, runtime, project_id, native_session_id, resume_mode, last_run_id, title, cwd, model, profile, approval_policy, sandbox_mode, reasoning_effort, last_turn_id, last_item_index, updated_at)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(session_id, runtime) DO UPDATE SET
 				project_id = COALESCE(NULLIF(excluded.project_id, ''), runtime_sessions.project_id),
 				native_session_id = COALESCE(NULLIF(excluded.native_session_id, ''), runtime_sessions.native_session_id),
 				resume_mode = COALESCE(NULLIF(excluded.resume_mode, ''), runtime_sessions.resume_mode),
 				last_run_id = COALESCE(NULLIF(excluded.last_run_id, ''), runtime_sessions.last_run_id),
+				title = COALESCE(NULLIF(excluded.title, ''), runtime_sessions.title),
+				cwd = COALESCE(NULLIF(excluded.cwd, ''), runtime_sessions.cwd),
+				model = COALESCE(NULLIF(excluded.model, ''), runtime_sessions.model),
+				profile = COALESCE(NULLIF(excluded.profile, ''), runtime_sessions.profile),
+				approval_policy = COALESCE(NULLIF(excluded.approval_policy, ''), runtime_sessions.approval_policy),
+				sandbox_mode = COALESCE(NULLIF(excluded.sandbox_mode, ''), runtime_sessions.sandbox_mode),
+				reasoning_effort = COALESCE(NULLIF(excluded.reasoning_effort, ''), runtime_sessions.reasoning_effort),
+				last_turn_id = COALESCE(NULLIF(excluded.last_turn_id, ''), runtime_sessions.last_turn_id),
+				last_item_index = CASE WHEN excluded.last_item_index > 0 THEN excluded.last_item_index ELSE runtime_sessions.last_item_index END,
 				updated_at = excluded.updated_at
-		`, merged.SessionID, merged.Runtime, merged.ProjectID, merged.NativeSessionID, merged.ResumeMode, merged.LastRunID, updatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+		`, merged.SessionID, merged.Runtime, merged.ProjectID, merged.NativeSessionID, merged.ResumeMode, merged.LastRunID, merged.Title, merged.CWD, merged.Model, merged.Profile, merged.ApprovalPolicy, merged.SandboxMode, merged.ReasoningEffort, merged.LastTurnID, merged.LastItemIndex, updatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
 	}
@@ -1495,6 +1535,13 @@ func runtimeSessionFromCodexScan(session codexscan.RuntimeSession) RuntimeSessio
 		ProjectID:       session.ProjectID,
 		NativeSessionID: session.NativeSessionID,
 		ResumeMode:      session.ResumeMode,
+		Title:           session.Title,
+		CWD:             session.CWD,
+		Model:           session.Model,
+		ApprovalPolicy:  session.ApprovalPolicy,
+		SandboxMode:     session.SandboxMode,
+		ReasoningEffort: session.ReasoningEffort,
+		LastTurnID:      session.LastTurnID,
 		UpdatedAt:       session.UpdatedAt,
 	}
 }
@@ -1513,6 +1560,17 @@ func mergeRuntimeSessionRecords(ctx context.Context, tx txLike, existing Runtime
 	merged.NativeSessionID = firstNonEmpty(incoming.NativeSessionID, existing.NativeSessionID)
 	merged.ResumeMode = firstNonEmpty(incoming.ResumeMode, existing.ResumeMode)
 	merged.LastRunID = firstNonEmpty(incoming.LastRunID, existing.LastRunID)
+	merged.Title = firstNonEmpty(incoming.Title, existing.Title)
+	merged.CWD = firstNonEmpty(incoming.CWD, existing.CWD)
+	merged.Model = firstNonEmpty(incoming.Model, existing.Model)
+	merged.Profile = firstNonEmpty(incoming.Profile, existing.Profile)
+	merged.ApprovalPolicy = firstNonEmpty(incoming.ApprovalPolicy, existing.ApprovalPolicy)
+	merged.SandboxMode = firstNonEmpty(incoming.SandboxMode, existing.SandboxMode)
+	merged.ReasoningEffort = firstNonEmpty(incoming.ReasoningEffort, existing.ReasoningEffort)
+	merged.LastTurnID = firstNonEmpty(incoming.LastTurnID, existing.LastTurnID)
+	if incoming.LastItemIndex == 0 {
+		merged.LastItemIndex = existing.LastItemIndex
+	}
 	if incoming.UpdatedAt.IsZero() {
 		merged.UpdatedAt = existing.UpdatedAt
 	}
@@ -1535,12 +1593,13 @@ func runtimeSessionByNativeID(ctx context.Context, tx txLike, runtime, nativeSes
 	var session RuntimeSession
 	var updatedAt string
 	err := query.QueryRowContext(ctx, `
-		SELECT session_id, runtime, COALESCE(project_id, ''), COALESCE(native_session_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''), updated_at
+		SELECT session_id, runtime, COALESCE(project_id, ''), COALESCE(native_session_id, ''), COALESCE(resume_mode, ''), COALESCE(last_run_id, ''),
+			COALESCE(title, ''), COALESCE(cwd, ''), COALESCE(model, ''), COALESCE(profile, ''), COALESCE(approval_policy, ''), COALESCE(sandbox_mode, ''), COALESCE(reasoning_effort, ''), COALESCE(last_turn_id, ''), COALESCE(last_item_index, 0), updated_at
 		FROM runtime_sessions
 		WHERE runtime = ? AND native_session_id = ?
 		ORDER BY updated_at DESC
 		LIMIT 1
-	`, runtime, nativeSessionID).Scan(&session.SessionID, &session.Runtime, &session.ProjectID, &session.NativeSessionID, &session.ResumeMode, &session.LastRunID, &updatedAt)
+	`, runtime, nativeSessionID).Scan(&session.SessionID, &session.Runtime, &session.ProjectID, &session.NativeSessionID, &session.ResumeMode, &session.LastRunID, &session.Title, &session.CWD, &session.Model, &session.Profile, &session.ApprovalPolicy, &session.SandboxMode, &session.ReasoningEffort, &session.LastTurnID, &session.LastItemIndex, &updatedAt)
 	if parsed, parseErr := time.Parse(time.RFC3339Nano, updatedAt); parseErr == nil {
 		session.UpdatedAt = parsed.UTC()
 	}
