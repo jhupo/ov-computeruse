@@ -35,7 +35,7 @@ func (a *Adapter) buildArgs(command protocol.Command, resolved localstate.Comman
 	if resume {
 		args = append(args, "resume")
 	}
-	args = append(args, "--json", "--skip-git-repo-check")
+	args = append(args, "--json", "--skip-git-repo-check", "-c", "approval_policy=never")
 	if a.cfg.Model != "" {
 		args = append(args, "-m", a.cfg.Model)
 	}

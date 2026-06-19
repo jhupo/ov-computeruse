@@ -38,7 +38,7 @@ func TestBuildArgsForNewSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build args: %v", err)
 	}
-	want := []string{"exec", "--json", "--skip-git-repo-check", "-C", `C:\repo`, "-"}
+	want := []string{"exec", "--json", "--skip-git-repo-check", "-c", "approval_policy=never", "-C", `C:\repo`, "-"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", args, want)
 	}
@@ -53,7 +53,7 @@ func TestBuildArgsForResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build resume args: %v", err)
 	}
-	want := []string{"exec", "resume", "--json", "--skip-git-repo-check", "-m", "gpt-5.1-codex-max", "-p", "work", "--all", "thread_1", "-"}
+	want := []string{"exec", "resume", "--json", "--skip-git-repo-check", "-c", "approval_policy=never", "-m", "gpt-5.1-codex-max", "-p", "work", "--all", "thread_1", "-"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", args, want)
 	}
