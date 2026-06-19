@@ -46,7 +46,7 @@ func (h Handler) Handle(ctx context.Context, req protocol.WorkspaceRequest) prot
 	}
 	switch resp.Operation {
 	case "list":
-		entries, err := h.fs.List(target, req)
+		entries, err := h.fs.List(ctx, target, req)
 		if err != nil {
 			resp.Status = "failed"
 			resp.Code = workspaceErrorCode(err, "workspace_list_failed")
@@ -56,7 +56,7 @@ func (h Handler) Handle(ctx context.Context, req protocol.WorkspaceRequest) prot
 		resp.Status = "ok"
 		resp.Entries = entries
 	case "search":
-		matches, err := h.fs.Search(target, req)
+		matches, err := h.fs.Search(ctx, target, req)
 		if err != nil {
 			resp.Status = "failed"
 			resp.Code = workspaceErrorCode(err, "workspace_search_failed")
@@ -117,6 +117,9 @@ func workspaceErrorCode(err error, fallback string) string {
 	var workspaceErr WorkspaceError
 	if err != nil && strings.TrimSpace(err.Error()) != "" && errors.As(err, &workspaceErr) && strings.TrimSpace(workspaceErr.Code) != "" {
 		return workspaceErr.Code
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return "timeout"
 	}
 	return fallback
 }

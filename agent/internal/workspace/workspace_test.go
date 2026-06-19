@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,6 +21,18 @@ func (s fakeState) ProjectPath(context.Context, string) (string, error) {
 		return "", sql.ErrNoRows
 	}
 	return path, nil
+}
+
+func TestWorkspaceErrorCodeMapsContextCancellationToTimeout(t *testing.T) {
+	if got := workspaceErrorCode(context.DeadlineExceeded, "fallback"); got != "timeout" {
+		t.Fatalf("deadline code = %q, want timeout", got)
+	}
+	if got := workspaceErrorCode(context.Canceled, "fallback"); got != "timeout" {
+		t.Fatalf("canceled code = %q, want timeout", got)
+	}
+	if got := workspaceErrorCode(errors.New("other"), "fallback"); got != "fallback" {
+		t.Fatalf("fallback code = %q, want fallback", got)
+	}
 }
 
 func TestHandlerListsAndReadsProjectFiles(t *testing.T) {

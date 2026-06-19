@@ -24,6 +24,8 @@ import (
 	"ov-computeruse/agent/internal/workspace"
 )
 
+const workspaceRequestTimeout = 15 * time.Second
+
 type Client struct {
 	identity      securestore.Identity
 	manager       *runs.Manager
@@ -1083,9 +1085,7 @@ func (c *Client) readLoop(ctx context.Context, conn Conn) error {
 				_ = c.send(ctx, "workspace.response", protocol.WorkspaceResponse{RequestID: "", Status: "rejected", Message: err.Error(), At: time.Now().UTC()})
 				continue
 			}
-			response := c.workspace.Handle(ctx, request)
-			response.AgentID = c.identity.AgentID
-			_ = c.send(ctx, "workspace.response", response)
+			go c.handleWorkspaceRequest(ctx, request)
 		case "history.chunk.ack":
 			if c.state == nil {
 				continue
@@ -1132,6 +1132,22 @@ func (c *Client) readLoop(ctx context.Context, conn Conn) error {
 				_ = c.state.MarkRunEventAcked(ctx, ack)
 			}
 		}
+	}
+}
+
+func (c *Client) handleWorkspaceRequest(parent context.Context, request protocol.WorkspaceRequest) {
+	ctx, cancel := context.WithTimeout(parent, workspaceRequestTimeout)
+	defer cancel()
+	response := c.workspace.Handle(ctx, request)
+	response.AgentID = c.identity.AgentID
+	if ctx.Err() != nil && response.Status == "ok" {
+		response.Status = "failed"
+		response.Code = "timeout"
+		response.Message = ctx.Err().Error()
+		response.At = time.Now().UTC()
+	}
+	if err := c.send(parent, "workspace.response", response); err != nil && c.logger != nil {
+		c.logger.WarnContext(parent, "workspace response send failed", "request_id", request.RequestID, "operation", request.Operation, "error", err)
 	}
 }
 

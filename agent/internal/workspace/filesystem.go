@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -27,7 +28,7 @@ type Filesystem struct {
 	Policy Policy
 }
 
-func (fs Filesystem) List(target Target, req protocol.WorkspaceRequest) ([]protocol.WorkspaceEntry, error) {
+func (fs Filesystem) List(ctx context.Context, target Target, req protocol.WorkspaceRequest) ([]protocol.WorkspaceEntry, error) {
 	policy := fs.policy()
 	info, err := os.Stat(target.Path)
 	if err != nil {
@@ -40,6 +41,9 @@ func (fs Filesystem) List(target Target, req protocol.WorkspaceRequest) ([]proto
 	depth := clamp(req.Depth, defaultListDepth, maxListDepth)
 	entries := make([]protocol.WorkspaceEntry, 0)
 	err = filepath.WalkDir(target.Path, func(path string, entry os.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return nil
 		}
@@ -104,7 +108,7 @@ func (fs Filesystem) List(target Target, req protocol.WorkspaceRequest) ([]proto
 	return entries, err
 }
 
-func (fs Filesystem) Search(target Target, req protocol.WorkspaceRequest) ([]protocol.WorkspaceSearchMatch, error) {
+func (fs Filesystem) Search(ctx context.Context, target Target, req protocol.WorkspaceRequest) ([]protocol.WorkspaceSearchMatch, error) {
 	policy := fs.policy()
 	query := strings.ToLower(strings.TrimSpace(req.Query))
 	if query == "" {
@@ -121,6 +125,9 @@ func (fs Filesystem) Search(target Target, req protocol.WorkspaceRequest) ([]pro
 	depth := clamp(req.Depth, maxListDepth, maxListDepth)
 	matches := make([]protocol.WorkspaceSearchMatch, 0)
 	err = filepath.WalkDir(target.Path, func(path string, entry os.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return nil
 		}
@@ -172,7 +179,7 @@ func (fs Filesystem) Search(target Target, req protocol.WorkspaceRequest) ([]pro
 			Sensitive: policy.Sensitive(path),
 		}
 		if score == 0 && kind == "file" && !match.Sensitive {
-			line, preview, contentScore := fs.contentMatch(path, query, info.Size())
+			line, preview, contentScore := fs.contentMatch(ctx, path, query, info.Size())
 			match.Line = line
 			match.Preview = preview
 			match.Score = contentScore
@@ -201,8 +208,11 @@ func (fs Filesystem) Search(target Target, req protocol.WorkspaceRequest) ([]pro
 	return matches, err
 }
 
-func (fs Filesystem) contentMatch(path string, query string, size int64) (int, string, int) {
+func (fs Filesystem) contentMatch(ctx context.Context, path string, query string, size int64) (int, string, int) {
 	if size <= 0 || size > searchContentBytes {
+		return 0, "", 0
+	}
+	if ctx.Err() != nil {
 		return 0, "", 0
 	}
 	file, err := os.Open(path)
@@ -210,6 +220,9 @@ func (fs Filesystem) contentMatch(path string, query string, size int64) (int, s
 		return 0, "", 0
 	}
 	defer file.Close()
+	if ctx.Err() != nil {
+		return 0, "", 0
+	}
 	data, err := io.ReadAll(io.LimitReader(file, searchContentBytes+1))
 	if err != nil || int64(len(data)) > searchContentBytes || fs.policy().Binary(data) {
 		return 0, "", 0
