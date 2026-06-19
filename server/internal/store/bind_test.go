@@ -45,3 +45,12 @@ func TestRuntimeSessionUpsertIsAgentScoped(t *testing.T) {
 		t.Fatalf("runtime session upsert must not use global id conflict: %s", query)
 	}
 }
+
+func TestAgentEpochMatchChecksUserAgentAndDeviceAccess(t *testing.T) {
+	query := strings.ToLower(agentEpochMatchesSQL())
+	for _, want := range []string{"join users", "join devices", "a.disabled_at is null", "u.disabled_at is null", "d.disabled_at is null"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("agent epoch match SQL missing %q: %s", want, query)
+		}
+	}
+}

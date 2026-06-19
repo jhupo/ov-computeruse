@@ -102,8 +102,22 @@ func (s *Store) TouchAgent(ctx context.Context, agentID string) error {
 
 func (s *Store) AgentEpochMatches(ctx context.Context, agentID string, epoch int64) (bool, error) {
 	var matches bool
-	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agents WHERE id=$1 AND agent_epoch=$2 AND disabled_at IS NULL)`, agentID, epoch).Scan(&matches)
+	err := s.pool.QueryRow(ctx, agentEpochMatchesSQL(), agentID, epoch).Scan(&matches)
 	return matches, err
+}
+
+func agentEpochMatchesSQL() string {
+	return `SELECT EXISTS(
+		SELECT 1
+		FROM agents a
+		JOIN users u ON u.id = a.user_id
+		JOIN devices d ON d.id = a.device_id
+		WHERE a.id=$1
+			AND a.agent_epoch=$2
+			AND a.disabled_at IS NULL
+			AND u.disabled_at IS NULL
+			AND d.disabled_at IS NULL
+	)`
 }
 
 func (s *Store) AgentCredentialValid(ctx context.Context, identity AgentIdentity) error {
