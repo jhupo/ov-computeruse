@@ -987,7 +987,7 @@ func (s *Store) MarkCommandDispatchFailed(ctx context.Context, agentID, commandI
 }
 
 func (s *Store) MarkCommandFailed(ctx context.Context, agentID, commandID, reason string) error {
-	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status='dispatch_failed', status_reason=$3, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, reason); err != nil {
+	if _, err := s.pool.Exec(ctx, markCommandFailedSQL, agentID, commandID, reason); err != nil {
 		return err
 	}
 	if err := s.markRunForCommandTerminal(ctx, agentID, commandID, "failed", reason); err != nil {
@@ -998,6 +998,8 @@ func (s *Store) MarkCommandFailed(ctx context.Context, agentID, commandID, reaso
 	}
 	return s.SaveCommandAttempt(ctx, agentID, commandID, "dispatch", "failed", reason, nil)
 }
+
+const markCommandFailedSQL = `UPDATE commands SET status='failed', status_reason=$3, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`
 
 func (s *Store) MarkCommandExpired(ctx context.Context, agentID, commandID, reason string) error {
 	if _, err := s.pool.Exec(ctx, `UPDATE commands SET status='expired', status_reason=$3, dispatch_claimed_by=NULL, dispatch_claimed_at=NULL, dispatch_claimed_until=NULL WHERE agent_id=$1 AND id=$2 AND status IN ('queued','dispatched','dispatch_failed','failed','expired')`, agentID, commandID, reason); err != nil {

@@ -250,3 +250,13 @@ func TestCommandAckCanAdvanceRunToAccepted(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkCommandFailedUsesTerminalStatus(t *testing.T) {
+	query := markCommandFailedSQL
+	if !strings.Contains(query, "status='failed'") {
+		t.Fatalf("failed command SQL must set terminal failed status: %s", query)
+	}
+	if strings.Contains(query, "status='dispatch_failed'") {
+		t.Fatalf("failed command SQL must not use retryable dispatch_failed status: %s", query)
+	}
+}
